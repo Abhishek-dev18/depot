@@ -19,11 +19,37 @@ function iceServers(turn?: TurnConfig): RTCIceServer[] {
   return [...STUN_SERVERS, { urls: turn.url, username: turn.username, credential: turn.credential }]
 }
 
+export type ConnectionType = 'direct' | 'relayed' | 'unknown'
+
 export interface DataChannels {
   pc: RTCPeerConnection
   ctl: RTCDataChannel
   data: RTCDataChannel
+  connectionType: ConnectionType
   close: () => void
+}
+
+/**
+ * "Connection state is never hidden" (Depot — Interface Design artifact):
+ * a user of a privacy tool deserves to know whether bytes are passing
+ * through a third machine. Reads the selected ICE candidate pair's local
+ * candidate type off getStats() — 'relay' means TURN, anything else
+ * (host/srflx/prflx) is some flavor of direct peer-to-peer path.
+ */
+interface LocalCandidateStats {
+  candidateType?: string
+}
+
+async function resolveConnectionType(pc: RTCPeerConnection): Promise<ConnectionType> {
+  const report = await pc.getStats()
+  for (const stat of report.values()) {
+    const pair = stat as RTCIceCandidatePairStats
+    if (pair.type === 'candidate-pair' && pair.state === 'succeeded' && (pair.nominated ?? true)) {
+      const local = pair.localCandidateId ? (report.get(pair.localCandidateId) as LocalCandidateStats | undefined) : undefined
+      if (local?.candidateType) return local.candidateType === 'relay' ? 'relayed' : 'direct'
+    }
+  }
+  return 'unknown'
 }
 
 interface SdpPayload {
@@ -103,7 +129,8 @@ export async function negotiateAsOfferer(relay: SignalClient, turn?: TurnConfig)
   await Promise.all([waitForChannelOpen(ctl), waitForChannelOpen(data)])
   for (const unsub of unsubscribers) unsub()
 
-  return { pc, ctl, data, close: () => pc.close() }
+  const connectionType = await resolveConnectionType(pc)
+  return { pc, ctl, data, connectionType, close: () => pc.close() }
 }
 
 /** Depot side: waits for the offer, answers, and picks up the Client-opened DataChannels. */
@@ -145,5 +172,6 @@ export async function negotiateAsAnswerer(relay: SignalClient, clientId: string,
   await Promise.all([waitForChannelOpen(ctl), waitForChannelOpen(data)])
   for (const unsub of unsubscribers) unsub()
 
-  return { pc, ctl, data, close: () => pc.close() }
+  const connectionType = await resolveConnectionType(pc)
+  return { pc, ctl, data, connectionType, close: () => pc.close() }
 }

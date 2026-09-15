@@ -6,13 +6,13 @@ import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
 import { TypeError as SignalError } from '../signal/envelope'
-import { negotiateAsOfferer, type TurnConfig } from '../transport/webrtc'
+import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
 import { requestFile, type ReceiverEvent } from '../transport/transferSession'
 
 export interface ClientReconnectCallbacks {
   onStatus: (status: string) => void
-  onConnected: (info: { depotId: string }) => void
-  onProgress: (info: { index: number; total: number }) => void
+  onConnected: (info: { depotId: string; connectionType: ConnectionType }) => void
+  onProgress: (info: { index: number; total: number; bytesReceived?: number; bytesTotal?: number }) => void
   onFileReceived: (file: { name: string; bytes: Uint8Array }) => void
   onError: (message: string) => void
 }
@@ -78,13 +78,13 @@ export async function runClientReconnect(
     const channels = await negotiateAsOfferer(client, turn)
 
     cb.onStatus('connected')
-    cb.onConnected({ depotId })
+    cb.onConnected({ depotId, connectionType: channels.connectionType })
 
     cb.onStatus('requesting file')
     const onReceiverEvent = (e: ReceiverEvent) => {
       if (e.type === 'manifest') cb.onStatus(`receiving ${e.total} chunk(s)`)
       if (e.type === 'chunk-received' && e.index !== undefined && e.total !== undefined) {
-        cb.onProgress({ index: e.index, total: e.total })
+        cb.onProgress({ index: e.index, total: e.total, bytesReceived: e.bytesReceived, bytesTotal: e.bytesTotal })
       }
       if (e.type === 'chunk-invalid') cb.onStatus(`chunk ${e.index} failed verification, dropped`)
     }

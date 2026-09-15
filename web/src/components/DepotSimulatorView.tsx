@@ -4,12 +4,21 @@ import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
 import type { OfferedFile } from '../transport/transferSession'
-import type { TurnConfig } from '../transport/webrtc'
+import type { ConnectionType, TurnConfig } from '../transport/webrtc'
 import { Badge } from './Badge'
 import { Card } from './Card'
+import { ConnectionBadge } from './ConnectionBadge'
 import { FolderIcon, LinkIcon, ShieldIcon } from './icons'
 import { Log } from './Log'
 import { ProgressBar } from './ProgressBar'
+import { SasDisplay } from './SasDisplay'
+
+interface ClientProgress {
+  index: number
+  total: number
+  bytesSent?: number
+  bytesTotal?: number
+}
 
 export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: string; turnConfig?: TurnConfig }) {
   const { lines, push, clear } = useLog()
@@ -21,7 +30,8 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
   const listenerRef = useRef<DepotReconnectListener | null>(null)
   const [offeredFile, setOfferedFile] = useState<{ name: string; size: number } | null>(null)
   const offeredFileRef = useRef<OfferedFile | null>(null)
-  const [progressByClient, setProgressByClient] = useState<Record<string, { index: number; total: number }>>({})
+  const [progressByClient, setProgressByClient] = useState<Record<string, ClientProgress>>({})
+  const [connectionByClient, setConnectionByClient] = useState<Record<string, ConnectionType>>({})
 
   const refreshDevices = useCallback(() => {
     void listDevices().then(setDevices)
@@ -69,12 +79,13 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
     const l = await runDepotReconnectListener(signalUrl, () => offeredFileRef.current, turnConfig, {
       onStatus: push,
       onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
-      onClientConnected: ({ clientId }) => {
+      onClientConnected: ({ clientId, connectionType }) => {
         push(`client ${clientId.slice(0, 16)}… connected, data channel open`)
+        setConnectionByClient((prev) => ({ ...prev, [clientId]: connectionType }))
         refreshDevices()
       },
-      onClientProgress: ({ clientId, index, total }) => {
-        setProgressByClient((prev) => ({ ...prev, [clientId]: { index: index + 1, total } }))
+      onClientProgress: ({ clientId, index, total, bytesSent, bytesTotal }) => {
+        setProgressByClient((prev) => ({ ...prev, [clientId]: { index: index + 1, total, bytesSent, bytesTotal } }))
       },
       onClientRejected: ({ clientId, reason }) => push(`rejected ${clientId.slice(0, 16)}…: ${reason}`),
       onError: (msg) => push(`error: ${msg}`),
@@ -117,8 +128,9 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
 
         {sas && (
           <div className="sas">
-            <p>Compare this code with the Client. Only approve if it matches exactly.</p>
-            <div className="sas-code">{sas.code}</div>
+            <p className="sas-question">Does the Client show this number?</p>
+            <SasDisplay code={sas.code} />
+            <p className="sas-warn">If the numbers differ, someone may be intercepting the connection.</p>
             <button
               className="primary"
               onClick={() => {
@@ -147,9 +159,12 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
       <Card title="Reconnection listener" icon={<LinkIcon />}>
         {listener ? (
           <>
+            <div className="pulse">
+              <i />
+              Accepting connections
+            </div>
             <p className="hint">
-              <Badge tone="success">Listening</Badge>{' '}
-              as <code title={listener.depotId}>{listener.depotId.slice(0, 16)}…</code>
+              Listening as <code title={listener.depotId}>{listener.depotId.slice(0, 16)}…</code>
             </p>
             <button onClick={stopListening}>Stop listening</button>
           </>
@@ -163,21 +178,36 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
           <p className="empty-state">None yet.</p>
         ) : (
           <ul className="entity-list">
-            {devices.map((d) => (
-              <li key={d.clientIdentityPub}>
-                <div className="entity-main">
-                  <code title={d.clientIdentityPub}>{d.clientIdentityPub.slice(0, 16)}…</code>
-                  {d.revoked && <Badge tone="danger">Revoked</Badge>}
-                  {progressByClient[d.clientIdentityPub] && !d.revoked && (
-                    <ProgressBar
-                      value={progressByClient[d.clientIdentityPub].index}
-                      total={progressByClient[d.clientIdentityPub].total}
-                    />
-                  )}
-                </div>
-                {!d.revoked && <button onClick={() => void revoke(d.clientIdentityPub)}>Revoke</button>}
-              </li>
-            ))}
+            {devices.map((d) => {
+              const clientProgress = progressByClient[d.clientIdentityPub]
+              const connectionType = connectionByClient[d.clientIdentityPub]
+              return (
+                <li key={d.clientIdentityPub}>
+                  <div className="entity-icon">▣</div>
+                  <div className="entity-main">
+                    <code title={d.clientIdentityPub}>{d.clientIdentityPub.slice(0, 16)}…</code>
+                    {clientProgress && !d.revoked && (
+                      <ProgressBar
+                        value={clientProgress.index}
+                        total={clientProgress.total}
+                        bytesDone={clientProgress.bytesSent}
+                        bytesTotal={clientProgress.bytesTotal}
+                      />
+                    )}
+                  </div>
+                  <div className="entity-actions">
+                    {d.revoked ? (
+                      <Badge tone="danger">Revoked</Badge>
+                    ) : (
+                      <>
+                        {connectionType && <ConnectionBadge type={connectionType} />}
+                        <button onClick={() => void revoke(d.clientIdentityPub)}>Revoke</button>
+                      </>
+                    )}
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         )}
       </Card>
