@@ -51,10 +51,10 @@ export async function deriveKeys(shared: Uint8Array, transcript: Uint8Array): Pr
   return { master, kC2D, kD2C, sasSeed }
 }
 
-/** protocol.md §3.4: decimal(SAS_seed mod 10000), zero-padded to 4 digits. */
+/** protocol.md §3.4: decimal(SAS_seed mod 1000000), zero-padded to 6 digits. */
 export function computeSAS(sasSeed: Uint8Array): string {
   let n = 0n
   for (const byte of sasSeed) n = (n << 8n) | BigInt(byte)
-  const sas = n % 10000n
-  return sas.toString().padStart(4, '0')
+  const sas = n % 1_000_000n
+  return sas.toString().padStart(6, '0')
 }

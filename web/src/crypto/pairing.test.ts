@@ -50,10 +50,10 @@ describe('X25519 key agreement (protocol.md §3.3)', () => {
     expect(toBase64(clientKeys.kC2D)).not.toBe(toBase64(clientKeys.kD2C))
   })
 
-  it('SAS is a 4-digit decimal string', async () => {
+  it('SAS is a 6-digit decimal string', async () => {
     const { clientKeys } = await runPairing()
     const sas = computeSAS(clientKeys.sasSeed)
-    expect(sas).toMatch(/^\d{4}$/)
+    expect(sas).toMatch(/^\d{6}$/)
   })
 })
 

@@ -1,9 +1,11 @@
 import { fromBase64, toBase64 } from '../crypto/codec'
+import type { Credential } from '../crypto/credential'
+import { verifyCredential } from '../crypto/credential'
 import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair } from '../crypto/keys'
 import { reconnectTranscript, signReconnectResponse } from '../crypto/reconnect'
 import { loadOrCreateIdentity } from '../storage/identityStore'
-import { getPairing } from '../storage/pairings'
+import { getPairing, savePairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
 import { TypeError as SignalError } from '../signal/envelope'
 import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
@@ -70,6 +72,14 @@ export async function runClientReconnect(
 
     const ok = await client.waitFor((e) => e.type === 'SESSION_OK' || e.type === SignalError, 15_000)
     if (ok.type === SignalError) throw new Error(`reconnection rejected: ${ok.reason}`)
+
+    // protocol.md §4.1: silent credential renewal — save it only if it
+    // actually verifies against this Depot's identity, so a compromised
+    // Signal can't slip in a forged "renewed" credential.
+    const { credential: renewed } = (ok.payload ?? {}) as { credential?: Credential }
+    if (renewed && (await verifyCredential(renewed, fromBase64(depotId)))) {
+      await savePairing({ ...pairing, credential: renewed })
+    }
 
     const shared = await ecdh(ephemeral.privateKey, depotEkBytes)
     const keys = await deriveKeys(shared, transcript)
