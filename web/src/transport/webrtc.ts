@@ -2,11 +2,22 @@ import type { SignalClient } from '../signal/client'
 import type { Envelope } from '../signal/envelope'
 
 /**
- * protocol.md §5.1: the project operates no TURN server. Public STUN only,
- * best-effort — on localhost (our two-tab test setup) peers resolve a host
- * candidate directly and never need it.
+ * protocol.md §5.1: the project operates no TURN server — public STUN only
+ * by default. A user who self-hosts the docker-compose.yml TURN server (or
+ * has any other TURN server) can point the Client at it; see TurnConfig.
  */
-const ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
+const STUN_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
+
+export interface TurnConfig {
+  url: string
+  username: string
+  credential: string
+}
+
+function iceServers(turn?: TurnConfig): RTCIceServer[] {
+  if (!turn?.url) return STUN_SERVERS
+  return [...STUN_SERVERS, { urls: turn.url, username: turn.username, credential: turn.credential }]
+}
 
 export interface DataChannels {
   pc: RTCPeerConnection
@@ -62,8 +73,8 @@ function waitForChannelOpen(channel: RTCDataChannel): Promise<void> {
 }
 
 /** Client side: creates the offer and both DataChannels (§5.2: ctl ordered, data unordered). */
-export async function negotiateAsOfferer(relay: SignalClient): Promise<DataChannels> {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+export async function negotiateAsOfferer(relay: SignalClient, turn?: TurnConfig): Promise<DataChannels> {
+  const pc = new RTCPeerConnection({ iceServers: iceServers(turn) })
   const ice = bufferedIceHandler(pc)
   const unsubscribers: (() => void)[] = []
 
@@ -96,8 +107,8 @@ export async function negotiateAsOfferer(relay: SignalClient): Promise<DataChann
 }
 
 /** Depot side: waits for the offer, answers, and picks up the Client-opened DataChannels. */
-export async function negotiateAsAnswerer(relay: SignalClient, clientId: string): Promise<DataChannels> {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+export async function negotiateAsAnswerer(relay: SignalClient, clientId: string, turn?: TurnConfig): Promise<DataChannels> {
+  const pc = new RTCPeerConnection({ iceServers: iceServers(turn) })
   const ice = bufferedIceHandler(pc)
   const unsubscribers: (() => void)[] = []
 

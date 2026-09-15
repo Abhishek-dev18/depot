@@ -1,0 +1,42 @@
+# Optional self-hosted TURN server (protocol.md §5.1).
+#
+# The project runs no TURN server of its own — when a direct or
+# STUN-assisted connection can't be established (e.g. both peers are behind
+# a symmetric NAT), file transfer falls back to ICE_FAILED unless the user
+# points the Client at their own TURN server. This is that server.
+#
+# Quick start:
+#   1. cp .env.turn.example .env.turn
+#   2. edit .env.turn: set TURN_REALM to a domain/host you control, and
+#      TURN_SECRET to a long random value (e.g. `openssl rand -hex 32`)
+#   3. docker compose --env-file .env.turn up -d
+#   4. in the web app's signal-server settings, add a TURN server using
+#      turn:<your-host>:3478 with the same realm and a time-limited
+#      credential derived from TURN_SECRET (coturn's REST API mechanism —
+#      see https://github.com/coturn/coturn/blob/master/docs/TURNSERVER)
+#
+# Ports 49160-49200/udp are the relay range coturn hands out candidates
+# from; narrowed from coturn's default (49152-65535) so this stays usable
+# behind typical home-router port forwarding. Widen it in turnserver.conf
+# if you expect many simultaneous transfers.
+
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    environment:
+      TURN_REALM: ${TURN_REALM:?set TURN_REALM in .env.turn}
+      TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET in .env.turn}
+    command: >
+      -c /etc/coturn/turnserver.conf
+      --realm=${TURN_REALM}
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET}
+    volumes:
+      - ./turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      - '3478:3478/tcp'
+      - '3478:3478/udp'
+      - '5349:5349/tcp'
+      - '5349:5349/udp'
+      - '49160-49200:49160-49200/udp'

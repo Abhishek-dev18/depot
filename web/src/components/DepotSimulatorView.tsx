@@ -4,13 +4,14 @@ import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
 import type { OfferedFile } from '../transport/transferSession'
+import type { TurnConfig } from '../transport/webrtc'
 import { Badge } from './Badge'
 import { Card } from './Card'
 import { FolderIcon, LinkIcon, ShieldIcon } from './icons'
 import { Log } from './Log'
 import { ProgressBar } from './ProgressBar'
 
-export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
+export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: string; turnConfig?: TurnConfig }) {
   const { lines, push, clear } = useLog()
   const [qrText, setQrText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -65,7 +66,7 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
 
   const startListening = async () => {
     if (listenerRef.current) return
-    const l = await runDepotReconnectListener(signalUrl, () => offeredFileRef.current, {
+    const l = await runDepotReconnectListener(signalUrl, () => offeredFileRef.current, turnConfig, {
       onStatus: push,
       onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
       onClientConnected: ({ clientId }) => {

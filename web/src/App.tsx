@@ -3,6 +3,7 @@ import './App.css'
 import { ClientView } from './components/ClientView'
 import { DepotSimulatorView } from './components/DepotSimulatorView'
 import { LaptopIcon, PhoneIcon } from './components/icons'
+import type { TurnConfig } from './transport/webrtc'
 
 type Role = 'client' | 'depot'
 
@@ -22,9 +23,22 @@ function initialSignalUrl(): string {
   }
 }
 
+const EMPTY_TURN: TurnConfig = { url: '', username: '', credential: '' }
+
+function initialTurnConfig(): TurnConfig {
+  try {
+    const raw = localStorage.getItem('depot:turnServer')
+    if (!raw) return EMPTY_TURN
+    return { ...EMPTY_TURN, ...(JSON.parse(raw) as Partial<TurnConfig>) }
+  } catch {
+    return EMPTY_TURN
+  }
+}
+
 function App() {
   const [role, setRole] = useState<Role>(initialRole)
   const [signalUrl, setSignalUrl] = useState(initialSignalUrl)
+  const [turnConfig, setTurnConfig] = useState<TurnConfig>(initialTurnConfig)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const switchRole = (next: Role) => {
@@ -47,6 +61,19 @@ function App() {
       // best-effort persistence only
     }
   }
+
+  const updateTurnConfig = (next: TurnConfig) => {
+    setTurnConfig(next)
+    try {
+      localStorage.setItem('depot:turnServer', JSON.stringify(next))
+    } catch {
+      // best-effort persistence only
+    }
+  }
+
+  // Empty URL means "not configured" — treated as no TURN server at all,
+  // rather than threading blank strings down into RTCPeerConnection.
+  const turnForTransport = turnConfig.url.trim() ? turnConfig : undefined
 
   return (
     <div id="app">
@@ -82,17 +109,54 @@ function App() {
         </div>
 
         <button type="button" className="settings-toggle" onClick={() => setSettingsOpen((v) => !v)}>
-          {settingsOpen ? 'Hide' : 'Show'} signal server settings
+          {settingsOpen ? 'Hide' : 'Show'} connection settings
         </button>
         {settingsOpen && (
-          <label className="signal-url">
-            Signal server
-            <input value={signalUrl} onChange={(e) => updateSignalUrl(e.target.value)} spellCheck={false} />
-          </label>
+          <div className="settings-panel">
+            <label className="signal-url">
+              Signal server
+              <input value={signalUrl} onChange={(e) => updateSignalUrl(e.target.value)} spellCheck={false} />
+            </label>
+
+            <p className="hint settings-section-label">
+              TURN server (optional — only needed when a direct or STUN-assisted connection fails; see the
+              project's docker-compose.yml to self-host one)
+            </p>
+            <label className="signal-url">
+              URL
+              <input
+                value={turnConfig.url}
+                onChange={(e) => updateTurnConfig({ ...turnConfig, url: e.target.value })}
+                placeholder="turn:turn.example.com:3478"
+                spellCheck={false}
+              />
+            </label>
+            <label className="signal-url">
+              Username
+              <input
+                value={turnConfig.username}
+                onChange={(e) => updateTurnConfig({ ...turnConfig, username: e.target.value })}
+                spellCheck={false}
+              />
+            </label>
+            <label className="signal-url">
+              Credential
+              <input
+                type="password"
+                value={turnConfig.credential}
+                onChange={(e) => updateTurnConfig({ ...turnConfig, credential: e.target.value })}
+                spellCheck={false}
+              />
+            </label>
+          </div>
         )}
       </header>
 
-      {role === 'client' ? <ClientView signalUrl={signalUrl} /> : <DepotSimulatorView signalUrl={signalUrl} />}
+      {role === 'client' ? (
+        <ClientView signalUrl={signalUrl} turnConfig={turnForTransport} />
+      ) : (
+        <DepotSimulatorView signalUrl={signalUrl} turnConfig={turnForTransport} />
+      )}
     </div>
   )
 }

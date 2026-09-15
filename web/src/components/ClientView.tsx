@@ -4,6 +4,7 @@ import { runClientPairing } from '../pairing/clientPairing'
 import { runClientReconnect } from '../pairing/clientReconnect'
 import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
+import type { TurnConfig } from '../transport/webrtc'
 import { Badge } from './Badge'
 import { Card } from './Card'
 import { CopyButton } from './CopyButton'
@@ -17,7 +18,7 @@ interface ReceivedFile {
   url: string
 }
 
-export function ClientView({ signalUrl }: { signalUrl: string }) {
+export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnConfig?: TurnConfig }) {
   const { lines, push, clear } = useLog()
   const [busy, setBusy] = useState(false)
   const [qr, setQr] = useState<{ dataUrl: string; json: string } | null>(null)
@@ -67,7 +68,7 @@ export function ClientView({ signalUrl }: { signalUrl: string }) {
     }
     setReceived(null)
     setReconnecting(depotId)
-    await runClientReconnect(signalUrl, depotId, {
+    await runClientReconnect(signalUrl, depotId, turnConfig, {
       onStatus: push,
       onConnected: () => push('reconnected'),
       onProgress: ({ index, total }) => setProgress({ index: index + 1, total }),
