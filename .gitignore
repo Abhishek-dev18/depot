@@ -3,3 +3,7 @@ dist/
 .DS_Store
 *.log
 .env
+
+# Go
+signal/signal
+/signal/*.exe

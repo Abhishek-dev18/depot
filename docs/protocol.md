@@ -424,6 +424,41 @@ What Signal never sees:
 
 Rate limits: 10 pairing sessions per IP per minute; 2 peers maximum per session ID.
 
+### 7.1 Wire messages
+
+The rest of this document specifies message *contents* (PAIR_RESPONSE,
+CHALLENGE, SESSION_OK, …) but not how Signal itself routes them. That routing
+layer is implementation, not protocol — Signal treats those message bodies as
+opaque `payload` and never inspects them — but it has to be specified
+somewhere, so it lives here rather than being reinvented per client. Every
+frame is one JSON envelope:
+
+```json
+{ "type": "...", "sessionId": "...", "depotId": "...", "clientId": "...", "payload": { } }
+```
+
+Types Signal owns (everything else is forwarded verbatim as opaque `payload`
+to whichever peer the connection is currently routed to — this is how
+PAIR_RESPONSE, PAIR_CONFIRM, CHALLENGE, RESPONSE, SESSION_OK, CAPS, and all
+SDP/ICE signaling travel):
+
+| Type | Direction | Fields used | Effect |
+|---|---|---|---|
+| `hello` | Client → Signal | `sessionId` | Opens a pairing room. Replied to with `session_created` once the room exists — **the Client must wait for this before rendering the QR**, otherwise a Depot that joins before the room is created sees `session_not_found`. |
+| `join` | Depot → Signal | `sessionId` | Joins an existing room (max 2 peers). Both sides then receive `peer_joined` and are relayed to each other. |
+| `register` | Depot → Signal | `depotId` | Announces presence for §4 reconnection. A later `register` with the same `depotId` supersedes the earlier connection. |
+| `connect` | Client → Signal | `depotId`, `clientId`, `payload` (the RECONNECT body) | Requests a route to an online Depot. Forwarded to the Depot as `incoming` with the same `payload`, saving a round trip. |
+| `revoke` | Depot → Signal | `clientId` | Routing-only optimisation for §6: future `connect`s for this `clientId` are rejected with `client_revoked`, and any in-flight route is torn down. Correctness never depends on this — see §6. |
+
+Signal-originated notices: `session_created`, `peer_joined`, `peer_left`,
+`incoming`, and `error` (with a `reason`: `session_expired`, `session_full`,
+`session_not_found`, `depot_offline`, `client_revoked`, `rate_limited`,
+`no_route`, `bad_envelope`, `already_connected`).
+
+A Depot's `register` connection is long-lived and may have several clients
+mid-reconnect concurrently; Signal demultiplexes by tagging relayed envelopes
+with `clientId` in both directions on that connection only.
+
 ---
 
 ## 8. Open questions
