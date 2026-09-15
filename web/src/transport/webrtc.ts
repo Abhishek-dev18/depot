@@ -106,6 +106,8 @@ export async function negotiateAsOfferer(relay: SignalClient, turn?: TurnConfig)
 
   const ctl = pc.createDataChannel('ctl') // ordered + reliable by default
   const data = pc.createDataChannel('data', { ordered: false })
+  // Both channels carry binary frames now that ctl is encrypted too (§5.3).
+  ctl.binaryType = 'arraybuffer'
   data.binaryType = 'arraybuffer'
 
   pc.addEventListener('icecandidate', (ev) => {
@@ -168,6 +170,7 @@ export async function negotiateAsAnswerer(relay: SignalClient, clientId: string,
   await channelsReady
   const ctl = channels.get('ctl')!
   const data = channels.get('data')!
+  ctl.binaryType = 'arraybuffer'
   data.binaryType = 'arraybuffer'
   await Promise.all([waitForChannelOpen(ctl), waitForChannelOpen(data)])
   for (const unsub of unsubscribers) unsub()

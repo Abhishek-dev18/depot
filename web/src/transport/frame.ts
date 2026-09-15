@@ -2,9 +2,10 @@ import { sodium } from '../crypto/sodium'
 
 /** protocol.md §5.3 binary frame: type(1B) transferId(4B) chunkIdx(4B) flags(1B) ciphertext. */
 
-/** Frame type byte. Only CHUNK exists today; the byte leaves room to add frame kinds later without breaking the format. */
+/** Frame type byte. The byte leaves room to add frame kinds later without breaking the format. */
 export const FrameType = {
   Chunk: 1,
+  Ctl: 2,
 } as const
 
 export const FLAG_COMPRESSED = 0b1
@@ -59,6 +60,62 @@ export async function encodeChunkFrame(key: Uint8Array, direction: DirectionByte
   frame[9] = chunk.compressed ? FLAG_COMPRESSED : 0
   frame.set(ciphertext, HEADER_LEN)
   return frame
+}
+
+const CTL_HEADER_LEN = 1 + 8
+
+/**
+ * Nonce for a control frame. The leading byte is `0x80 | direction`, so it
+ * can never equal a chunk nonce's leading byte (0 or 1) — the two nonce
+ * spaces are disjoint by construction, even though both use the same
+ * directional key.
+ */
+export async function deriveCtlNonce(direction: DirectionByte, counter: number): Promise<Uint8Array> {
+  const s = await sodium()
+  const nonce = new Uint8Array(s.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+  nonce[0] = 0x80 | direction
+  new DataView(nonce.buffer).setBigUint64(1, BigInt(counter))
+  return nonce
+}
+
+/**
+ * protocol.md §5.3: control messages are encrypted with the same session
+ * keys as chunks. Signal relays the SDP that sets up DTLS, so DTLS alone
+ * does not protect this channel from the relay — without this the manifest
+ * (file name, size, chunk hashes) would be readable and forgeable by it.
+ */
+export async function encodeCtlFrame(
+  key: Uint8Array,
+  direction: DirectionByte,
+  counter: number,
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  const s = await sodium()
+  const nonce = await deriveCtlNonce(direction, counter)
+  const ciphertext = s.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, null, null, nonce, key)
+
+  const frame = new Uint8Array(CTL_HEADER_LEN + ciphertext.length)
+  frame[0] = FrameType.Ctl
+  new DataView(frame.buffer).setBigUint64(1, BigInt(counter))
+  frame.set(ciphertext, CTL_HEADER_LEN)
+  return frame
+}
+
+export interface DecodedCtl {
+  counter: number
+  plaintext: Uint8Array
+}
+
+export async function decodeCtlFrame(key: Uint8Array, direction: DirectionByte, frame: Uint8Array): Promise<DecodedCtl> {
+  if (frame.length < CTL_HEADER_LEN) throw new Error('ctl frame shorter than header')
+  if (frame[0] !== FrameType.Ctl) throw new Error(`not a ctl frame: type ${frame[0]}`)
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+  const counter = Number(view.getBigUint64(1))
+
+  const s = await sodium()
+  const nonce = await deriveCtlNonce(direction, counter)
+  const plaintext = s.crypto_aead_xchacha20poly1305_ietf_decrypt(null, frame.subarray(CTL_HEADER_LEN), null, nonce, key)
+  return { counter, plaintext }
 }
 
 export interface DecodedChunk {

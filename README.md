@@ -75,8 +75,15 @@ six-digit code, or file contents.
 | **Credentials** | Ed25519-signed, 90-day expiry, silently renewed inside the last 30 days |
 | **Revocation** | Depot refuses the handshake and drops live channels — it does not rely on the relay cooperating |
 
-Chunk nonces are *derived*, never transmitted — direction ‖ transfer ID ‖ chunk index —
-so the wire carries no nonce overhead and reuse is structurally impossible within a session.
+Nonces are *derived*, never transmitted — direction ‖ transfer ID ‖ chunk index for file
+chunks, direction ‖ counter for control messages — so the wire carries no nonce overhead and
+reuse is structurally impossible within a session.
+
+**Both DataChannels are encrypted with the session keys, not just the file chunks.** DTLS
+alone would not be enough: the SDP carrying the DTLS fingerprints is relayed through Signal,
+so a hostile relay could substitute them and terminate DTLS itself. That would have left the
+manifest — file name, size, every chunk hash — readable and forgeable by exactly the party
+the threat model says must never see file names.
 
 The full threat model, wire formats and design rationale live in
 **[`docs/protocol.md`](docs/protocol.md)**.
@@ -162,13 +169,6 @@ the next milestone, and the UI shown above is the design spec it will follow.
 
 ### Known gaps
 
-- **Control-channel metadata.** File chunks are end-to-end encrypted with the session keys,
-  but the `ctl` channel that carries the manifest — filename, size, chunk hashes — is
-  plaintext JSON protected only by WebRTC's DTLS. Because the SDP (and so the DTLS
-  fingerprint) is relayed through Signal unsigned, a malicious relay could in principle MITM
-  the DTLS layer and read or tamper with that metadata. File *contents* stay confidential
-  either way. Closing this means encrypting `ctl` with the session keys, or binding the DTLS
-  fingerprint into the handshake transcript.
 - **No license file yet** — see below.
 
 ## Contributing

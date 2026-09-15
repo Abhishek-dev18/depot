@@ -1,6 +1,6 @@
 import { AdaptiveChunkSize, cdcParamsForAvg, sampleNetwork } from './chunkSize'
 import { compress, decompress, shouldCompress } from './compression'
-import { Direction, decodeChunkFrame, encodeChunkFrame } from './frame'
+import { Direction, decodeChunkFrame, decodeCtlFrame, encodeChunkFrame, encodeCtlFrame } from './frame'
 import { buildManifest, hashBytes, type Manifest } from './manifest'
 import type { DataChannels } from './webrtc'
 
@@ -48,53 +48,84 @@ const OUR_CAPS: CapsMessage = {
   features: ['cdc'],
 }
 
-function sendCtl(channels: DataChannels, msg: CtlMessage): void {
-  channels.ctl.send(JSON.stringify(msg))
+// The ASCII-only utf8() in crypto/transcript.ts cannot carry a file name.
+// Copying into a fresh Uint8Array keeps libsodium's strict same-realm type
+// check happy under jsdom, which is why that encoder avoids TextEncoder.
+function encodeUtf8(s: string): Uint8Array {
+  return new Uint8Array(new TextEncoder().encode(s))
 }
 
-function parseCtl(data: unknown): CtlMessage | undefined {
-  if (typeof data !== 'string') return undefined
-  try {
-    const parsed: unknown = JSON.parse(data)
-    if (parsed && typeof parsed === 'object' && 'type' in parsed) return parsed as CtlMessage
-  } catch {
-    // ignore malformed control messages
+/**
+ * The encrypted `ctl` channel (protocol.md §5.3). Each side encrypts with
+ * its own directional key under a monotonically increasing counter, and
+ * rejects any counter it has already accepted, so the relay can neither
+ * read control messages nor replay them.
+ */
+interface CtlCodec {
+  send: (msg: CtlMessage) => Promise<void>
+  onMessage: (handler: (msg: CtlMessage) => void) => () => void
+  waitFor: <T extends CtlMessage>(predicate: (msg: CtlMessage) => msg is T, timeoutMs?: number) => Promise<T>
+}
+
+function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client' | 'depot'): CtlCodec {
+  const sendKey = role === 'client' ? keys.kC2D : keys.kD2C
+  const sendDirection = role === 'client' ? Direction.ClientToDepot : Direction.DepotToClient
+  const recvKey = role === 'client' ? keys.kD2C : keys.kC2D
+  const recvDirection = role === 'client' ? Direction.DepotToClient : Direction.ClientToDepot
+
+  let sendCounter = 0
+  const seen = new Set<number>()
+
+  async function send(msg: CtlMessage): Promise<void> {
+    const frame = await encodeCtlFrame(sendKey, sendDirection, sendCounter++, encodeUtf8(JSON.stringify(msg)))
+    channels.ctl.send(new Uint8Array(frame))
   }
-  return undefined
-}
 
-function onCtlMessage(channels: DataChannels, handler: (msg: CtlMessage) => void): () => void {
-  const listener = (ev: MessageEvent) => {
-    const msg = parseCtl(ev.data)
-    if (msg) handler(msg)
+  function onMessage(handler: (msg: CtlMessage) => void): () => void {
+    const listener = (ev: MessageEvent) => {
+      void (async () => {
+        try {
+          const raw = new Uint8Array(ev.data as ArrayBuffer)
+          const { counter, plaintext } = await decodeCtlFrame(recvKey, recvDirection, raw)
+          if (seen.has(counter)) return // replayed by the relay
+          seen.add(counter)
+          const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext))
+          if (parsed && typeof parsed === 'object' && 'type' in parsed) handler(parsed as CtlMessage)
+        } catch {
+          // Undecryptable, malformed or forged — there is no legitimate
+          // sender for such a frame, so drop it.
+        }
+      })()
+    }
+    channels.ctl.addEventListener('message', listener)
+    return () => channels.ctl.removeEventListener('message', listener)
   }
-  channels.ctl.addEventListener('message', listener)
-  return () => channels.ctl.removeEventListener('message', listener)
-}
 
-function waitForCtl<T extends CtlMessage>(
-  channels: DataChannels,
-  predicate: (msg: CtlMessage) => msg is T,
-  timeoutMs = 20_000,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      unsubscribe()
-      reject(new Error('timed out waiting for a control message'))
-    }, timeoutMs)
-    const unsubscribe = onCtlMessage(channels, (msg) => {
-      if (predicate(msg)) {
-        clearTimeout(timer)
+  function waitFor<T extends CtlMessage>(
+    predicate: (msg: CtlMessage) => msg is T,
+    timeoutMs = 20_000,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
         unsubscribe()
-        resolve(msg)
-      }
+        reject(new Error('timed out waiting for a control message'))
+      }, timeoutMs)
+      const unsubscribe = onMessage((msg) => {
+        if (predicate(msg)) {
+          clearTimeout(timer)
+          unsubscribe()
+          resolve(msg)
+        }
+      })
     })
-  })
+  }
+
+  return { send, onMessage, waitFor }
 }
 
-async function exchangeCaps(channels: DataChannels): Promise<CapsMessage> {
-  sendCtl(channels, OUR_CAPS)
-  return waitForCtl(channels, (m): m is CapsMessage => m.type === 'CAPS', 10_000)
+async function exchangeCaps(ctl: CtlCodec): Promise<CapsMessage> {
+  await ctl.send(OUR_CAPS)
+  return ctl.waitFor((m): m is CapsMessage => m.type === 'CAPS', 10_000)
 }
 
 export interface SenderEvent {
@@ -123,7 +154,8 @@ export async function runFileSender(
   getFile: () => OfferedFile | null,
   onEvent: (e: SenderEvent) => void,
 ): Promise<() => void> {
-  const peerCaps = await exchangeCaps(channels)
+  const ctl = createCtlCodec(channels, keys, 'depot')
+  const peerCaps = await exchangeCaps(ctl)
   const maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize)
   const chunkSizer = new AdaptiveChunkSize()
 
@@ -136,7 +168,7 @@ export async function runFileSender(
     })
   }, 2000)
 
-  const unsubscribe = onCtlMessage(channels, (msg) => {
+  const unsubscribe = ctl.onMessage((msg) => {
     void handleCtl(msg)
   })
 
@@ -144,14 +176,14 @@ export async function runFileSender(
     if (msg.type === 'REQUEST_FILE') {
       const file = getFile()
       if (!file) {
-        sendCtl(channels, { type: 'ERROR', message: 'no file offered' })
+        await ctl.send({ type: 'ERROR', message: 'no file offered' })
         return
       }
       const transferId = nextTransferId++
       const avg = Math.min(chunkSizer.current(), maxChunkSize)
       const manifest = await buildManifest(transferId, file.name, file.bytes, cdcParamsForAvg(avg))
       transfers.set(transferId, { manifest, bytes: file.bytes })
-      sendCtl(channels, { type: 'MANIFEST', manifest })
+      await ctl.send({ type: 'MANIFEST', manifest })
       onEvent({ type: 'manifest-sent', transferId, total: manifest.chunkCount })
       return
     }
@@ -215,11 +247,11 @@ export async function requestFile(
   keys: SessionKeys,
   onEvent: (e: ReceiverEvent) => void,
 ): Promise<OfferedFile> {
-  await exchangeCaps(channels)
+  const ctl = createCtlCodec(channels, keys, 'client')
+  await exchangeCaps(ctl)
 
-  sendCtl(channels, { type: 'REQUEST_FILE' })
-  const reply = await waitForCtl(
-    channels,
+  await ctl.send({ type: 'REQUEST_FILE' })
+  const reply = await ctl.waitFor(
     (m): m is ManifestMessage | ErrorMessage => m.type === 'MANIFEST' || m.type === 'ERROR',
     20_000,
   )
@@ -228,7 +260,7 @@ export async function requestFile(
   onEvent({ type: 'manifest', total: manifest.chunkCount })
 
   const needed = manifest.chunks.map((c) => c.index)
-  sendCtl(channels, { type: 'NEED', transferId: manifest.transferId, indices: needed })
+  await ctl.send({ type: 'NEED', transferId: manifest.transferId, indices: needed })
 
   const received = new Map<number, Uint8Array>()
   let bytesReceived = 0
