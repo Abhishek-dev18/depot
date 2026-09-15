@@ -9,7 +9,7 @@ import { getDevice, touchDevice } from '../storage/devices'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { SignalClient } from '../signal/client'
 import { TypePeerLeft } from '../signal/envelope'
-import { negotiateAsAnswerer } from '../transport/webrtc'
+import { negotiateAsAnswerer, type TurnConfig } from '../transport/webrtc'
 import { runFileSender, type OfferedFile, type SenderEvent } from '../transport/transferSession'
 
 export interface DepotReconnectCallbacks {
@@ -42,6 +42,7 @@ export interface DepotReconnectListener {
 export async function runDepotReconnectListener(
   signalUrl: string,
   getFile: () => OfferedFile | null,
+  turn: TurnConfig | undefined,
   cb: DepotReconnectCallbacks,
 ): Promise<DepotReconnectListener> {
   const depotIdentity = await loadOrCreateIdentity('identity:depot')
@@ -62,7 +63,7 @@ export async function runDepotReconnectListener(
 
   const unsubscribe = client.onMessage((e) => {
     if (e.type === 'incoming' && e.clientId) {
-      void handleIncoming(client, depotIdentity, e.clientId, e.payload, getFile, activeConnections, cb)
+      void handleIncoming(client, depotIdentity, e.clientId, e.payload, getFile, turn, activeConnections, cb)
     }
   })
 
@@ -88,6 +89,7 @@ async function handleIncoming(
   clientId: string,
   payload: unknown,
   getFile: () => OfferedFile | null,
+  turn: TurnConfig | undefined,
   activeConnections: Map<string, () => void>,
   cb: DepotReconnectCallbacks,
 ): Promise<void> {
@@ -132,7 +134,7 @@ async function handleIncoming(
     const shared = await ecdh(depotEphemeral.privateKey, clientEkBytes)
     const keys = await deriveKeys(shared, transcript)
 
-    const channels = await negotiateAsAnswerer(client, clientId)
+    const channels = await negotiateAsAnswerer(client, clientId, turn)
     activeConnections.set(clientId, channels.close)
     cb.onClientConnected({ clientId })
 

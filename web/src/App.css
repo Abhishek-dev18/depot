@@ -107,6 +107,15 @@ h1 {
   border: none;
 }
 
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section-label {
+  margin-top: 16px;
+}
+
 .signal-url {
   display: flex;
   flex-direction: column;

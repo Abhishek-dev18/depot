@@ -6,7 +6,7 @@ import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
 import { TypeError as SignalError } from '../signal/envelope'
-import { negotiateAsOfferer } from '../transport/webrtc'
+import { negotiateAsOfferer, type TurnConfig } from '../transport/webrtc'
 import { requestFile, type ReceiverEvent } from '../transport/transferSession'
 
 export interface ClientReconnectCallbacks {
@@ -29,7 +29,12 @@ interface ChallengePayload {
  * offering (§5.7) — the transfer succeeding end to end is the proof that
  * everything from key derivation through frame decryption actually works.
  */
-export async function runClientReconnect(signalUrl: string, depotId: string, cb: ClientReconnectCallbacks): Promise<void> {
+export async function runClientReconnect(
+  signalUrl: string,
+  depotId: string,
+  turn: TurnConfig | undefined,
+  cb: ClientReconnectCallbacks,
+): Promise<void> {
   let client: SignalClient | undefined
   try {
     const pairing = await getPairing(depotId)
@@ -70,7 +75,7 @@ export async function runClientReconnect(signalUrl: string, depotId: string, cb:
     const keys = await deriveKeys(shared, transcript)
 
     cb.onStatus('negotiating data channel')
-    const channels = await negotiateAsOfferer(client)
+    const channels = await negotiateAsOfferer(client, turn)
 
     cb.onStatus('connected')
     cb.onConnected({ depotId })
