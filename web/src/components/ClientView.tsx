@@ -4,13 +4,14 @@ import { runClientPairing } from '../pairing/clientPairing'
 import { runClientReconnect } from '../pairing/clientReconnect'
 import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
-import type { TurnConfig } from '../transport/webrtc'
-import { Badge } from './Badge'
+import type { ConnectionType, TurnConfig } from '../transport/webrtc'
 import { Card } from './Card'
+import { ConnectionBadge } from './ConnectionBadge'
 import { CopyButton } from './CopyButton'
 import { ShieldIcon, LinkIcon } from './icons'
 import { Log } from './Log'
 import { ProgressBar } from './ProgressBar'
+import { SasDisplay } from './SasDisplay'
 
 interface ReceivedFile {
   name: string
@@ -25,7 +26,13 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
   const [sas, setSas] = useState<string | null>(null)
   const [pairings, setPairings] = useState<Pairing[]>([])
   const [reconnecting, setReconnecting] = useState<string | null>(null)
-  const [progress, setProgress] = useState<{ index: number; total: number } | null>(null)
+  const [connectionType, setConnectionType] = useState<ConnectionType | null>(null)
+  const [progress, setProgress] = useState<{
+    index: number
+    total: number
+    bytesReceived?: number
+    bytesTotal?: number
+  } | null>(null)
   const [received, setReceived] = useState<ReceivedFile | null>(null)
   const receivedUrlRef = useRef<string | null>(null)
 
@@ -62,6 +69,7 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
   const reconnect = async (depotId: string) => {
     clear()
     setProgress(null)
+    setConnectionType(null)
     if (receivedUrlRef.current) {
       URL.revokeObjectURL(receivedUrlRef.current)
       receivedUrlRef.current = null
@@ -70,8 +78,12 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
     setReconnecting(depotId)
     await runClientReconnect(signalUrl, depotId, turnConfig, {
       onStatus: push,
-      onConnected: () => push('reconnected'),
-      onProgress: ({ index, total }) => setProgress({ index: index + 1, total }),
+      onConnected: ({ connectionType: t }) => {
+        push(`connected (${t})`)
+        setConnectionType(t)
+      },
+      onProgress: ({ index, total, bytesReceived, bytesTotal }) =>
+        setProgress({ index: index + 1, total, bytesReceived, bytesTotal }),
       onFileReceived: (file) => {
         const url = URL.createObjectURL(new Blob([file.bytes.slice()]))
         receivedUrlRef.current = url
@@ -106,8 +118,9 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
 
         {sas && (
           <div className="sas">
-            <p>Compare this code with the Depot. It must match exactly.</p>
-            <div className="sas-code">{sas}</div>
+            <p className="sas-question">Does the Depot show this number?</p>
+            <SasDisplay code={sas} />
+            <p className="sas-warn">If the numbers differ, someone may be intercepting the connection.</p>
           </div>
         )}
       </Card>
@@ -119,13 +132,17 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
           <ul className="entity-list">
             {pairings.map((p) => (
               <li key={p.depotId}>
+                <div className="entity-icon">▣</div>
                 <div className="entity-main">
                   <code title={p.depotId}>{p.depotId.slice(0, 16)}…</code>
-                  <Badge tone="neutral">{p.depotLabel}</Badge>
+                  <div className="entity-meta">{p.depotLabel}</div>
                 </div>
-                <button onClick={() => void reconnect(p.depotId)} disabled={reconnecting === p.depotId}>
-                  {reconnecting === p.depotId ? 'Reconnecting…' : 'Reconnect'}
-                </button>
+                <div className="entity-actions">
+                  {reconnecting === p.depotId && connectionType && <ConnectionBadge type={connectionType} />}
+                  <button onClick={() => void reconnect(p.depotId)} disabled={reconnecting === p.depotId}>
+                    {reconnecting === p.depotId ? 'Reconnecting…' : 'Reconnect'}
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -133,7 +150,12 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
 
         {progress && !received && (
           <div className="transfer-status">
-            <ProgressBar value={progress.index} total={progress.total} />
+            <ProgressBar
+              value={progress.index}
+              total={progress.total}
+              bytesDone={progress.bytesReceived}
+              bytesTotal={progress.bytesTotal}
+            />
           </div>
         )}
 

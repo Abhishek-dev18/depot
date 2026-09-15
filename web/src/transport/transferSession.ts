@@ -102,6 +102,8 @@ export interface SenderEvent {
   transferId?: number
   index?: number
   total?: number
+  bytesSent?: number
+  bytesTotal?: number
   message?: string
 }
 
@@ -157,6 +159,7 @@ export async function runFileSender(
     if (msg.type === 'NEED') {
       const entry = transfers.get(msg.transferId)
       if (!entry) return
+      let bytesSent = 0
       for (const index of msg.indices) {
         const info = entry.manifest.chunks[index]
         if (!info) continue
@@ -179,7 +182,15 @@ export async function runFileSender(
           compressed,
         })
         channels.data.send(new Uint8Array(frame)) // fresh ArrayBuffer-backed copy — RTCDataChannel.send()'s stricter typed-array generic wants it
-        onEvent({ type: 'chunk-sent', transferId: msg.transferId, index, total: entry.manifest.chunkCount })
+        bytesSent += info.length
+        onEvent({
+          type: 'chunk-sent',
+          transferId: msg.transferId,
+          index,
+          total: entry.manifest.chunkCount,
+          bytesSent,
+          bytesTotal: entry.manifest.size,
+        })
       }
     }
   }
@@ -194,6 +205,8 @@ export interface ReceiverEvent {
   type: 'manifest' | 'chunk-received' | 'chunk-invalid'
   index?: number
   total?: number
+  bytesReceived?: number
+  bytesTotal?: number
 }
 
 /** Client side of §5.7: requests the offered file and reassembles it, verifying every chunk and the whole file. */
@@ -218,6 +231,7 @@ export async function requestFile(
   sendCtl(channels, { type: 'NEED', transferId: manifest.transferId, indices: needed })
 
   const received = new Map<number, Uint8Array>()
+  let bytesReceived = 0
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -248,7 +262,14 @@ export async function requestFile(
           }
 
           received.set(decoded.chunkIndex, plaintext)
-          onEvent({ type: 'chunk-received', index: decoded.chunkIndex, total: manifest.chunkCount })
+          bytesReceived += info.length
+          onEvent({
+            type: 'chunk-received',
+            index: decoded.chunkIndex,
+            total: manifest.chunkCount,
+            bytesReceived,
+            bytesTotal: manifest.size,
+          })
           if (received.size === manifest.chunkCount) finish()
         } catch (err) {
           clearTimeout(timer)

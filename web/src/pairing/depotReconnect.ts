@@ -9,14 +9,20 @@ import { getDevice, touchDevice } from '../storage/devices'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { SignalClient } from '../signal/client'
 import { TypePeerLeft } from '../signal/envelope'
-import { negotiateAsAnswerer, type TurnConfig } from '../transport/webrtc'
+import { negotiateAsAnswerer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
 import { runFileSender, type OfferedFile, type SenderEvent } from '../transport/transferSession'
 
 export interface DepotReconnectCallbacks {
   onStatus: (status: string) => void
   onRegistered: (depotId: string) => void
-  onClientConnected: (info: { clientId: string }) => void
-  onClientProgress: (info: { clientId: string; index: number; total: number }) => void
+  onClientConnected: (info: { clientId: string; connectionType: ConnectionType }) => void
+  onClientProgress: (info: {
+    clientId: string
+    index: number
+    total: number
+    bytesSent?: number
+    bytesTotal?: number
+  }) => void
   onClientRejected: (info: { clientId: string; reason: string }) => void
   onError: (message: string) => void
 }
@@ -136,11 +142,17 @@ async function handleIncoming(
 
     const channels = await negotiateAsAnswerer(client, clientId, turn)
     activeConnections.set(clientId, channels.close)
-    cb.onClientConnected({ clientId })
+    cb.onClientConnected({ clientId, connectionType: channels.connectionType })
 
     const onSenderEvent = (e: SenderEvent) => {
       if (e.type === 'chunk-sent' && e.index !== undefined && e.total !== undefined) {
-        cb.onClientProgress({ clientId, index: e.index, total: e.total })
+        cb.onClientProgress({
+          clientId,
+          index: e.index,
+          total: e.total,
+          bytesSent: e.bytesSent,
+          bytesTotal: e.bytesTotal,
+        })
       }
     }
     const stopSending = await runFileSender(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, getFile, onSenderEvent)
