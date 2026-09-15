@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,6 +84,18 @@ func handleConn(hub *Hub, ws *websocket.Conn, ip string, logger *log.Logger) {
 	// how much a hostile peer can make Signal buffer.
 	ws.SetReadLimit(64 * 1024)
 
+	// A Depot is a phone: it can lose the network without the TCP
+	// connection ever closing. Without this, that half-open connection
+	// stays registered forever and every reconnecting client is routed
+	// into a void. Pings force the dead peer to be noticed within
+	// pongWait, so Remove() can drop its presence.
+	_ = ws.SetReadDeadline(time.Now().Add(pongWait))
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(pongWait))
+	})
+	stopPing := startPinger(c)
+	defer stopPing()
+
 	for {
 		_, raw, err := ws.ReadMessage()
 		if err != nil {
@@ -95,6 +108,36 @@ func handleConn(hub *Hub, ws *websocket.Conn, ip string, logger *log.Logger) {
 		}
 		hub.Dispatch(c, e)
 	}
+}
+
+// pongWait is how long a connection may be silent before it is considered
+// dead; pingPeriod must be meaningfully shorter so a live peer always gets
+// a chance to answer.
+const (
+	pongWait   = 60 * time.Second
+	pingPeriod = 25 * time.Second
+)
+
+// startPinger pings c until the returned stop function is called. The read
+// loop's deadline is what actually drops a dead peer — this just guarantees
+// there is always traffic for that deadline to measure.
+func startPinger(c *conn) func() {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(pingPeriod)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if err := c.ping(time.Now().Add(10 * time.Second)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func sweepLoop(hub *Hub, interval time.Duration) {
@@ -113,7 +156,11 @@ func sweepLoop(hub *Hub, interval time.Duration) {
 func clientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			return fwd
+			// Take the last entry, the one the trusted proxy appended.
+			// Using the whole header would let a client prepend arbitrary
+			// values and get a distinct rate-limit key on every request.
+			parts := strings.Split(fwd, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

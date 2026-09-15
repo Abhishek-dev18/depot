@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { randomBytes } from '../crypto/keys'
 import { chunkLengths, DEFAULT_CDC_PARAMS } from './chunker'
 import { compress, decompress, estimateEntropy, shouldCompress } from './compression'
-import { Direction, decodeChunkFrame, encodeChunkFrame } from './frame'
+import {
+  Direction,
+  decodeChunkFrame,
+  decodeCtlFrame,
+  deriveChunkNonce,
+  deriveCtlNonce,
+  encodeChunkFrame,
+  encodeCtlFrame,
+} from './frame'
 import { buildManifest, hashBytes } from './manifest'
 
 function randomBytesSync(n: number, seed = 1): Uint8Array {
@@ -128,6 +136,67 @@ describe('binary frame + derived nonce (protocol.md §5.3)', () => {
     const corrupted = new Uint8Array(frame)
     corrupted[corrupted.length - 1] ^= 0xff
     await expect(decodeChunkFrame(key, Direction.ClientToDepot, corrupted)).rejects.toBeTruthy()
+  })
+})
+
+describe('encrypted control frame (protocol.md §5.3)', () => {
+  it('round-trips a control message, preserving non-ASCII file names', async () => {
+    const key = await randomBytes(32)
+    const msg = JSON.stringify({ type: 'MANIFEST', manifest: { name: 'café ☕ 照片.pdf' } })
+    const plaintext = new Uint8Array(new TextEncoder().encode(msg))
+
+    const frame = await encodeCtlFrame(key, Direction.DepotToClient, 3, plaintext)
+    const decoded = await decodeCtlFrame(key, Direction.DepotToClient, frame)
+
+    expect(decoded.counter).toBe(3)
+    expect(new TextDecoder().decode(decoded.plaintext)).toBe(msg)
+  })
+
+  it('does not leak the plaintext into the frame bytes', async () => {
+    const key = await randomBytes(32)
+    const plaintext = new Uint8Array(new TextEncoder().encode('{"name":"secret-budget.xlsx"}'))
+    const frame = await encodeCtlFrame(key, Direction.ClientToDepot, 0, plaintext)
+    expect(new TextDecoder().decode(frame)).not.toContain('secret-budget')
+  })
+
+  it('rejects a frame re-encrypted under a different counter, direction or key', async () => {
+    const key = await randomBytes(32)
+    const other = await randomBytes(32)
+    const plaintext = new Uint8Array([1, 2, 3])
+    const frame = await encodeCtlFrame(key, Direction.ClientToDepot, 5, plaintext)
+
+    await expect(decodeCtlFrame(key, Direction.DepotToClient, frame)).rejects.toBeTruthy()
+    await expect(decodeCtlFrame(other, Direction.ClientToDepot, frame)).rejects.toBeTruthy()
+
+    // Rewriting the counter in the header changes the derived nonce, so the
+    // relay cannot renumber a captured frame to slip past replay tracking.
+    const renumbered = new Uint8Array(frame)
+    renumbered[8] = 0x63
+    await expect(decodeCtlFrame(key, Direction.ClientToDepot, renumbered)).rejects.toBeTruthy()
+  })
+
+  it('rejects a tampered ciphertext', async () => {
+    const key = await randomBytes(32)
+    const frame = await encodeCtlFrame(key, Direction.ClientToDepot, 1, new Uint8Array([9, 9, 9]))
+    const corrupted = new Uint8Array(frame)
+    corrupted[corrupted.length - 1] ^= 0xff
+    await expect(decodeCtlFrame(key, Direction.ClientToDepot, corrupted)).rejects.toBeTruthy()
+  })
+
+  it('never collides with a chunk nonce, even on the same key and direction', async () => {
+    // Both nonce spaces share the directional key, so disjointness is what
+    // stops a ctl frame and a chunk frame ever reusing one nonce.
+    const seen = new Set<string>()
+    for (const direction of [Direction.ClientToDepot, Direction.DepotToClient] as const) {
+      for (let i = 0; i < 64; i++) {
+        seen.add((await deriveCtlNonce(direction, i)).join(','))
+        seen.add((await deriveChunkNonce(direction, 0, i)).join(','))
+        seen.add((await deriveChunkNonce(direction, i, 0)).join(','))
+      }
+    }
+    // 2 directions x (64 ctl + 64 chunk-by-index + 64 chunk-by-transfer),
+    // minus the two (transferId 0, chunkIndex 0) duplicates per direction.
+    expect(seen.size).toBe(2 * (64 + 64 + 64 - 1))
   })
 })
 

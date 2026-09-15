@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -32,6 +33,12 @@ func (c *conn) sendError(reason string) {
 	if err := c.send(Envelope{Type: TypeError, Reason: reason}); err != nil {
 		c.log.Printf("send error to %s failed: %v", c.ip, err)
 	}
+}
+
+func (c *conn) ping(deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ws.WriteControl(websocket.PingMessage, nil, deadline)
 }
 
 func (c *conn) close() {

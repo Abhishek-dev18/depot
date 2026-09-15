@@ -321,17 +321,30 @@ Two SCTP DataChannels:
 
 | Channel | Config | Carries |
 |---|---|---|
-| `ctl` | ordered, reliable | JSON control messages |
-| `data` | **unordered**, reliable | Binary chunk frames |
+| `ctl` | ordered, reliable | Encrypted control frames (JSON plaintext) |
+| `data` | **unordered**, reliable | Encrypted chunk frames |
 
 `data` is unordered deliberately: ordering causes head-of-line blocking, so on a
 lossy link one delayed packet stalls every chunk behind it. Chunks are
 independently addressed and reassembled by index, so ordering buys nothing.
 
+**Both channels are encrypted with the session keys.** DTLS alone is not
+sufficient: the SDP that carries the DTLS fingerprints is relayed through
+Signal, which is untrusted (§1.2), so a hostile relay can substitute
+fingerprints and terminate DTLS itself. Anything protected only by DTLS is
+therefore readable and forgeable by Signal. Since §1.2 promises Signal cannot
+read *file names*, and the `MANIFEST` carries the file name, size and every
+chunk hash, `ctl` must be encrypted end to end like `data` is.
+
 ### 5.3 Frame format
 
 Binary. **Never base64** — base64 inflates every payload by 33%, which on a file
 transfer protocol is unacceptable.
+
+A leading `type` byte distinguishes the two frame kinds: `1` = chunk (on
+`data`), `2` = control (on `ctl`).
+
+**Chunk frame** (`type = 1`):
 
 ```
 ┌────────┬─────────┬─────────┬────────┬──────────────────┐
@@ -340,17 +353,35 @@ transfer protocol is unacceptable.
 └────────┴─────────┴─────────┴────────┴──────────────────┘
 ```
 
-`flags` bit 0: payload is zstd-compressed.
+`flags` bit 0: payload is compressed.
+
+**Control frame** (`type = 2`) — the plaintext is the JSON of one §5.8 `ctl`
+message, UTF-8 encoded:
+
+```
+┌────────┬──────────┬──────────────────┐
+│ type   │ counter  │ ciphertext       │
+│ 1 byte │ 8 bytes  │ variable         │
+└────────┴──────────┴──────────────────┘
+```
+
+`counter` starts at 0 and increments per message **per direction**. A receiver
+rejects any counter it has already accepted, so Signal cannot replay a captured
+control frame. Renumbering a captured frame does not help either: the counter
+feeds the nonce, so a rewritten header simply fails to decrypt.
 
 **Nonce construction — no nonce is transmitted.** Both sides derive it:
 
 ```
-nonce = direction(1B) ‖ transferId(4B) ‖ chunkIndex(4B) ‖ zeros(15B)
+chunk: nonce = direction(1B)        ‖ transferId(4B) ‖ chunkIndex(4B) ‖ zeros(15B)
+ctl:   nonce = 0x80|direction(1B)   ‖ counter(8B)                     ‖ zeros(15B)
 ```
 
-Saves 24 bytes per chunk and eliminates an entire class of nonce-reuse bug.
+Saves 24 bytes per frame and eliminates an entire class of nonce-reuse bug.
 Uniqueness holds because `transferId` is never reused within a session and
-`chunkIndex` is unique within a transfer.
+`chunkIndex` is unique within a transfer. The two nonce spaces are **disjoint by
+construction** — a chunk nonce's leading byte is 0 or 1, a control nonce's is
+`0x80` or `0x81` — so the two frame kinds can safely share one directional key.
 
 ### 5.4 Capability negotiation
 
@@ -433,9 +464,11 @@ each chunk's `offset`/`length`/`hash` since chunks are content-defined and
 therefore variable-length), `NEED` (Client → Depot), and `ERROR` (either
 direction).
 
-**Frame `type` byte (§5.3).** Only one value is defined today: `1` = CHUNK.
-Reserved so a future frame kind can be added without changing the header
-layout.
+Each of these is carried inside an encrypted control frame (§5.3), one
+message per frame — Signal sees only ciphertext and a monotonic counter.
+
+**Frame `type` byte (§5.3).** `1` = CHUNK, `2` = CTL. Further kinds can be
+added without changing either header layout.
 
 **§5.5 tiers.** Implemented as three discrete steps — 64 KB / 256 KB / 1 MB,
 matching the table — with EWMA smoothing (α = 0.3), a 5s cooldown, and
@@ -563,4 +596,5 @@ whoever builds the Android app against this spec.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |
 | 0.1 | 2026-09-15 | Initial draft |
