@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLog } from '../hooks/useLog'
 import { runClientPairing } from '../pairing/clientPairing'
 import { runClientReconnect } from '../pairing/clientReconnect'
 import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
 import { Log } from './Log'
+
+interface ReceivedFile {
+  name: string
+  size: number
+  url: string
+}
 
 export function ClientView({ signalUrl }: { signalUrl: string }) {
   const { lines, push, clear } = useLog()
@@ -13,6 +19,9 @@ export function ClientView({ signalUrl }: { signalUrl: string }) {
   const [sas, setSas] = useState<string | null>(null)
   const [pairings, setPairings] = useState<Pairing[]>([])
   const [reconnecting, setReconnecting] = useState<string | null>(null)
+  const [progress, setProgress] = useState<{ index: number; total: number } | null>(null)
+  const [received, setReceived] = useState<ReceivedFile | null>(null)
+  const receivedUrlRef = useRef<string | null>(null)
 
   const refreshPairings = useCallback(() => {
     void listPairings().then(setPairings)
@@ -21,6 +30,13 @@ export function ClientView({ signalUrl }: { signalUrl: string }) {
   useEffect(() => {
     refreshPairings()
   }, [refreshPairings])
+
+  useEffect(
+    () => () => {
+      if (receivedUrlRef.current) URL.revokeObjectURL(receivedUrlRef.current)
+    },
+    [],
+  )
 
   const startPairing = async () => {
     clear()
@@ -39,11 +55,22 @@ export function ClientView({ signalUrl }: { signalUrl: string }) {
 
   const reconnect = async (depotId: string) => {
     clear()
+    setProgress(null)
+    if (receivedUrlRef.current) {
+      URL.revokeObjectURL(receivedUrlRef.current)
+      receivedUrlRef.current = null
+    }
+    setReceived(null)
     setReconnecting(depotId)
     await runClientReconnect(signalUrl, depotId, {
       onStatus: push,
-      onConnected: ({ pingRoundtripOk }) =>
-        push(`reconnected — session key check ${pingRoundtripOk ? 'passed' : 'skipped'}`),
+      onConnected: () => push('reconnected'),
+      onProgress: ({ index, total }) => setProgress({ index: index + 1, total }),
+      onFileReceived: (file) => {
+        const url = URL.createObjectURL(new Blob([file.bytes.slice()]))
+        receivedUrlRef.current = url
+        setReceived({ name: file.name, size: file.bytes.length, url })
+      },
       onError: (msg) => push(`error: ${msg}`),
     })
     setReconnecting(null)
@@ -89,6 +116,24 @@ export function ClientView({ signalUrl }: { signalUrl: string }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {progress && !received && (
+        <p className="hint">
+          Receiving chunk {progress.index} / {progress.total}
+        </p>
+      )}
+
+      {received && (
+        <div className="sas">
+          <p>
+            Received <strong>{received.name}</strong> ({received.size.toLocaleString()} bytes), verified against the
+            manifest and whole-file hash.
+          </p>
+          <a href={received.url} download={received.name}>
+            Download
+          </a>
+        </div>
       )}
 
       <Log lines={lines} />

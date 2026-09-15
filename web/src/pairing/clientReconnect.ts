@@ -1,4 +1,3 @@
-import { aeadDecrypt, aeadEncrypt } from '../crypto/aead'
 import { fromBase64, toBase64 } from '../crypto/codec'
 import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair } from '../crypto/keys'
@@ -7,10 +6,14 @@ import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
 import { TypeError as SignalError } from '../signal/envelope'
+import { negotiateAsOfferer } from '../transport/webrtc'
+import { requestFile, type ReceiverEvent } from '../transport/transferSession'
 
 export interface ClientReconnectCallbacks {
   onStatus: (status: string) => void
-  onConnected: (info: { depotId: string; pingRoundtripOk: boolean }) => void
+  onConnected: (info: { depotId: string }) => void
+  onProgress: (info: { index: number; total: number }) => void
+  onFileReceived: (file: { name: string; bytes: Uint8Array }) => void
   onError: (message: string) => void
 }
 
@@ -19,7 +22,13 @@ interface ChallengePayload {
   challengeNonce: string
 }
 
-/** Client side of protocol.md §4. Proves possession of ClientIdentity's private key without repeating §3's QR flow. */
+/**
+ * Client side of protocol.md §4 and §5. Proves possession of
+ * ClientIdentity's private key (§4), then negotiates a WebRTC data channel
+ * over the same signal relay and requests whatever file the Depot is
+ * offering (§5.7) — the transfer succeeding end to end is the proof that
+ * everything from key derivation through frame decryption actually works.
+ */
 export async function runClientReconnect(signalUrl: string, depotId: string, cb: ClientReconnectCallbacks): Promise<void> {
   let client: SignalClient | undefined
   try {
@@ -57,26 +66,28 @@ export async function runClientReconnect(signalUrl: string, depotId: string, cb:
     const ok = await client.waitFor((e) => e.type === 'SESSION_OK' || e.type === SignalError, 15_000)
     if (ok.type === SignalError) throw new Error(`reconnection rejected: ${ok.reason}`)
 
-    // Not a security check — SESSION_OK already means the Depot verified the
-    // signature. This only proves both sides derived the same session keys.
     const shared = await ecdh(ephemeral.privateKey, depotEkBytes)
     const keys = await deriveKeys(shared, transcript)
-    let pingRoundtripOk = false
-    try {
-      const ping = await client.waitFor((e) => e.type === 'PING' || e.type === SignalError, 10_000)
-      if (ping.type === 'PING') {
-        const { nonce, ciphertext } = ping.payload as { nonce: string; ciphertext: string }
-        const opened = await aeadDecrypt(keys.kD2C, fromBase64(nonce), fromBase64(ciphertext))
-        const { nonce: pongNonce, ciphertext: pongCiphertext } = await aeadEncrypt(keys.kC2D, opened)
-        client.relay('PONG', { nonce: toBase64(pongNonce), ciphertext: toBase64(pongCiphertext) })
-        pingRoundtripOk = true
-      }
-    } catch {
-      // Ping/pong is a demo confirmation only; its absence doesn't fail reconnection.
-    }
+
+    cb.onStatus('negotiating data channel')
+    const channels = await negotiateAsOfferer(client)
 
     cb.onStatus('connected')
-    cb.onConnected({ depotId, pingRoundtripOk })
+    cb.onConnected({ depotId })
+
+    cb.onStatus('requesting file')
+    const onReceiverEvent = (e: ReceiverEvent) => {
+      if (e.type === 'manifest') cb.onStatus(`receiving ${e.total} chunk(s)`)
+      if (e.type === 'chunk-received' && e.index !== undefined && e.total !== undefined) {
+        cb.onProgress({ index: e.index, total: e.total })
+      }
+      if (e.type === 'chunk-invalid') cb.onStatus(`chunk ${e.index} failed verification, dropped`)
+    }
+    const file = await requestFile(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, onReceiverEvent)
+
+    cb.onStatus('file verified')
+    cb.onFileReceived(file)
+    channels.close()
   } catch (err) {
     cb.onError(err instanceof Error ? err.message : String(err))
   } finally {

@@ -3,6 +3,7 @@ import { useLog } from '../hooks/useLog'
 import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
+import type { OfferedFile } from '../transport/transferSession'
 import { Log } from './Log'
 
 export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
@@ -13,6 +14,9 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
   const [devices, setDevices] = useState<DeviceRecord[]>([])
   const [listener, setListener] = useState<DepotReconnectListener | null>(null)
   const listenerRef = useRef<DepotReconnectListener | null>(null)
+  const [offeredFile, setOfferedFile] = useState<{ name: string; size: number } | null>(null)
+  const offeredFileRef = useRef<OfferedFile | null>(null)
+  const [progressByClient, setProgressByClient] = useState<Record<string, { index: number; total: number }>>({})
 
   const refreshDevices = useCallback(() => {
     void listDevices().then(setDevices)
@@ -46,18 +50,34 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
     setBusy(false)
   }
 
+  const chooseFile = async (fileList: FileList | null) => {
+    const file = fileList?.[0]
+    if (!file) return
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    offeredFileRef.current = { name: file.name, bytes }
+    setOfferedFile({ name: file.name, size: bytes.length })
+    push(`offering ${file.name} (${bytes.length.toLocaleString()} bytes)`)
+  }
+
   const startListening = async () => {
     if (listenerRef.current) return
-    const l = await runDepotReconnectListener(signalUrl, {
-      onStatus: push,
-      onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
-      onClientConnected: ({ clientId, pingRoundtripOk }) => {
-        push(`client ${clientId.slice(0, 16)}… reconnected — session key check ${pingRoundtripOk ? 'passed' : 'skipped'}`)
-        refreshDevices()
+    const l = await runDepotReconnectListener(
+      signalUrl,
+      () => offeredFileRef.current,
+      {
+        onStatus: push,
+        onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
+        onClientConnected: ({ clientId }) => {
+          push(`client ${clientId.slice(0, 16)}… connected, data channel open`)
+          refreshDevices()
+        },
+        onClientProgress: ({ clientId, index, total }) => {
+          setProgressByClient((prev) => ({ ...prev, [clientId]: { index: index + 1, total } }))
+        },
+        onClientRejected: ({ clientId, reason }) => push(`rejected ${clientId.slice(0, 16)}…: ${reason}`),
+        onError: (msg) => push(`error: ${msg}`),
       },
-      onClientRejected: ({ clientId, reason }) => push(`rejected ${clientId.slice(0, 16)}…: ${reason}`),
-      onError: (msg) => push(`error: ${msg}`),
-    })
+    )
     listenerRef.current = l
     setListener(l)
   }
@@ -80,8 +100,8 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
     <div className="panel">
       <h2>Depot simulator</h2>
       <p className="hint">
-        Stands in for the Android app so pairing and reconnection can be tested end to end without it. Paste the
-        Client's QR JSON below — a browser tab has no camera.
+        Stands in for the Android app so pairing, reconnection and file transfer can be tested end to end without
+        it. Paste the Client's QR JSON below — a browser tab has no camera.
       </p>
 
       <textarea
@@ -109,6 +129,15 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
         </div>
       )}
 
+      <h3>File to offer</h3>
+      <p className="hint">Whatever is selected here is what a reconnecting Client receives when it requests a file.</p>
+      <input type="file" onChange={(e) => void chooseFile(e.target.files)} />
+      {offeredFile && (
+        <p className="hint">
+          Offering <strong>{offeredFile.name}</strong> ({offeredFile.size.toLocaleString()} bytes)
+        </p>
+      )}
+
       <h3>Reconnection listener</h3>
       {listener ? (
         <>
@@ -129,11 +158,12 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
           {devices.map((d) => (
             <li key={d.clientIdentityPub}>
               <code title={d.clientIdentityPub}>{d.clientIdentityPub.slice(0, 16)}…</code>
-              {d.revoked ? (
-                <em>revoked</em>
-              ) : (
-                <button onClick={() => void revoke(d.clientIdentityPub)}>Revoke</button>
+              {progressByClient[d.clientIdentityPub] && (
+                <span className="hint">
+                  {progressByClient[d.clientIdentityPub].index} / {progressByClient[d.clientIdentityPub].total}
+                </span>
               )}
+              {d.revoked ? <em>revoked</em> : <button onClick={() => void revoke(d.clientIdentityPub)}>Revoke</button>}
             </li>
           ))}
         </ul>
