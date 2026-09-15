@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,9 @@ func testServer(t *testing.T, hub *Hub) (*httptest.Server, string) {
 	t.Helper()
 	mux := http.NewServeMux()
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-	logger := log.New(testWriter{t}, "", 0)
+	// Discard rather than t.Log: connection goroutines outlive the test
+	// body, and t.Log after the test returns is itself a data race.
+	logger := log.New(logDiscard{}, "", 0)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -27,13 +30,6 @@ func testServer(t *testing.T, hub *Hub) (*httptest.Server, string) {
 	srv := httptest.NewServer(mux)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 	return srv, wsURL
-}
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Log(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
 }
 
 func dial(t *testing.T, url string) *websocket.Conn {
@@ -334,4 +330,88 @@ func TestBadEnvelope(t *testing.T) {
 	if e.Type != TypeError || e.Reason != ReasonBadEnvelope {
 		t.Fatalf("expected bad_envelope, got %+v", e)
 	}
+}
+
+// A Depot identity re-registering from fresh connections rewrites
+// presence.hub in place while reconnecting clients relay through it. Run
+// under -race: reading that field outside the hub mutex is a data race.
+func TestConcurrentRegisterDuringRelay(t *testing.T) {
+	hub := newHubForTest()
+	srv, url := testServer(t, hub)
+	defer srv.Close()
+
+	const depotID = "depot-rewrite"
+	drain := func(ws *websocket.Conn) {
+		go func() {
+			for {
+				if _, _, err := ws.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	// Anchor registration keeps the presence alive throughout.
+	anchor := dial(t, url)
+	send(t, anchor, Envelope{Type: TypeRegister, DepotID: depotID})
+	drain(anchor)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Held open, not closed each iteration: a live superseded
+		// connection is exactly what makes presence.hub get rewritten
+		// in place rather than the whole presence being torn down.
+		var held []*websocket.Conn
+		defer func() {
+			for _, ws := range held {
+				ws.Close()
+			}
+		}()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+			if err != nil {
+				return
+			}
+			held = append(held, ws)
+			_ = ws.WriteJSON(Envelope{Type: TypeRegister, DepotID: depotID})
+			drain(ws)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+				if err != nil {
+					return
+				}
+				_ = ws.WriteJSON(Envelope{Type: TypeConnect, DepotID: depotID, ClientID: "c"})
+				for j := 0; j < 10; j++ {
+					_ = ws.WriteJSON(Envelope{Type: "RESPONSE"})
+				}
+				ws.Close()
+			}
+		}()
+	}
+
+	time.Sleep(400 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

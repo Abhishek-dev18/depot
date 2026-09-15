@@ -1,75 +1,47 @@
-# React + TypeScript + Vite
+# web
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Depot's browser Client — and a **Depot simulator** that implements the phone's half of the
+protocol so pairing, reconnection and file transfer can be exercised end to end without an
+Android device.
 
-Currently, two official plugins are available:
+Implements `../docs/protocol.md` §3 (pairing), §4 (reconnection), §5 (transport) and §6
+(revocation). React 19 + TypeScript + Vite, libsodium for crypto, WebRTC DataChannels for
+transfer.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Run
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Needs the relay running — see [`../signal/`](../signal/):
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+```bash
+cd ../signal && go run .
+```
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Then open two tabs: <http://localhost:5173/> is the Client, and
+<http://localhost:5173/?role=depot> is the Depot simulator. The signal URL and an optional
+TURN server are configurable under **Show connection settings** and persist in
+`localStorage`.
 
+## Layout
+
+| Path | Responsibility |
+|---|---|
+| `src/crypto/` | Key generation, length-prefixed transcripts, X25519/BLAKE2b derivation, SAS, Ed25519 credentials, AEAD |
+| `src/pairing/` | The four flows: Client and Depot sides of pairing (§3) and reconnection (§4) |
+| `src/transport/` | WebRTC negotiation, binary frames with derived nonces, FastCDC chunking, manifests, compression, adaptive chunk sizing |
+| `src/signal/` | WebSocket client speaking the Go relay's envelope protocol (§7.1) |
+| `src/storage/` | IndexedDB persistence for identities, pairings and device records |
+| `src/components/` | UI, styled to the dark/amber terminal design that the Android app will also follow |
+
+## Checks
+
+```bash
+npm test          # vitest — crypto and transport unit tests
+npm run lint
+npx tsc -b --noEmit
+npm run build
 ```

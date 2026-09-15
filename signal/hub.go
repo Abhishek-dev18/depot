@@ -301,12 +301,16 @@ func (h *Hub) handleRelay(c *conn, e Envelope) {
 
 	case roleReconnectClient:
 		p, exists := h.depots[st.depotID]
+		var depotHub *conn
+		if exists {
+			depotHub = p.hub
+		}
 		h.mu.Unlock()
 		if !exists {
 			c.sendError(ReasonDepotOffline)
 			return
 		}
-		_ = p.hub.send(Envelope{Type: e.Type, ClientID: st.clientID, Payload: e.Payload})
+		_ = depotHub.send(Envelope{Type: e.Type, ClientID: st.clientID, Payload: e.Payload})
 
 	case roleDepotHub:
 		p, exists := h.depots[st.depotID]
@@ -361,9 +365,14 @@ func (h *Hub) Remove(c *conn) {
 		if exists && p.hub == c {
 			delete(h.depots, st.depotID)
 		}
-		var routes map[string]*conn
+		// Snapshot under the lock: p.routes stays reachable by other
+		// goroutines when this connection was already superseded, so
+		// iterating the live map after unlocking would race with them.
+		var routes []*conn
 		if exists {
-			routes = p.routes
+			for _, client := range p.routes {
+				routes = append(routes, client)
+			}
 		}
 		h.mu.Unlock()
 		for _, client := range routes {
