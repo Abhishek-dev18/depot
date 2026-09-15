@@ -12,6 +12,7 @@ that can read your files.
 [![Protocol](https://img.shields.io/badge/protocol-v1-FFB020)](docs/protocol.md)
 [![Go](https://img.shields.io/badge/signal-Go%201.24-00ADD8)](signal/)
 [![Web](https://img.shields.io/badge/client-React%2019%20%2B%20TS-61DAFB)](web/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-97C27C)](LICENSE)
 
 <img src="docs/images/crop-sas.png" width="700" alt="Six amber digits shown side by side with the question 'does the client show this number?' and an Approve button">
 
@@ -167,10 +168,6 @@ Client says so explicitly rather than hanging.
 The web app's Depot simulator is a development stand-in, not the product. The Android app is
 the next milestone, and the UI shown above is the design spec it will follow.
 
-### Known gaps
-
-- **No license file yet** — see below.
-
 ## Contributing
 
 The specification is the source of truth: if an implementation and
@@ -186,5 +183,4 @@ CI runs both on every pull request.
 
 ## License
 
-Not yet chosen — until a `LICENSE` file is added, default copyright applies and the code is
-not licensed for reuse.
+[MIT](LICENSE) © Abhishek
