@@ -4,7 +4,11 @@ import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
 import type { OfferedFile } from '../transport/transferSession'
+import { Badge } from './Badge'
+import { Card } from './Card'
+import { FolderIcon, LinkIcon, ShieldIcon } from './icons'
 import { Log } from './Log'
+import { ProgressBar } from './ProgressBar'
 
 export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
   const { lines, push, clear } = useLog()
@@ -61,23 +65,19 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
 
   const startListening = async () => {
     if (listenerRef.current) return
-    const l = await runDepotReconnectListener(
-      signalUrl,
-      () => offeredFileRef.current,
-      {
-        onStatus: push,
-        onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
-        onClientConnected: ({ clientId }) => {
-          push(`client ${clientId.slice(0, 16)}… connected, data channel open`)
-          refreshDevices()
-        },
-        onClientProgress: ({ clientId, index, total }) => {
-          setProgressByClient((prev) => ({ ...prev, [clientId]: { index: index + 1, total } }))
-        },
-        onClientRejected: ({ clientId, reason }) => push(`rejected ${clientId.slice(0, 16)}…: ${reason}`),
-        onError: (msg) => push(`error: ${msg}`),
+    const l = await runDepotReconnectListener(signalUrl, () => offeredFileRef.current, {
+      onStatus: push,
+      onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
+      onClientConnected: ({ clientId }) => {
+        push(`client ${clientId.slice(0, 16)}… connected, data channel open`)
+        refreshDevices()
       },
-    )
+      onClientProgress: ({ clientId, index, total }) => {
+        setProgressByClient((prev) => ({ ...prev, [clientId]: { index: index + 1, total } }))
+      },
+      onClientRejected: ({ clientId, reason }) => push(`rejected ${clientId.slice(0, 16)}…: ${reason}`),
+      onError: (msg) => push(`error: ${msg}`),
+    })
     listenerRef.current = l
     setListener(l)
   }
@@ -97,77 +97,89 @@ export function DepotSimulatorView({ signalUrl }: { signalUrl: string }) {
   }
 
   return (
-    <div className="panel">
-      <h2>Depot simulator</h2>
-      <p className="hint">
+    <div className="view">
+      <p className="view-intro">
         Stands in for the Android app so pairing, reconnection and file transfer can be tested end to end without
-        it. Paste the Client's QR JSON below — a browser tab has no camera.
+        it.
       </p>
 
-      <textarea
-        value={qrText}
-        onChange={(e) => setQrText(e.target.value)}
-        rows={6}
-        placeholder="Paste the QR payload JSON from the Client tab here"
-      />
-      <button onClick={() => void joinPairing()} disabled={busy || !qrText.trim()}>
-        {busy ? 'Joining…' : 'Join pairing'}
-      </button>
+      <Card title="Pair with a Client" subtitle="Paste the Client's QR JSON — a browser tab has no camera." icon={<ShieldIcon />}>
+        <textarea
+          value={qrText}
+          onChange={(e) => setQrText(e.target.value)}
+          rows={5}
+          placeholder="Paste the QR payload JSON from the Client tab here"
+        />
+        <button onClick={() => void joinPairing()} disabled={busy || !qrText.trim()}>
+          {busy ? 'Joining…' : 'Join pairing'}
+        </button>
 
-      {sas && (
-        <div className="sas">
-          <p>Compare this code with the Client. Only approve if it matches exactly.</p>
-          <div className="sas-code">{sas.code}</div>
-          <button
-            onClick={() => {
-              sas.approve()
-              setSas(null)
-            }}
-          >
-            Approve
-          </button>
-        </div>
-      )}
+        {sas && (
+          <div className="sas">
+            <p>Compare this code with the Client. Only approve if it matches exactly.</p>
+            <div className="sas-code">{sas.code}</div>
+            <button
+              className="primary"
+              onClick={() => {
+                sas.approve()
+                setSas(null)
+              }}
+            >
+              Approve
+            </button>
+          </div>
+        )}
+      </Card>
 
-      <h3>File to offer</h3>
-      <p className="hint">Whatever is selected here is what a reconnecting Client receives when it requests a file.</p>
-      <input type="file" onChange={(e) => void chooseFile(e.target.files)} />
-      {offeredFile && (
-        <p className="hint">
-          Offering <strong>{offeredFile.name}</strong> ({offeredFile.size.toLocaleString()} bytes)
-        </p>
-      )}
-
-      <h3>Reconnection listener</h3>
-      {listener ? (
-        <>
+      <Card title="File to offer" subtitle="Whatever is selected here is what a reconnecting Client receives." icon={<FolderIcon />}>
+        <label className="file-picker">
+          <input type="file" onChange={(e) => void chooseFile(e.target.files)} />
+          <span>{offeredFile ? 'Choose a different file' : 'Choose a file'}</span>
+        </label>
+        {offeredFile && (
           <p className="hint">
-            Listening as <code title={listener.depotId}>{listener.depotId.slice(0, 16)}…</code>
+            Offering <strong>{offeredFile.name}</strong> ({offeredFile.size.toLocaleString()} bytes)
           </p>
-          <button onClick={stopListening}>Stop listening</button>
-        </>
-      ) : (
-        <button onClick={() => void startListening()}>Start listening</button>
-      )}
+        )}
+      </Card>
 
-      <h3>Paired devices</h3>
-      {devices.length === 0 ? (
-        <p className="hint">None yet.</p>
-      ) : (
-        <ul className="entity-list">
-          {devices.map((d) => (
-            <li key={d.clientIdentityPub}>
-              <code title={d.clientIdentityPub}>{d.clientIdentityPub.slice(0, 16)}…</code>
-              {progressByClient[d.clientIdentityPub] && (
-                <span className="hint">
-                  {progressByClient[d.clientIdentityPub].index} / {progressByClient[d.clientIdentityPub].total}
-                </span>
-              )}
-              {d.revoked ? <em>revoked</em> : <button onClick={() => void revoke(d.clientIdentityPub)}>Revoke</button>}
-            </li>
-          ))}
-        </ul>
-      )}
+      <Card title="Reconnection listener" icon={<LinkIcon />}>
+        {listener ? (
+          <>
+            <p className="hint">
+              <Badge tone="success">Listening</Badge>{' '}
+              as <code title={listener.depotId}>{listener.depotId.slice(0, 16)}…</code>
+            </p>
+            <button onClick={stopListening}>Stop listening</button>
+          </>
+        ) : (
+          <button onClick={() => void startListening()}>Start listening</button>
+        )}
+      </Card>
+
+      <Card title="Paired devices" icon={<LinkIcon />}>
+        {devices.length === 0 ? (
+          <p className="empty-state">None yet.</p>
+        ) : (
+          <ul className="entity-list">
+            {devices.map((d) => (
+              <li key={d.clientIdentityPub}>
+                <div className="entity-main">
+                  <code title={d.clientIdentityPub}>{d.clientIdentityPub.slice(0, 16)}…</code>
+                  {d.revoked && <Badge tone="danger">Revoked</Badge>}
+                  {progressByClient[d.clientIdentityPub] && !d.revoked && (
+                    <ProgressBar
+                      value={progressByClient[d.clientIdentityPub].index}
+                      total={progressByClient[d.clientIdentityPub].total}
+                    />
+                  )}
+                </div>
+                {!d.revoked && <button onClick={() => void revoke(d.clientIdentityPub)}>Revoke</button>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
 
       <Log lines={lines} />
     </div>

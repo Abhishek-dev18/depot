@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './App.css'
 import { ClientView } from './components/ClientView'
 import { DepotSimulatorView } from './components/DepotSimulatorView'
+import { LaptopIcon, PhoneIcon } from './components/icons'
 
 type Role = 'client' | 'depot'
 
@@ -24,6 +25,7 @@ function initialSignalUrl(): string {
 function App() {
   const [role, setRole] = useState<Role>(initialRole)
   const [signalUrl, setSignalUrl] = useState(initialSignalUrl)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const switchRole = (next: Role) => {
     setRole(next)
@@ -49,23 +51,45 @@ function App() {
   return (
     <div id="app">
       <header>
-        <h1>Depot</h1>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true" />
+          <h1>Depot</h1>
+        </div>
         <p className="hint">
-          Two roles, one page — open this URL in a second tab with <code>?role=depot</code> (or use the switch
-          below) to run the Client and the Depot simulator side by side.
+          Two roles, one page — open this URL in a second tab with <code>?role=depot</code> to run the Client and
+          the Depot simulator side by side.
         </p>
-        <div className="role-switch">
-          <button className={role === 'client' ? 'active' : ''} onClick={() => switchRole('client')}>
+
+        <div className="role-switch" role="tablist" aria-label="Role">
+          <button
+            role="tab"
+            aria-selected={role === 'client'}
+            className={role === 'client' ? 'active' : ''}
+            onClick={() => switchRole('client')}
+          >
+            <LaptopIcon />
             Client
           </button>
-          <button className={role === 'depot' ? 'active' : ''} onClick={() => switchRole('depot')}>
+          <button
+            role="tab"
+            aria-selected={role === 'depot'}
+            className={role === 'depot' ? 'active' : ''}
+            onClick={() => switchRole('depot')}
+          >
+            <PhoneIcon />
             Depot simulator
           </button>
         </div>
-        <label className="signal-url">
-          Signal server
-          <input value={signalUrl} onChange={(e) => updateSignalUrl(e.target.value)} spellCheck={false} />
-        </label>
+
+        <button type="button" className="settings-toggle" onClick={() => setSettingsOpen((v) => !v)}>
+          {settingsOpen ? 'Hide' : 'Show'} signal server settings
+        </button>
+        {settingsOpen && (
+          <label className="signal-url">
+            Signal server
+            <input value={signalUrl} onChange={(e) => updateSignalUrl(e.target.value)} spellCheck={false} />
+          </label>
+        )}
       </header>
 
       {role === 'client' ? <ClientView signalUrl={signalUrl} /> : <DepotSimulatorView signalUrl={signalUrl} />}

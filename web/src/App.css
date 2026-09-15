@@ -1,43 +1,110 @@
 #root {
-  width: 720px;
+  width: 640px;
   max-width: 100%;
   margin: 0 auto;
   text-align: left;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
-  box-sizing: border-box;
-  padding: 0 24px 48px;
+  padding: 0 20px 56px;
 }
 
+/* ---------- Header ---------- */
+
 header {
-  padding-top: 32px;
+  padding-top: 28px;
+  padding-bottom: 18px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--shape-xs);
+  background: linear-gradient(135deg, var(--primary), var(--tertiary));
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
 }
 
 h1 {
-  font-size: 32px;
-  margin: 0 0 8px;
+  font-size: 24px;
+  letter-spacing: -0.3px;
 }
 
 .hint {
-  color: var(--text);
-  font-size: 15px;
-  margin-bottom: 16px;
+  color: var(--on-surface-variant);
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin: 0 0 4px;
 }
+
+.view-intro {
+  color: var(--on-surface-variant);
+  font-size: 14px;
+  margin: 0 0 18px;
+}
+
+/* ---------- Role switch ---------- */
 
 .role-switch {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--shape-md);
+  background: var(--surface-container);
+  margin: 16px 0 12px;
 }
 
 .role-switch button {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--shape-sm);
+  color: var(--on-surface-variant);
+  padding: 10px 10px;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+
+.role-switch button svg {
+  flex-shrink: 0;
+}
+
+.role-switch button:hover:not(.active) {
+  background: var(--surface-container-high);
 }
 
 .role-switch button.active {
-  background: var(--accent-bg);
-  border-color: var(--accent-border);
-  color: var(--accent);
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+
+/* ---------- Signal server settings ---------- */
+
+.settings-toggle {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settings-toggle:hover {
+  border: none;
 }
 
 .signal-url {
@@ -45,100 +112,314 @@ h1 {
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
-  color: var(--text);
-  margin-bottom: 24px;
+  color: var(--on-surface-variant);
+  margin-top: 10px;
 }
 
 .signal-url input {
   font-family: var(--mono);
-  font-size: 14px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text-h);
+  font-size: 15px;
+  padding: 9px 10px;
+  border-radius: var(--shape-xs);
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
 }
 
-.panel {
-  padding-top: 8px;
-}
-
-.panel h3 {
-  margin: 24px 0 8px;
-  font-size: 16px;
-}
+/* ---------- Generic controls ---------- */
 
 button {
   font: inherit;
-  padding: 8px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text-h);
+  font-size: 14px;
+  padding: 10px 16px;
+  border-radius: var(--shape-sm);
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, transform 0.05s, background 0.15s;
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--accent-border);
+  border-color: var(--primary);
+  background: var(--surface-container-low);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
-textarea {
+button.primary,
+.sas button {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+
+button.primary:hover:not(:disabled),
+.sas button:hover:not(:disabled) {
+  border-color: var(--primary);
+  filter: brightness(1.08);
+}
+
+textarea,
+input[type='text'] {
   width: 100%;
-  box-sizing: border-box;
   font-family: var(--mono);
-  font-size: 13px;
+  /* >=16px so mobile Safari doesn't zoom the page in on focus */
+  font-size: 15px;
   padding: 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--code-bg);
-  color: var(--text-h);
-  margin-bottom: 8px;
+  border-radius: var(--shape-xs);
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface);
+  margin-bottom: 10px;
   resize: vertical;
 }
 
+textarea:focus,
+input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* ---------- Cards ---------- */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card {
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--shape-md);
+  background: var(--surface-container-low);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--shape-xs);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  flex-shrink: 0;
+}
+
+.card-header h3 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  color: var(--on-surface);
+}
+
+.card-header .hint {
+  margin: 0;
+}
+
+.card-body {
+  padding: 0 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+/* ---------- QR ---------- */
+
 .qr {
-  margin: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
 
 .qr img {
-  border-radius: 8px;
-  border: 1px solid var(--border);
+  max-width: 200px;
+  width: 100%;
+  height: auto;
+  border-radius: var(--shape-xs);
+  border: 1px solid var(--outline-variant);
+  align-self: flex-start;
+  background: #fff;
+  padding: 6px;
 }
 
 .qr details {
-  margin-top: 8px;
   font-size: 13px;
+  width: 100%;
 }
 
-.qr pre {
-  background: var(--code-bg);
+.qr summary {
+  cursor: pointer;
+  color: var(--primary);
+}
+
+.qr-json {
+  position: relative;
+  margin-top: 8px;
+}
+
+.qr-json pre {
+  background: var(--surface-container-high);
   padding: 10px;
-  border-radius: 6px;
+  border-radius: var(--shape-xs);
   overflow-x: auto;
+  font-size: 11.5px;
+  margin: 0;
+}
+
+.copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
   font-size: 12px;
 }
 
+/* ---------- SAS / callouts ---------- */
+
 .sas {
-  margin: 16px 0;
+  width: 100%;
   padding: 16px;
-  border-radius: 8px;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-bg);
+  border-radius: var(--shape-md);
+  border: 1px solid var(--primary);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+.sas p {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--on-primary-container);
 }
 
 .sas-code {
   font-family: var(--mono);
-  font-size: 40px;
-  font-weight: 600;
-  letter-spacing: 6px;
-  color: var(--text-h);
-  margin: 8px 0 12px;
+  font-size: clamp(28px, 9vw, 36px);
+  font-weight: 700;
+  letter-spacing: 5px;
+  color: var(--on-primary-container);
+  margin: 4px 0 12px;
 }
+
+.sas.success {
+  border-color: var(--success);
+  background: var(--success-container);
+  color: var(--on-success-container);
+}
+
+.sas.success p {
+  color: var(--on-success-container);
+}
+
+.download-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: var(--shape-sm);
+  background: var(--success);
+  color: var(--on-success);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ---------- File picker ---------- */
+
+.file-picker {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.file-picker input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+.file-picker span {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: var(--shape-sm);
+  border: 1px dashed var(--outline);
+  background: var(--surface-container-lowest);
+  font-size: 14px;
+  color: var(--on-surface-variant);
+}
+
+/* ---------- Badges ---------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--shape-full);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.badge-neutral {
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+}
+
+.badge-accent {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+.badge-success {
+  background: var(--success-container);
+  color: var(--on-success-container);
+}
+
+.badge-danger {
+  background: var(--error-container);
+  color: var(--on-error-container);
+}
+
+/* ---------- Entity lists ---------- */
 
 .entity-list {
   list-style: none;
@@ -146,7 +427,8 @@ textarea {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  width: 100%;
 }
 
 .entity-list li {
@@ -154,19 +436,149 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 10px 14px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--shape-sm);
+  background: var(--surface-container-lowest);
+}
+
+.entity-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.entity-main code {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-state {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  font-style: italic;
+  margin: 0;
+}
+
+/* ---------- Progress ---------- */
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  border-radius: var(--shape-full);
+  background: var(--surface-container-high);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: var(--shape-full);
+  transition: width 0.2s ease;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  font-family: var(--mono);
+}
+
+.transfer-status {
+  width: 100%;
+}
+
+/* ---------- Log ---------- */
+
+.log-wrap {
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--shape-md);
+  overflow: hidden;
+}
+
+.log-title {
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--on-surface-variant);
+  background: var(--surface-container-high);
+  border-bottom: 1px solid var(--outline-variant);
 }
 
 .log {
-  margin-top: 24px;
-  padding: 12px;
-  border-radius: 6px;
-  background: var(--code-bg);
+  padding: 10px 14px;
+  background: var(--surface-container-high);
   font-family: var(--mono);
   font-size: 12px;
-  color: var(--text);
-  max-height: 240px;
+  color: var(--on-surface-variant);
+  max-height: 220px;
   overflow-y: auto;
+}
+
+.log-line {
+  padding: 1px 0;
+}
+
+.log-error {
+  color: var(--error);
+}
+
+code {
+  word-break: break-all;
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 600px) {
+  #root {
+    padding: 0 16px 40px;
+  }
+
+  header {
+    padding-top: 18px;
+  }
+
+  .card-header {
+    padding: 14px 14px 10px;
+  }
+
+  .card-body {
+    padding: 0 14px 14px;
+  }
+
+  .role-switch button {
+    font-size: 12.5px;
+    padding: 10px 6px;
+  }
+
+  .entity-list li {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .entity-list li button {
+    align-self: flex-start;
+  }
+
+  .qr img {
+    max-width: 170px;
+  }
+}
+
+@media (max-width: 360px) {
+  .role-switch button svg {
+    display: none;
+  }
 }

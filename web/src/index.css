@@ -1,64 +1,138 @@
+/**
+ * Material Design 3 color roles, generated from a single seed color
+ * (#3355CC) via Google's own HCT algorithm — the same one Android's
+ * dynamic color and the Material Theme Builder use. Recorded here so the
+ * Android app can regenerate an identical scheme later from the same seed
+ * (e.g. with Compose Material3's tonal palette APIs, or the MaterialKolor
+ * library) and the two apps end up visually consistent without hand-tuning
+ * two palettes separately.
+ *
+ * Regenerate with `@material/material-color-utilities` (devDependency):
+ *   themeFromSourceColor(argbFromHex('#3355CC'))
+ * `success`/`onSuccess`/`successContainer`/`onSuccessContainer` aren't a
+ * standard M3 role — Material doesn't define one — so they're built with
+ * the same tone recipe M3 uses elsewhere (tone 40/100/90/10 light,
+ * 80/20/30/90 dark) at a green hue, chroma-matched to the primary color.
+ */
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  --primary: #3154cb;
+  --on-primary: #ffffff;
+  --primary-container: #dde1ff;
+  --on-primary-container: #001453;
+
+  --secondary: #5a5d72;
+  --on-secondary: #ffffff;
+  --secondary-container: #dee1f9;
+  --on-secondary-container: #171b2c;
+
+  --tertiary: #75546f;
+  --on-tertiary: #ffffff;
+  --tertiary-container: #ffd7f4;
+  --on-tertiary-container: #2c1229;
+
+  --error: #ba1a1a;
+  --on-error: #ffffff;
+  --error-container: #ffdad6;
+  --on-error-container: #410002;
+
+  --success: #006e17;
+  --on-success: #ffffff;
+  --success-container: #93fa8c;
+  --on-success-container: #002203;
+
+  --background: #fefbff;
+  --on-background: #1b1b1f;
+  --surface: #fefbff;
+  --on-surface: #1b1b1f;
+  --surface-variant: #e2e1ec;
+  --on-surface-variant: #45464f;
+
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f5f3f7;
+  --surface-container: #f0edf1;
+  --surface-container-high: #eae7ec;
+  --surface-container-highest: #e4e1e6;
+
+  --outline: #767680;
+  --outline-variant: #c6c5d0;
+  --inverse-surface: #303034;
+  --inverse-on-surface: #f2f0f4;
+  --inverse-primary: #b7c4ff;
+
+  --shadow-sm: rgba(0, 0, 0, 0.08) 0 1px 2px, rgba(0, 0, 0, 0.05) 0 1px 1px;
+  --shadow: rgba(0, 0, 0, 0.12) 0 8px 20px -4px, rgba(0, 0, 0, 0.06) 0 4px 6px -2px;
+
+  /* A simplified subset of M3's shape scale (extraSmall/small/medium/large/full). */
+  --shape-xs: 8px;
+  --shape-sm: 12px;
+  --shape-md: 16px;
+  --shape-full: 999px;
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
+  font: 16px/1.5 var(--sans);
   color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--on-surface-variant);
+  background: var(--background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
+    --primary: #b7c4ff;
+    --on-primary: #002584;
+    --primary-container: #0b39b2;
+    --on-primary-container: #dde1ff;
 
-  #social .button-icon {
-    filter: invert(1) brightness(2);
+    --secondary: #c2c5dd;
+    --on-secondary: #2c2f42;
+    --secondary-container: #424659;
+    --on-secondary-container: #dee1f9;
+
+    --tertiary: #e4bad9;
+    --on-tertiary: #43273f;
+    --tertiary-container: #5c3d56;
+    --on-tertiary-container: #ffd7f4;
+
+    --error: #ffb4ab;
+    --on-error: #690005;
+    --error-container: #93000a;
+    --on-error-container: #ffb4ab;
+
+    --success: #78dd72;
+    --on-success: #003908;
+    --success-container: #00530f;
+    --on-success-container: #93fa8c;
+
+    --background: #1b1b1f;
+    --on-background: #e4e1e6;
+    --surface: #1b1b1f;
+    --on-surface: #e4e1e6;
+    --surface-variant: #45464f;
+    --on-surface-variant: #c6c5d0;
+
+    --surface-container-lowest: #0e0e11;
+    --surface-container-low: #1b1b1f;
+    --surface-container: #1f1f23;
+    --surface-container-high: #2a2a2d;
+    --surface-container-highest: #343438;
+
+    --outline: #90909a;
+    --outline-variant: #45464f;
+    --inverse-surface: #e4e1e6;
+    --inverse-on-surface: #303034;
+    --inverse-primary: #3154cb;
+
+    --shadow-sm: rgba(0, 0, 0, 0.3) 0 1px 2px, rgba(0, 0, 0, 0.2) 0 1px 1px;
+    --shadow: rgba(0, 0, 0, 0.5) 0 8px 20px -4px, rgba(0, 0, 0, 0.3) 0 4px 6px -2px;
   }
 }
 
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
+* {
   box-sizing: border-box;
 }
 
@@ -67,45 +141,25 @@ body {
 }
 
 h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+h2,
+h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  color: var(--on-surface);
+  margin: 0;
 }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
 p {
   margin: 0;
 }
 
-code,
-.counter {
+code {
   font-family: var(--mono);
   display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
-
-code {
-  font-size: 15px;
+  border-radius: var(--shape-xs);
+  color: var(--on-surface);
+  font-size: 0.85em;
   line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+  padding: 3px 7px;
+  background: var(--surface-container-high);
 }
