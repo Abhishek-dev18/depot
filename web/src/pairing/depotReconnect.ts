@@ -1,6 +1,6 @@
 import { fromBase64, toBase64 } from '../crypto/codec'
 import type { Credential } from '../crypto/credential'
-import { verifyCredential } from '../crypto/credential'
+import { issueCredential, verifyCredential } from '../crypto/credential'
 import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair, randomBytes } from '../crypto/keys'
 import type { KeyPair } from '../crypto/keys'
@@ -31,6 +31,11 @@ interface IncomingPayload {
   credential: Credential
   clientEk: string
 }
+
+// protocol.md §4.1 / §8.2: silent renewal, not forced re-approval — a
+// device that keeps reconnecting never has to redo the §3 QR+SAS flow, one
+// that stops reconnecting simply has its credential expire on schedule.
+const RENEW_WITHIN_MS = 30 * 24 * 60 * 60 * 1000
 
 export interface DepotReconnectListener {
   depotId: string
@@ -135,7 +140,11 @@ async function handleIncoming(
     }
 
     await touchDevice(clientId)
-    client.relay('SESSION_OK', {}, clientId)
+    let renewedCredential: Credential | undefined
+    if (credential.expiresAt - Date.now() < RENEW_WITHIN_MS) {
+      renewedCredential = await issueCredential(depotIdentity.privateKey, depotId, clientId)
+    }
+    client.relay('SESSION_OK', renewedCredential ? { credential: renewedCredential } : {}, clientId)
 
     const shared = await ecdh(depotEphemeral.privateKey, clientEkBytes)
     const keys = await deriveKeys(shared, transcript)

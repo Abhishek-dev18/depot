@@ -164,7 +164,7 @@ same byte string.
 ### 3.4 Short Authentication String (SAS)
 
 ```
-SAS = decimal(SAS_seed mod 10000), zero-padded to 4 digits
+SAS = decimal(SAS_seed mod 1000000), zero-padded to 6 digits
 ```
 
 Displayed on both the Client screen and the Depot's approval dialog. The Depot
@@ -189,16 +189,19 @@ man-in-the-middle, invisible to both parties.
 The SAS defeats this because it is derived from the **master secret**, which is
 derived from the shared secret. Under the attack above, the Client's master comes
 from secret A and the Depot's from secret B. The two SAS values will differ, with
-a 1-in-10,000 chance of accidental collision per attempt. The human comparing them
-is the only entity in the system that has a channel Signal cannot touch.
+a 1-in-1,000,000 chance of accidental collision per attempt. The human comparing
+them is the only entity in the system that has a channel Signal cannot touch.
 
 This is the same mechanism as Signal's safety numbers and ZRTP's short
 authentication strings. There is no way to remove the human step without
 introducing a pre-shared secret or a trusted third party, and we have neither.
 
-**Mitigating the 1-in-10,000 collision:** a Depot MUST rate-limit failed pairing
+**Mitigating the collision chance:** a Depot MUST rate-limit failed pairing
 attempts — maximum 5 attempts per 10 minutes — so an attacker cannot brute-force
-repeated pairings hoping for a SAS match.
+repeated pairings hoping for a SAS match. §8.5 settled on 6 digits over 4: the
+change is a one-line constant, the collision odds go from 1-in-10,000 to
+1-in-1,000,000, and comparing six digits instead of four costs the owner nothing
+worth trading away that margin for.
 
 ### 3.5 Device record
 
@@ -268,6 +271,28 @@ produced.
 
 New ephemeral keys are generated per reconnection, so compromise of one session's
 keys does not expose past or future sessions.
+
+### 4.1 Credential renewal
+
+`SESSION_OK` MAY carry a freshly issued credential:
+
+```json
+{ "type": "SESSION_OK", "credential": { "...": "..." } }
+```
+
+§8.2 settled this on **silent renewal**, not forced re-approval: the security
+property §4 step 4 describes — a stolen credential is useless without the
+private key — is re-proven on *every* reconnection, renewed credential or not.
+Requiring the owner to redo the §3 QR+SAS flow every 90 days for a device they
+reconnect to daily buys no additional security, only friction.
+
+The Depot issues a renewed credential when the current one has less than 30 of
+its 90 days left (any threshold works; this just avoids renewing on literally
+every reconnection). The Client overwrites its stored credential for that Depot
+on receipt. A device that stops reconnecting before its credential expires gets
+no silent renewal — because it never asks for one — and simply has to re-pair
+via §3 next time, which is the correct outcome for a device that may no longer
+be trusted or in the owner's possession.
 
 ---
 
@@ -503,18 +528,34 @@ with `clientId` in both directions on that connection only.
 
 ---
 
-## 8. Open questions
+## 8. Design decisions
 
-To be resolved before implementation of the relevant phase:
+Resolved. Recorded here rather than deleted, so the reasoning survives for
+whoever builds the Android app against this spec.
 
-1. **File indexing:** does the Depot pre-hash files in the background, or hash on
-   demand? Pre-indexing makes `NEED` instant but costs battery and requires
-   invalidation on file change. Leaning on-demand with an LRU cache for v1.
-2. **Credential renewal:** silent renewal on connection, or re-approval at 90 days?
-3. **Multiple Depots per Client:** does one browser profile pair with several
-   phones? The data model allows it; the UI does not yet.
-4. **Thumbnail generation:** on demand or pre-generated on file index?
-5. **SAS length:** 4 digits with rate limiting, or 6 digits for margin?
+1. **File indexing: on-demand, with an LRU cache.** Pre-hashing every file in
+   the background on install would make `NEED` responses instant, but costs
+   real battery/CPU scanning a phone's entire storage up front and needs
+   invalidation logic for every file-change event. On-demand hashing —
+   computing chunk hashes only when a Client actually requests that file, and
+   caching the result so a resumed or repeated transfer doesn't re-hash — costs
+   nothing for the (typical) files nobody ever pulls remotely, and needs no
+   invalidation logic at all: a changed file just hashes differently next
+   time it's requested.
+2. **Credential renewal: silent, not forced re-approval.** See §4.1.
+3. **Multiple Depots per Client: supported, already built.** The data model
+   (one `Pairing` record per `depotId`) already allowed it and the Client's
+   web implementation already lists every paired Depot and reconnects to
+   whichever one you pick — this was never actually blocked on a decision.
+4. **Thumbnail generation: on-demand, via Android's MediaStore.** Android
+   already generates and caches thumbnails for photos system-wide
+   (`MediaStore`/`loadThumbnail()`); the Depot app should serve those instead
+   of building and maintaining a parallel thumbnail cache that duplicates
+   what the OS already does for free.
+5. **SAS length: 6 digits.** See §3.4. The change from 4 was a one-line
+   constant with no architectural cost, and it moves the accidental-collision
+   odds from 1-in-10,000 to 1-in-1,000,000 for the trivial added cost of
+   comparing two more digits.
 
 ---
 
