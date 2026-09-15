@@ -1,43 +1,106 @@
 #root {
-  width: 720px;
+  width: 640px;
   max-width: 100%;
   margin: 0 auto;
   text-align: left;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   box-sizing: border-box;
-  padding: 0 24px 48px;
+  padding: 0 20px 56px;
 }
 
+/* ---------- Header ---------- */
+
 header {
-  padding-top: 32px;
+  padding-top: 36px;
+  padding-bottom: 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-border));
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
 }
 
 h1 {
-  font-size: 32px;
-  margin: 0 0 8px;
+  font-size: 26px;
+  margin: 0;
+  letter-spacing: -0.5px;
 }
 
 .hint {
   color: var(--text);
-  font-size: 15px;
-  margin-bottom: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 4px;
 }
+
+.view-intro {
+  color: var(--text);
+  font-size: 14px;
+  margin: 0 0 20px;
+}
+
+/* ---------- Role switch ---------- */
 
 .role-switch {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 4px;
+  padding: 4px;
+  border-radius: calc(var(--radius) + 4px);
+  background: var(--code-bg);
+  margin: 16px 0 12px;
 }
 
 .role-switch button {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 9px 12px;
+}
+
+.role-switch button:hover:not(.active) {
+  background: var(--surface);
 }
 
 .role-switch button.active {
-  background: var(--accent-bg);
-  border-color: var(--accent-border);
+  background: var(--bg);
+  color: var(--text-h);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+
+/* ---------- Signal server settings ---------- */
+
+.settings-toggle {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 4px 0;
+  font-size: 13px;
   color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settings-toggle:hover {
+  border: none;
 }
 
 .signal-url {
@@ -46,99 +109,294 @@ h1 {
   gap: 4px;
   font-size: 13px;
   color: var(--text);
-  margin-bottom: 24px;
+  margin-top: 10px;
 }
 
 .signal-url input {
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: 13px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text-h);
 }
 
-.panel {
-  padding-top: 8px;
-}
-
-.panel h3 {
-  margin: 24px 0 8px;
-  font-size: 16px;
-}
+/* ---------- Generic controls ---------- */
 
 button {
   font: inherit;
-  padding: 8px 16px;
-  border-radius: 6px;
+  font-size: 14px;
+  padding: 9px 16px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text-h);
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, transform 0.05s;
 }
 
 button:hover:not(:disabled) {
   border-color: var(--accent-border);
 }
 
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
-textarea {
+button.primary,
+.sas button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+button.primary:hover:not(:disabled),
+.sas button:hover:not(:disabled) {
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
+
+textarea,
+input[type='text'] {
   width: 100%;
   box-sizing: border-box;
   font-family: var(--mono);
   font-size: 13px;
   padding: 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--code-bg);
   color: var(--text-h);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   resize: vertical;
 }
 
+textarea:focus,
+input:focus {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
+/* ---------- Cards ---------- */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.card-header h3 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.card-header .hint {
+  margin: 0;
+}
+
+.card-body {
+  padding: 0 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+/* ---------- QR ---------- */
+
 .qr {
-  margin: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
 
 .qr img {
   border-radius: 8px;
   border: 1px solid var(--border);
+  align-self: flex-start;
 }
 
 .qr details {
-  margin-top: 8px;
   font-size: 13px;
+  width: 100%;
 }
 
-.qr pre {
+.qr summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.qr-json {
+  position: relative;
+  margin-top: 8px;
+}
+
+.qr-json pre {
   background: var(--code-bg);
   padding: 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   overflow-x: auto;
+  font-size: 12px;
+  margin: 0;
+}
+
+.copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
   font-size: 12px;
 }
 
+/* ---------- SAS / callouts ---------- */
+
 .sas {
-  margin: 16px 0;
+  width: 100%;
+  box-sizing: border-box;
   padding: 16px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   border: 1px solid var(--accent-border);
   background: var(--accent-bg);
 }
 
+.sas p {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
 .sas-code {
   font-family: var(--mono);
-  font-size: 40px;
-  font-weight: 600;
-  letter-spacing: 6px;
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 5px;
   color: var(--text-h);
-  margin: 8px 0 12px;
+  margin: 4px 0 12px;
 }
+
+.sas.success {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+}
+
+.download-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 16px;
+  border-radius: 8px;
+  background: var(--success);
+  color: white;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ---------- File picker ---------- */
+
+.file-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.file-picker input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+.file-picker span {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  background: var(--code-bg);
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* ---------- Badges ---------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.badge-neutral {
+  background: var(--code-bg);
+  color: var(--text);
+}
+
+.badge-accent {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.badge-success {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.badge-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* ---------- Entity lists ---------- */
 
 .entity-list {
   list-style: none;
@@ -146,7 +404,8 @@ textarea {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  width: 100%;
 }
 
 .entity-list li {
@@ -154,19 +413,118 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.entity-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.entity-main code {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-state {
+  color: var(--text);
+  font-size: 13px;
+  font-style: italic;
+  margin: 0;
+}
+
+/* ---------- Progress ---------- */
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.progress-label {
+  font-size: 12px;
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.transfer-status {
+  width: 100%;
+}
+
+/* ---------- Log ---------- */
+
+.log-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.log-title {
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text);
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--border);
 }
 
 .log {
-  margin-top: 24px;
-  padding: 12px;
-  border-radius: 6px;
+  padding: 10px 14px;
   background: var(--code-bg);
   font-family: var(--mono);
   font-size: 12px;
   color: var(--text);
-  max-height: 240px;
+  max-height: 220px;
   overflow-y: auto;
+}
+
+.log-line {
+  padding: 1px 0;
+}
+
+.log-error {
+  color: var(--danger);
+}
+
+code {
+  word-break: break-all;
+}
+
+/* ---------- Small screens ---------- */
+
+@media (max-width: 480px) {
+  .card-header {
+    flex-direction: column;
+  }
+
+  .entity-list li {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

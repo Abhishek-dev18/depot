@@ -4,7 +4,12 @@ import { runClientPairing } from '../pairing/clientPairing'
 import { runClientReconnect } from '../pairing/clientReconnect'
 import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
+import { Badge } from './Badge'
+import { Card } from './Card'
+import { CopyButton } from './CopyButton'
+import { ShieldIcon, LinkIcon } from './icons'
 import { Log } from './Log'
+import { ProgressBar } from './ProgressBar'
 
 interface ReceivedFile {
   name: string
@@ -77,64 +82,72 @@ export function ClientView({ signalUrl }: { signalUrl: string }) {
   }
 
   return (
-    <div className="panel">
-      <h2>Client</h2>
-      <p className="hint">This is the browser session that ends up holding a credential for a Depot.</p>
+    <div className="view">
+      <p className="view-intro">This is the browser session that ends up holding a credential for a Depot.</p>
 
-      <button onClick={() => void startPairing()} disabled={busy}>
-        {busy ? 'Pairing…' : 'Start pairing'}
-      </button>
+      <Card title="Pair with a Depot" subtitle="Generates a QR code the Depot scans (or, here, pastes)." icon={<ShieldIcon />}>
+        <button onClick={() => void startPairing()} disabled={busy}>
+          {busy && !qr ? 'Starting…' : 'Start pairing'}
+        </button>
 
-      {qr && (
-        <div className="qr">
-          <img src={qr.dataUrl} alt="pairing QR code" width={220} height={220} />
-          <details>
-            <summary>No camera in a browser tab — copy this into the Depot simulator instead</summary>
-            <pre>{qr.json}</pre>
-          </details>
-        </div>
-      )}
+        {qr && (
+          <div className="qr">
+            <img src={qr.dataUrl} alt="pairing QR code" width={200} height={200} />
+            <details>
+              <summary>No camera in a browser tab — copy this into the Depot simulator instead</summary>
+              <div className="qr-json">
+                <pre>{qr.json}</pre>
+                <CopyButton text={qr.json} />
+              </div>
+            </details>
+          </div>
+        )}
 
-      {sas && (
-        <div className="sas">
-          <p>Compare this code with the Depot. It must match exactly.</p>
-          <div className="sas-code">{sas}</div>
-        </div>
-      )}
+        {sas && (
+          <div className="sas">
+            <p>Compare this code with the Depot. It must match exactly.</p>
+            <div className="sas-code">{sas}</div>
+          </div>
+        )}
+      </Card>
 
-      <h3>Paired Depots</h3>
-      {pairings.length === 0 ? (
-        <p className="hint">None yet — pair with a Depot above.</p>
-      ) : (
-        <ul className="entity-list">
-          {pairings.map((p) => (
-            <li key={p.depotId}>
-              <code title={p.depotId}>{p.depotId.slice(0, 16)}…</code>
-              <button onClick={() => void reconnect(p.depotId)} disabled={reconnecting === p.depotId}>
-                {reconnecting === p.depotId ? 'Reconnecting…' : 'Reconnect'}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <Card title="Paired Depots" icon={<LinkIcon />}>
+        {pairings.length === 0 ? (
+          <p className="empty-state">None yet — pair with a Depot above.</p>
+        ) : (
+          <ul className="entity-list">
+            {pairings.map((p) => (
+              <li key={p.depotId}>
+                <div className="entity-main">
+                  <code title={p.depotId}>{p.depotId.slice(0, 16)}…</code>
+                  <Badge tone="neutral">{p.depotLabel}</Badge>
+                </div>
+                <button onClick={() => void reconnect(p.depotId)} disabled={reconnecting === p.depotId}>
+                  {reconnecting === p.depotId ? 'Reconnecting…' : 'Reconnect'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
 
-      {progress && !received && (
-        <p className="hint">
-          Receiving chunk {progress.index} / {progress.total}
-        </p>
-      )}
+        {progress && !received && (
+          <div className="transfer-status">
+            <ProgressBar value={progress.index} total={progress.total} />
+          </div>
+        )}
 
-      {received && (
-        <div className="sas">
-          <p>
-            Received <strong>{received.name}</strong> ({received.size.toLocaleString()} bytes), verified against the
-            manifest and whole-file hash.
-          </p>
-          <a href={received.url} download={received.name}>
-            Download
-          </a>
-        </div>
-      )}
+        {received && (
+          <div className="sas success">
+            <p>
+              Received <strong>{received.name}</strong> ({received.size.toLocaleString()} bytes) — verified against
+              the manifest and whole-file hash.
+            </p>
+            <a className="download-link" href={received.url} download={received.name}>
+              Download
+            </a>
+          </div>
+        )}
+      </Card>
 
       <Log lines={lines} />
     </div>
