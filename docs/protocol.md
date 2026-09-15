@@ -385,6 +385,48 @@ Chunk boundaries use content-defined chunking (FastCDC) rather than fixed
 offsets, so that inserting bytes into a file does not invalidate every subsequent
 chunk.
 
+### 5.8 Wire messages and implementation notes
+
+As with §7.1, this document specifies transport *behaviour* but left several
+wire-level details to whoever implemented it first. Recorded here so the
+running code and this document don't drift apart:
+
+**WebRTC signaling.** SDP offer/answer and trickle ICE candidates travel as
+opaque relay messages over the same signal connection used for §4
+(`RTC_OFFER`, `RTC_ANSWER`, `RTC_ICE` — Signal never inspects their
+contents, same as everything else it relays). The Client is always the
+WebRTC offerer and creates both DataChannels; the Depot is always the
+answerer. This is an arbitrary but fixed convention — nothing in §5 depends
+on which side offers.
+
+**`ctl` channel messages.** `CAPS` (§5.4), `REQUEST_FILE` (Client → Depot,
+requests whatever file the Depot is currently offering — this
+implementation doesn't do file browsing/selection-by-path, since that's a
+product-level concern for the Android app's own UI, not part of this
+protocol), `MANIFEST` (Depot → Client, carries `transferId`, `size`, and
+each chunk's `offset`/`length`/`hash` since chunks are content-defined and
+therefore variable-length), `NEED` (Client → Depot), and `ERROR` (either
+direction).
+
+**Frame `type` byte (§5.3).** Only one value is defined today: `1` = CHUNK.
+Reserved so a future frame kind can be added without changing the header
+layout.
+
+**§5.5 tiers.** Implemented as three discrete steps — 64 KB / 256 KB / 1 MB,
+matching the table — with EWMA smoothing (α = 0.3), a 5s cooldown, and
+stricter thresholds to step up than to step down (hysteresis). RTT comes
+from `RTCPeerConnection.getStats()`'s selected candidate pair; standard
+`getStats()` doesn't expose a reliable cross-browser loss fraction for SCTP
+data channels, so loss is treated as 0 (optimistic) rather than
+overclaiming precision sizing can't actually get today.
+
+**§5.6 compression codec.** This implementation uses the browser's native
+`CompressionStream('deflate-raw')` instead of zstd, to avoid adding a wasm
+zstd codec as a build dependency for a demo-stage feature. The entropy-gated
+decision (§5.6) and the wire flag (`FLAG_COMPRESSED`) are unchanged — this
+is a codec substitution, not a protocol change, and swapping in real zstd
+later touches only the compression module.
+
 ---
 
 ## 6. Revocation

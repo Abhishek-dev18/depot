@@ -1,4 +1,3 @@
-import { aeadDecrypt, aeadEncrypt } from '../crypto/aead'
 import { fromBase64, toBase64 } from '../crypto/codec'
 import type { Credential } from '../crypto/credential'
 import { verifyCredential } from '../crypto/credential'
@@ -6,16 +5,18 @@ import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair, randomBytes } from '../crypto/keys'
 import type { KeyPair } from '../crypto/keys'
 import { reconnectTranscript, verifyReconnectResponse } from '../crypto/reconnect'
-import { utf8 } from '../crypto/transcript'
 import { getDevice, touchDevice } from '../storage/devices'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { SignalClient } from '../signal/client'
 import { TypePeerLeft } from '../signal/envelope'
+import { negotiateAsAnswerer } from '../transport/webrtc'
+import { runFileSender, type OfferedFile, type SenderEvent } from '../transport/transferSession'
 
 export interface DepotReconnectCallbacks {
   onStatus: (status: string) => void
   onRegistered: (depotId: string) => void
-  onClientConnected: (info: { clientId: string; pingRoundtripOk: boolean }) => void
+  onClientConnected: (info: { clientId: string }) => void
+  onClientProgress: (info: { clientId: string; index: number; total: number }) => void
   onClientRejected: (info: { clientId: string; reason: string }) => void
   onError: (message: string) => void
 }
@@ -35,10 +36,12 @@ export interface DepotReconnectListener {
 /**
  * Depot side of protocol.md §4, run as a background listener: registers
  * presence once, then handles as many concurrent reconnecting clients as
- * arrive, each independently.
+ * arrive, each independently, offering whatever file getFile() returns at
+ * the moment a client requests one (§5.7).
  */
 export async function runDepotReconnectListener(
   signalUrl: string,
+  getFile: () => OfferedFile | null,
   cb: DepotReconnectCallbacks,
 ): Promise<DepotReconnectListener> {
   const depotIdentity = await loadOrCreateIdentity('identity:depot')
@@ -52,9 +55,14 @@ export async function runDepotReconnectListener(
   cb.onStatus('registered, listening for reconnections')
   cb.onRegistered(depotId)
 
+  // protocol.md §6 step 3 — "Any live DataChannel to that Client is closed
+  // immediately" is the step that actually matters; signal-level REVOKE is
+  // only the routing optimisation. Track live connections so revoke() can do it.
+  const activeConnections = new Map<string, () => void>()
+
   const unsubscribe = client.onMessage((e) => {
     if (e.type === 'incoming' && e.clientId) {
-      void handleIncoming(client, depotIdentity, e.clientId, e.payload, cb)
+      void handleIncoming(client, depotIdentity, e.clientId, e.payload, getFile, activeConnections, cb)
     }
   })
 
@@ -63,8 +71,14 @@ export async function runDepotReconnectListener(
     stop: () => {
       unsubscribe()
       client.close()
+      for (const close of activeConnections.values()) close()
+      activeConnections.clear()
     },
-    revoke: (clientId: string) => client.revoke(clientId),
+    revoke: (clientId: string) => {
+      client.revoke(clientId)
+      activeConnections.get(clientId)?.()
+      activeConnections.delete(clientId)
+    },
   }
 }
 
@@ -73,6 +87,8 @@ async function handleIncoming(
   depotIdentity: KeyPair,
   clientId: string,
   payload: unknown,
+  getFile: () => OfferedFile | null,
+  activeConnections: Map<string, () => void>,
   cb: DepotReconnectCallbacks,
 ): Promise<void> {
   try {
@@ -113,22 +129,23 @@ async function handleIncoming(
     await touchDevice(clientId)
     client.relay('SESSION_OK', {}, clientId)
 
-    // Demo-only: prove the freshly derived session keys actually agree.
     const shared = await ecdh(depotEphemeral.privateKey, clientEkBytes)
     const keys = await deriveKeys(shared, transcript)
-    let pingRoundtripOk = false
-    try {
-      const { nonce, ciphertext } = await aeadEncrypt(keys.kD2C, utf8('ping'))
-      client.relay('PING', { nonce: toBase64(nonce), ciphertext: toBase64(ciphertext) }, clientId)
-      const pong = await client.waitFor((e) => e.clientId === clientId && e.type === 'PONG', 10_000)
-      const { nonce: pongNonce, ciphertext: pongCiphertext } = pong.payload as { nonce: string; ciphertext: string }
-      const opened = await aeadDecrypt(keys.kC2D, fromBase64(pongNonce), fromBase64(pongCiphertext))
-      pingRoundtripOk = toBase64(opened) === toBase64(utf8('ping'))
-    } catch {
-      // Ping/pong is a demo confirmation only; its absence doesn't fail reconnection.
-    }
 
-    cb.onClientConnected({ clientId, pingRoundtripOk })
+    const channels = await negotiateAsAnswerer(client, clientId)
+    activeConnections.set(clientId, channels.close)
+    cb.onClientConnected({ clientId })
+
+    const onSenderEvent = (e: SenderEvent) => {
+      if (e.type === 'chunk-sent' && e.index !== undefined && e.total !== undefined) {
+        cb.onClientProgress({ clientId, index: e.index, total: e.total })
+      }
+    }
+    const stopSending = await runFileSender(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, getFile, onSenderEvent)
+    activeConnections.set(clientId, () => {
+      stopSending()
+      channels.close()
+    })
   } catch (err) {
     cb.onClientRejected({ clientId, reason: err instanceof Error ? err.message : String(err) })
   }
