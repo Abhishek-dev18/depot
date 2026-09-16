@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Debug builds only. Android blocks cleartext traffic by default from
+      targetSdk 28, and development runs the Signal relay as plain ws:// on
+      a LAN address. A real deployment uses wss://, so this must not leak
+      into release: keeping it in the debug source set means the release
+      manifest stays strict rather than relying on anyone remembering.
+    -->
+    <application android:usesCleartextTraffic="true" />
+
+</manifest>
