@@ -20,6 +20,13 @@ import com.depot.app.signal.TYPE_INCOMING
 import com.depot.app.signal.TYPE_PEER_LEFT
 import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.IdentityStore
+import com.depot.app.transport.ConnectionType
+import com.depot.app.transport.FileSender
+import com.depot.app.transport.OfferedFile
+import com.depot.app.transport.SessionKeys
+import com.depot.app.transport.TransferCallbacks
+import com.depot.app.transport.TurnConfig
+import com.depot.app.transport.WebRtc
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -35,6 +42,8 @@ interface DepotReconnectCallbacks {
     fun onStatus(status: String)
     fun onRegistered(depotId: String)
     fun onClientAuthenticated(clientId: String)
+    fun onClientConnected(clientId: String, connectionType: ConnectionType)
+    fun onProgress(clientId: String, index: Int, total: Int, bytesSent: Long, bytesTotal: Long)
     fun onClientRejected(clientId: String, reason: String)
 }
 
@@ -60,6 +69,8 @@ suspend fun runDepotReconnectListener(
     context: Context,
     scope: CoroutineScope,
     signalUrl: String,
+    turn: TurnConfig?,
+    getFile: () -> OfferedFile?,
     cb: DepotReconnectCallbacks,
 ): DepotReconnectListener {
     val depotIdentity = IdentityStore.loadOrCreate(context)
@@ -76,7 +87,9 @@ suspend fun runDepotReconnectListener(
 
     signal.onMessage { e ->
         if (e.type == TYPE_INCOMING && e.clientId != null) {
-            scope.launch { handleIncoming(context, signal, depotIdentity.privateKey, depotId, e, cb) }
+            scope.launch {
+                handleIncoming(context, scope, signal, depotIdentity.privateKey, depotId, e, turn, getFile, cb)
+            }
         }
     }
 
@@ -85,10 +98,13 @@ suspend fun runDepotReconnectListener(
 
 private suspend fun handleIncoming(
     context: Context,
+    scope: CoroutineScope,
     signal: SignalClient,
     depotPrivateKey: ByteArray,
     depotId: String,
     incoming: Envelope,
+    turn: TurnConfig?,
+    getFile: () -> OfferedFile?,
     cb: DepotReconnectCallbacks,
 ) {
     val clientId = incoming.clientId ?: return
@@ -167,12 +183,35 @@ private suspend fun handleIncoming(
         }
         signal.relay("SESSION_OK", sessionOk, clientId)
 
-        // Derived here because §5's transport is keyed from it; the
-        // WebRTC negotiation that consumes these is not built yet.
-        @Suppress("UNUSED_VARIABLE")
         val keys: DerivedKeys = deriveKeys(ecdh(depotEphemeral.privateKey, clientEk), transcript)
-
         cb.onClientAuthenticated(clientId)
+
+        // §5: the Client is the offerer, so it opens the data channels as
+        // soon as it sees SESSION_OK. This side answers.
+        val channels = WebRtc.negotiateAsAnswerer(context, signal, clientId, turn)
+        cb.onClientConnected(clientId, channels.connectionType)
+
+        val sender = FileSender(
+            channels = channels,
+            keys = SessionKeys(keys.kC2D, keys.kD2C),
+            getFile = getFile,
+            cb = object : TransferCallbacks {
+                override fun onManifestSent(transferId: Int, chunkCount: Int) {
+                    cb.onStatus("offering \$chunkCount chunk(s) to \$clientId")
+                }
+
+                override fun onChunkSent(index: Int, total: Int, bytesSent: Long, bytesTotal: Long) {
+                    cb.onProgress(clientId, index, total, bytesSent, bytesTotal)
+                }
+
+                override fun onError(message: String) {
+                    cb.onClientRejected(clientId, message)
+                }
+            },
+        )
+        // The ctl observer fires on a WebRTC thread, so each message is
+        // handed to the scope rather than handled inline.
+        sender.start { msg -> scope.launch { sender.handle(msg) } }
     } catch (e: Exception) {
         cb.onClientRejected(clientId, e.message ?: e.toString())
     }

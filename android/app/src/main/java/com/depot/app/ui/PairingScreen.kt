@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.depot.app.storage.DeviceRecord
+import com.depot.app.transport.ConnectionType
 import com.depot.app.ui.theme.DepotColors
 import com.depot.app.ui.theme.MonoStyle
 
@@ -139,6 +141,7 @@ fun PairingScreen(
     onDismissResult: () -> Unit,
     onSignalUrlChange: (String) -> Unit,
     onToggleListening: () -> Unit,
+    onPickFile: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -286,6 +289,79 @@ fun PairingScreen(
                     "  listening as ${shortId(depotId)}",
                     color = DepotColors.Green,
                     style = MonoStyle.copy(fontSize = 12.sp),
+                )
+            }
+        }
+
+        Text(
+            "FILE TO OFFER",
+            color = DepotColors.Ink3,
+            style = MonoStyle.copy(fontSize = 11.sp, letterSpacing = 1.sp),
+            modifier = Modifier.padding(top = 26.dp),
+        )
+        Button(
+            onClick = onPickFile,
+            modifier = Modifier.padding(top = 10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = DepotColors.Surface2,
+                contentColor = DepotColors.Ink,
+            ),
+            shape = RoundedCornerShape(9.dp),
+        ) {
+            Text(if (state.offeredFileName == null) "Choose a file" else "Choose a different file")
+        }
+        state.offeredFileName?.let { name ->
+            Text(
+                "$name  (${state.offeredFileSize} bytes)",
+                color = DepotColors.Ink,
+                style = MonoStyle.copy(fontSize = 12.sp),
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+
+        if (state.progressTotal > 0) {
+            Column(
+                Modifier
+                    .padding(top = 14.dp)
+                    .fillMaxWidth()
+                    .background(DepotColors.Surface, RoundedCornerShape(9.dp))
+                    .padding(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${state.progressIndex}/${state.progressTotal} chunks",
+                        color = DepotColors.Ink,
+                        style = MonoStyle.copy(fontSize = 12.sp),
+                    )
+                    state.connectionType?.let { type ->
+                        Text(
+                            "   ● $type",
+                            // The artifact insists this is never hidden: a
+                            // relayed path means bytes cross a third machine.
+                            color = if (type == ConnectionType.RELAYED) DepotColors.Amber else DepotColors.Green,
+                            style = MonoStyle.copy(fontSize = 12.sp),
+                        )
+                    }
+                }
+                Text(
+                    "${state.bytesSent} / ${state.bytesTotal} bytes",
+                    color = DepotColors.Ink3,
+                    style = MonoStyle.copy(fontSize = 11.sp),
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                LinearProgressIndicator(
+                    progress = {
+                        if (state.bytesTotal > 0) {
+                            (state.bytesSent.toFloat() / state.bytesTotal.toFloat()).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
+                    },
+                    color = DepotColors.Amber,
+                    trackColor = DepotColors.Line,
+                    modifier = Modifier
+                        .padding(top = 10.dp)
+                        .fillMaxWidth(),
                 )
             }
         }

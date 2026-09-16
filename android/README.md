@@ -16,7 +16,8 @@ Compose, libsodium via lazysodium.
 | Pairing flow + SAS screen (§3) | ✅ implemented (QR payload pasted) |
 | QR camera scanning | ⬜ not started |
 | Reconnection §4 (challenge-response, renewal, revoke) | ✅ implemented |
-| WebRTC transport (§5) | ⬜ not started |
+| WebRTC transport (§5) | ✅ implemented (sender side) |
+| Foreground service | ⬜ not started |
 
 ## Build
 

@@ -9,8 +9,11 @@ import com.depot.app.pairing.DepotReconnectCallbacks
 import com.depot.app.pairing.DepotReconnectListener
 import com.depot.app.pairing.runDepotPairing
 import com.depot.app.pairing.runDepotReconnectListener
+import android.net.Uri
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
+import com.depot.app.transport.ConnectionType
+import com.depot.app.transport.OfferedFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +31,13 @@ data class PairingUiState(
     val devices: List<DeviceRecord> = emptyList(),
     val signalUrl: String = "",
     val listeningAs: String? = null,
+    val offeredFileName: String? = null,
+    val offeredFileSize: Int = 0,
+    val connectionType: ConnectionType? = null,
+    val progressIndex: Int = 0,
+    val progressTotal: Int = 0,
+    val bytesSent: Long = 0,
+    val bytesTotal: Long = 0,
 )
 
 class PairingViewModel(app: Application) : AndroidViewModel(app) {
@@ -39,6 +49,38 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
     private var approve: (() -> Unit)? = null
 
     private var listener: DepotReconnectListener? = null
+
+    /**
+     * Held in memory, which is fine for the sizes this is being tested
+     * with but will not do for a real Depot serving photos and video —
+     * §5.7 streams by chunk, so this should become a ranged read from the
+     * content URI rather than a whole-file load.
+     */
+    private var offered: OfferedFile? = null
+
+    fun onFileSelected(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resolver = getApplication<Application>().contentResolver
+                val name = resolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+                } ?: "file"
+                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("could not open the selected file")
+                offered = OfferedFile(name, bytes)
+                _state.update {
+                    it.copy(
+                        offeredFileName = name,
+                        offeredFileSize = bytes.size,
+                        log = it.log + "offering ${'$'}name (${'$'}{bytes.size} bytes)",
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: e.toString()) }
+            }
+        }
+    }
 
     init {
         refreshDevices()
@@ -83,6 +125,8 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
                     context = getApplication(),
                     scope = viewModelScope,
                     signalUrl = url,
+                    turn = null,
+                    getFile = { offered },
                     cb = object : DepotReconnectCallbacks {
                         override fun onStatus(status: String) {
                             _state.update { it.copy(log = it.log + status) }
@@ -95,6 +139,32 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
                         override fun onClientAuthenticated(clientId: String) {
                             _state.update { it.copy(log = it.log + "client authenticated: $clientId") }
                             refreshDevices()
+                        }
+
+                        override fun onClientConnected(clientId: String, connectionType: ConnectionType) {
+                            _state.update {
+                                it.copy(
+                                    connectionType = connectionType,
+                                    log = it.log + "data channel open ($connectionType)",
+                                )
+                            }
+                        }
+
+                        override fun onProgress(
+                            clientId: String,
+                            index: Int,
+                            total: Int,
+                            bytesSent: Long,
+                            bytesTotal: Long,
+                        ) {
+                            _state.update {
+                                it.copy(
+                                    progressIndex = index + 1,
+                                    progressTotal = total,
+                                    bytesSent = bytesSent,
+                                    bytesTotal = bytesTotal,
+                                )
+                            }
                         }
 
                         override fun onClientRejected(clientId: String, reason: String) {
