@@ -1,5 +1,8 @@
 package com.depot.app.storage
 
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.SharedPreferences
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.depot.app.crypto.signDetached
@@ -13,7 +16,22 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class StorageTest {
 
-    private val context = InstrumentationRegistry.getInstrumentation().targetContext
+    /**
+     * Redirects SharedPreferences to test-only files.
+     *
+     * These tests run against the installed app, so using its real storage
+     * means a test run wipes whatever the user actually paired — the
+     * identity key lives in a different file and survives, so the next
+     * reconnect fails at "not a known device" with a credential that still
+     * verifies. Isolating here rather than threading a name through
+     * DeviceStore keeps the production API honest.
+     */
+    private val context: Context = object : ContextWrapper(
+        InstrumentationRegistry.getInstrumentation().targetContext,
+    ) {
+        override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
+            super.getSharedPreferences("test.$name", mode)
+    }
 
     @Before
     fun clearDevices() {
