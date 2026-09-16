@@ -92,6 +92,16 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onPayloadChange(value: String) = _state.update { it.copy(payload = value) }
 
+    /**
+     * A scan goes straight into pairing. Dropping the payload into the
+     * text field and waiting for a second tap would just be an extra step
+     * on the path §3.1 actually intends people to use.
+     */
+    fun onQrScanned(payload: String) {
+        _state.update { it.copy(payload = payload) }
+        join()
+    }
+
     fun onSignalUrlChange(value: String) = _state.update { it.copy(signalUrl = value) }
 
     fun onFileSelected(uri: Uri) {

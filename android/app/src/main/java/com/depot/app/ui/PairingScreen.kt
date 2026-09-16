@@ -142,6 +142,7 @@ fun PairingScreen(
     onSignalUrlChange: (String) -> Unit,
     onToggleListening: () -> Unit,
     onPickFile: () -> Unit,
+    onScanQr: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -158,9 +159,28 @@ fun PairingScreen(
             modifier = Modifier.padding(top = 4.dp, bottom = 18.dp),
         )
 
-        // Until the camera lands the QR payload is pasted, the same escape
-        // hatch the web Depot simulator uses. Kept short so it cannot take
-        // over the screen — the SAS is what deserves the space.
+        Button(
+            onClick = onScanQr,
+            enabled = !state.busy,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = DepotColors.Amber,
+                contentColor = DepotColors.Bg,
+                disabledContainerColor = DepotColors.Surface2,
+                disabledContentColor = DepotColors.Ink3,
+            ),
+            shape = RoundedCornerShape(9.dp),
+        ) {
+            Text("Scan QR code", fontSize = 16.sp)
+        }
+        Text(
+            // §3.1: the camera is what Signal cannot reach, so this is the
+            // path that actually carries the security property. Pasting is
+            // the fallback for a browser tab with no camera to point at.
+            "or paste the payload if you cannot scan",
+            color = DepotColors.Ink3,
+            style = MonoStyle.copy(fontSize = 12.sp),
+            modifier = Modifier.padding(top = 14.dp, bottom = 6.dp),
+        )
         OutlinedTextField(
             value = state.payload,
             onValueChange = onPayloadChange,
@@ -177,9 +197,9 @@ fun PairingScreen(
             enabled = !state.busy && state.payload.isNotBlank(),
             modifier = Modifier.padding(top = 12.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = DepotColors.Amber,
-                contentColor = DepotColors.Bg,
-                disabledContainerColor = DepotColors.Surface2,
+                containerColor = DepotColors.Surface2,
+                contentColor = DepotColors.Ink,
+                disabledContainerColor = DepotColors.Surface,
                 disabledContentColor = DepotColors.Ink3,
             ),
             shape = RoundedCornerShape(9.dp),

@@ -15,10 +15,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.depot.app.ui.PairingScreen
+import com.depot.app.ui.QrScannerScreen
 import com.depot.app.ui.PairingViewModel
 import com.depot.app.ui.theme.DepotColors
 import com.depot.app.ui.theme.DepotTheme
@@ -58,6 +62,19 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument(),
                 ) { uri -> uri?.let(viewModel::onFileSelected) }
 
+                var scanning by remember { mutableStateOf(false) }
+
+                if (scanning) {
+                    QrScannerScreen(
+                        onScanned = { payload ->
+                            scanning = false
+                            viewModel.onQrScanned(payload)
+                        },
+                        onCancel = { scanning = false },
+                    )
+                    return@DepotTheme
+                }
+
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     containerColor = DepotColors.Bg,
@@ -72,6 +89,7 @@ class MainActivity : ComponentActivity() {
                         onSignalUrlChange = viewModel::onSignalUrlChange,
                         onToggleListening = viewModel::toggleListening,
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
+                        onScanQr = { scanning = true },
                         modifier = Modifier.padding(innerPadding),
                     )
                 }
