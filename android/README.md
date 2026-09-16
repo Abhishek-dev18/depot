@@ -17,7 +17,7 @@ Compose, libsodium via lazysodium.
 | QR camera scanning | ⬜ not started |
 | Reconnection §4 (challenge-response, renewal, revoke) | ✅ implemented |
 | WebRTC transport (§5) | ✅ implemented (sender side) |
-| Foreground service | ⬜ not started |
+| Foreground service | ✅ implemented |
 
 ## Build
 
