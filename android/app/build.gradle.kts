@@ -51,6 +51,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.lazysodium.android) {
         // lazysodium's POM declares jna with no classifier, which resolves
         // to the .jar. Android needs the .aar below — it is the one that
@@ -60,6 +61,15 @@ dependencies {
     }
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.stream.webrtc.android)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    // Bundled rather than the Play Services variant: it keeps QR scanning
+    // working on a device without Google Play, which matters for a tool
+    // whose point is not depending on anyone's infrastructure.
+    implementation(libs.mlkit.barcode.scanning)
     // JNA must be the .aar variant on Android — the .jar ships no native
     // libraries. A version catalog cannot express the @aar classifier, so
     // this one stays literal.

@@ -784,3 +784,18 @@ code {
     display: none;
   }
 }
+
+/* Pairing fails confusingly when the QR carries a loopback address, so
+   this warning has to read as a problem rather than a footnote. */
+.signal-url-warning {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--amber-dim);
+  border-radius: var(--radius-sm);
+  background: var(--amber-bg);
+  color: var(--ink2);
+}
+
+.signal-url-warning code {
+  color: var(--amber);
+}

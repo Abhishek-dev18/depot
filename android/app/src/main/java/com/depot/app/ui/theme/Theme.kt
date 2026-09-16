@@ -1,58 +1,41 @@
 package com.depot.app.ui.theme
 
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+/**
+ * Dark only, and no dynamic color. The artifact's palette is the product's
+ * identity — letting Android recolor it from the user's wallpaper would
+ * make the phone and the browser look like two different applications, and
+ * the amber accent carries meaning here rather than decoration.
+ */
+private val DepotColorScheme = darkColorScheme(
+    primary = DepotColors.Amber,
+    onPrimary = DepotColors.Bg,
+    primaryContainer = DepotColors.AmberBg,
+    onPrimaryContainer = DepotColors.Amber,
+    secondary = DepotColors.Ink2,
+    onSecondary = DepotColors.Bg,
+    background = DepotColors.Bg,
+    onBackground = DepotColors.Ink,
+    surface = DepotColors.Surface,
+    onSurface = DepotColors.Ink,
+    surfaceVariant = DepotColors.Surface2,
+    onSurfaceVariant = DepotColors.Ink2,
+    outline = DepotColors.Line2,
+    outlineVariant = DepotColors.Line,
+    error = DepotColors.Red,
+    onError = DepotColors.Bg,
+    errorContainer = DepotColors.RedBg,
+    onErrorContainer = DepotColors.Red,
 )
 
 @Composable
-fun DepotTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
+fun DepotTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
+        colorScheme = DepotColorScheme,
+        typography = DepotTypography,
+        content = content,
     )
 }

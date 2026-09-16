@@ -3,6 +3,7 @@ import './App.css'
 import { ClientView } from './components/ClientView'
 import { DepotSimulatorView } from './components/DepotSimulatorView'
 import { LaptopIcon, PhoneIcon } from './components/icons'
+import { defaultSignalUrl, isLoopbackSignalUrl } from './signalUrl'
 import type { TurnConfig } from './transport/webrtc'
 
 type Role = 'client' | 'depot'
@@ -17,9 +18,9 @@ function initialRole(): Role {
 
 function initialSignalUrl(): string {
   try {
-    return localStorage.getItem('depot:signalUrl') ?? 'ws://localhost:8080/ws'
+    return localStorage.getItem('depot:signalUrl') ?? defaultSignalUrl()
   } catch {
-    return 'ws://localhost:8080/ws'
+    return defaultSignalUrl()
   }
 }
 
@@ -117,6 +118,13 @@ function App() {
               Signal server
               <input value={signalUrl} onChange={(e) => updateSignalUrl(e.target.value)} spellCheck={false} />
             </label>
+            {isLoopbackSignalUrl(signalUrl) && (
+              <p className="hint signal-url-warning">
+                This address goes into the QR code, and on a phone it points at the phone itself. To pair a
+                real device, open this page at your computer&rsquo;s LAN address (for example{' '}
+                <code>http://192.168.1.11:5173/</code>) and this field will follow.
+              </p>
+            )}
 
             <p className="hint settings-section-label">
               TURN server (optional — only needed when a direct or STUN-assisted connection fails; see the
