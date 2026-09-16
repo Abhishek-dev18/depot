@@ -13,7 +13,8 @@ Compose, libsodium via lazysodium.
 |---|---|
 | Crypto core (§3.3, §3.6, §4, §5.3) | ✅ implemented, verified against shared vectors |
 | Signal client (§7.1) | ✅ implemented |
-| Pairing UI + QR scanning (§3) | ⬜ not started |
+| Pairing flow + SAS screen (§3) | ✅ implemented (QR payload pasted) |
+| QR camera scanning | ⬜ not started |
 | WebRTC transport (§5) | ⬜ not started |
 
 ## Build

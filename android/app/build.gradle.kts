@@ -51,6 +51,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.lazysodium.android) {
         // lazysodium's POM declares jna with no classifier, which resolves
         // to the .jar. Android needs the .aar below — it is the one that
