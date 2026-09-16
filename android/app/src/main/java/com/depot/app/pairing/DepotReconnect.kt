@@ -27,6 +27,7 @@ import com.depot.app.transport.SessionKeys
 import com.depot.app.transport.TransferCallbacks
 import com.depot.app.transport.TurnConfig
 import com.depot.app.transport.WebRtc
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -50,8 +51,16 @@ interface DepotReconnectCallbacks {
 class DepotReconnectListener(
     val depotId: String,
     private val signal: SignalClient,
+    private val connections: ConcurrentHashMap<String, () -> Unit>,
 ) {
-    fun stop() = signal.close()
+    fun stop() {
+        // Closing only the WebSocket would leave every PeerConnection from
+        // this session alive, still holding ICE sockets and running
+        // keepalives, and the next session would negotiate alongside them.
+        for (close in connections.values) runCatching { close() }
+        connections.clear()
+        signal.close()
+    }
 
     /**
      * protocol.md §6 steps 4-5. Telling Signal is only a routing
@@ -85,15 +94,26 @@ suspend fun runDepotReconnectListener(
     cb.onStatus("registered, listening for reconnections")
     cb.onRegistered(depotId)
 
+    val connections = ConcurrentHashMap<String, () -> Unit>()
+
     signal.onMessage { e ->
-        if (e.type == TYPE_INCOMING && e.clientId != null) {
-            scope.launch {
-                handleIncoming(context, scope, signal, depotIdentity.privateKey, depotId, e, turn, getFile, cb)
+        val clientId = e.clientId
+        when {
+            e.type == TYPE_INCOMING && clientId != null -> scope.launch {
+                handleIncoming(
+                    context, scope, signal, depotIdentity.privateKey, depotId,
+                    e, turn, getFile, connections, cb,
+                )
+            }
+            // A Client that goes away releases its transport immediately
+            // rather than at the next stop().
+            e.type == TYPE_PEER_LEFT && clientId != null -> {
+                connections.remove(clientId)?.let { runCatching { it() } }
             }
         }
     }
 
-    return DepotReconnectListener(depotId, signal)
+    return DepotReconnectListener(depotId, signal, connections)
 }
 
 private suspend fun handleIncoming(
@@ -105,6 +125,7 @@ private suspend fun handleIncoming(
     incoming: Envelope,
     turn: TurnConfig?,
     getFile: () -> OfferedFile?,
+    connections: ConcurrentHashMap<String, () -> Unit>,
     cb: DepotReconnectCallbacks,
 ) {
     val clientId = incoming.clientId ?: return
@@ -188,6 +209,10 @@ private suspend fun handleIncoming(
 
         // §5: the Client is the offerer, so it opens the data channels as
         // soon as it sees SESSION_OK. This side answers.
+        // A reconnecting Client replaces whatever it had before; without
+        // this, repeated reconnects stack live PeerConnections.
+        connections.remove(clientId)?.let { runCatching { it() } }
+
         val channels = WebRtc.negotiateAsAnswerer(context, signal, clientId, turn)
         cb.onClientConnected(clientId, channels.connectionType)
 
@@ -197,7 +222,7 @@ private suspend fun handleIncoming(
             getFile = getFile,
             cb = object : TransferCallbacks {
                 override fun onManifestSent(transferId: Int, chunkCount: Int) {
-                    cb.onStatus("offering \$chunkCount chunk(s) to \$clientId")
+                    cb.onStatus("offering $chunkCount chunk(s)")
                 }
 
                 override fun onChunkSent(index: Int, total: Int, bytesSent: Long, bytesTotal: Long) {
@@ -212,6 +237,11 @@ private suspend fun handleIncoming(
         // The ctl observer fires on a WebRTC thread, so each message is
         // handed to the scope rather than handled inline.
         sender.start { msg -> scope.launch { sender.handle(msg) } }
+
+        connections[clientId] = {
+            sender.stop()
+            channels.close()
+        }
     } catch (e: Exception) {
         cb.onClientRejected(clientId, e.message ?: e.toString())
     }

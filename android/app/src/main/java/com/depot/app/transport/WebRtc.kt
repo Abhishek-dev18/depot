@@ -2,7 +2,6 @@ package com.depot.app.transport
 
 import android.content.Context
 import com.depot.app.signal.SignalClient
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CompletableDeferred
@@ -48,18 +47,22 @@ class DataChannels(
 }
 
 object WebRtc {
-    private val initialized = AtomicBoolean(false)
-    private lateinit var factory: PeerConnectionFactory
+    private var factory: PeerConnectionFactory? = null
 
-    /** Loads the native library once per process. */
-    fun ensureInitialized(context: Context) {
-        if (!initialized.compareAndSet(false, true)) return
+    /**
+     * Loads the native library once per process. Synchronized rather than
+     * flag-guarded: two clients reconnecting at once would otherwise let
+     * the second proceed while the first was still building the factory.
+     */
+    @Synchronized
+    private fun factory(context: Context): PeerConnectionFactory {
+        factory?.let { return it }
         PeerConnectionFactory.initialize(
             PeerConnectionFactory.InitializationOptions
                 .builder(context.applicationContext)
                 .createInitializationOptions(),
         )
-        factory = PeerConnectionFactory.builder().createPeerConnectionFactory()
+        return PeerConnectionFactory.builder().createPeerConnectionFactory().also { factory = it }
     }
 
     private fun iceServers(turn: TurnConfig?): List<PeerConnection.IceServer> = buildList {
@@ -85,7 +88,7 @@ object WebRtc {
         turn: TurnConfig?,
         timeoutMs: Long = 30_000,
     ): DataChannels {
-        ensureInitialized(context)
+        val factory = factory(context)
 
         val ctlReady = CompletableDeferred<DataChannel>()
         val dataReady = CompletableDeferred<DataChannel>()
