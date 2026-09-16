@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Reaching the Signal relay, and the peer-to-peer transport of §5. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- WebRTC inspects the active network to gather ICE candidates. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

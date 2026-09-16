@@ -52,6 +52,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.lazysodium.android)
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.coroutines.android)
     // JNA must be the .aar variant on Android — the .jar ships no native
     // libraries. A version catalog cannot express the @aar classifier, so
     // this one stays literal.
