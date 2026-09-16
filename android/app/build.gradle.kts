@@ -61,6 +61,7 @@ dependencies {
     }
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.stream.webrtc.android)
     // JNA must be the .aar variant on Android — the .jar ships no native
     // libraries. A version catalog cannot express the @aar classifier, so
     // this one stays literal.

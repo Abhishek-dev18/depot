@@ -12,6 +12,7 @@ lazysodium = "5.2.0"
 jna = "5.17.0"
 okhttp = "4.12.0"
 coroutines = "1.11.0"
+webrtc = "1.3.10"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -32,6 +33,7 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 lazysodium-android = { group = "com.goterl", name = "lazysodium-android", version.ref = "lazysodium" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+stream-webrtc-android = { group = "io.getstream", name = "stream-webrtc-android", version.ref = "webrtc" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
