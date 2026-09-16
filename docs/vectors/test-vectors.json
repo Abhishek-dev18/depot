@@ -1,0 +1,76 @@
+{
+  "_comment": "Known-answer vectors shared by the web and Android implementations. Generated from web/src/crypto/genvectors.test.ts. If a value here changes, the wire format changed and BOTH implementations must be updated.",
+  "transcript": {
+    "_comment": "protocol.md §3.3 length-prefixed concatenation",
+    "fields": [
+      "00",
+      "aabb",
+      "",
+      "ff00ff"
+    ],
+    "expected": "0001000002aabb00000003ff00ff"
+  },
+  "pairing": {
+    "_comment": "protocol.md §3.3 key derivation and §3.4 SAS",
+    "clientEkPriv": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da",
+    "clientEkPub": "c8feca81be196cdf2cadeabf13c4903d7632dce4955aa68b6e5d9adef54e2616",
+    "depotEkPriv": "646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d",
+    "depotEkPub": "a2ce93c64b85e78a62d23d888e41770269b04dc5565edd1db54030ae3781ef6e",
+    "clientIkSeed": "c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1",
+    "clientIkPub": "80d136fd35ba9ae88eeb7be9186db0bd1a68075e5ad99ad5ca14831301db8b28",
+    "depotIkSeed": "323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b",
+    "depotIkPub": "fc68d488fafca7fac7d50a4c195f05d343ca42dd0cf49db2f06ca2af8d2b2392",
+    "version": 1,
+    "sessionId": "0910171e252c333a41484f565d646b72",
+    "nonce": "4d545b626970777e858c939aa1a8afb6",
+    "transcript": "00010100100910171e252c333a41484f565d646b720020c8feca81be196cdf2cadeabf13c4903d7632dce4955aa68b6e5d9adef54e2616002080d136fd35ba9ae88eeb7be9186db0bd1a68075e5ad99ad5ca14831301db8b280020a2ce93c64b85e78a62d23d888e41770269b04dc5565edd1db54030ae3781ef6e0020fc68d488fafca7fac7d50a4c195f05d343ca42dd0cf49db2f06ca2af8d2b239200104d545b626970777e858c939aa1a8afb6",
+    "sharedSecret": "df4281902d0d05ffe46650abc66a6ea6b9e40fac82ee6ffb111b7c1608e3f15c",
+    "master": "c335d8b98238f25b8dbad4498fa7c1b239ae633e29c555934eb37ea944652e63",
+    "kC2D": "b2872b6ba1aeaf0fc822e1718e780bd81fecaff90aeed2f3e947419873d85deb",
+    "kD2C": "b14409690d38b45f6ee6e4a745b44281b05ee9e2496c72620b64e10708588517",
+    "sasSeed": "2cdc9bfe19cb7f0d",
+    "sas": "938701"
+  },
+  "credential": {
+    "_comment": "protocol.md §3.6 — signing bytes are length-prefixed(depotId, clientId, u64be(issuedAt), u64be(expiresAt))",
+    "depotId": "/GjUiPr8p/rH1QpMGV8F00PKQt0M9J2y8Gyir40rI5I",
+    "clientId": "gNE2/TW6muiO63vpGG2wvRpoB15a2ZrVyhSDEwHbiyg",
+    "issuedAt": 1700000000000,
+    "expiresAt": 1707776000000,
+    "signingBytes": "002b2f476a5569507238702f72483151704d475638463030504b5174304d394a32793847796972343072493549002b674e45322f5457366d75694f36337670474732777652706f42313561325a7256796853444577486269796700080000018bcfe5680000080000018d9f61c000",
+    "sig": "1sfSnvqGkUoN6t/KvNneBobdWfh6WpUxI8AzvR5EehUxldzUJVf3OoTsrYkoSXOdwWmfLse2ga6qcBg+x4TtBg"
+  },
+  "reconnect": {
+    "_comment": "protocol.md §4 challenge-response",
+    "challengeNonce": "21282f363d444b525960676e757c838a",
+    "transcript": "0020c8feca81be196cdf2cadeabf13c4903d7632dce4955aa68b6e5d9adef54e26160020a2ce93c64b85e78a62d23d888e41770269b04dc5565edd1db54030ae3781ef6e001021282f363d444b525960676e757c838a",
+    "sig": "+ovNEMYyQyIN59BNwLApdJT7iwsPJUbIrqg9UqJMzvt6U6itl4vaPWK4DFEGTiu7NZGzHyb0x4MO+dYKGBBhAw"
+  },
+  "nonces": {
+    "_comment": "protocol.md §5.3 derived nonces; the two spaces must stay disjoint",
+    "chunk_d2c_t7_i3": "010000000700000003000000000000000000000000000000",
+    "chunk_c2d_t0_i0": "000000000000000000000000000000000000000000000000",
+    "ctl_c2d_counter2": "800000000000000002000000000000000000000000000000",
+    "ctl_d2c_counter0": "810000000000000000000000000000000000000000000000"
+  },
+  "frames": {
+    "_comment": "Full encrypted frames — deterministic because nonces are derived, not random",
+    "chunk": {
+      "key": "b14409690d38b45f6ee6e4a745b44281b05ee9e2496c72620b64e10708588517",
+      "direction": "DepotToClient",
+      "transferId": 7,
+      "chunkIndex": 3,
+      "compressed": false,
+      "plaintext": "050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7be",
+      "frame": "010000000700000003008e3bedd096798be9ab799b46e24f52ee79c0e07896a64e7a55799ab39c339791fdf3a845de48ce4b4c4799dfee19e872f6f8e228bb364d09f2947ed888d0aa4e77e3940df17002eb310e9afcde5d615e"
+    },
+    "ctl": {
+      "key": "b2872b6ba1aeaf0fc822e1718e780bd81fecaff90aeed2f3e947419873d85deb",
+      "direction": "ClientToDepot",
+      "counter": 2,
+      "plaintext": "7b2274797065223a22524551554553545f46494c45227d",
+      "plaintextUtf8": "{\"type\":\"REQUEST_FILE\"}",
+      "frame": "02000000000000000297fbb80a1d8b4e4c5b9cd6f62af3a92b34cafad0658f6f6ea05defa27253081bbe081c0b813eee"
+    }
+  }
+}
