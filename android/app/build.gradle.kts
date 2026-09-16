@@ -51,7 +51,13 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.lazysodium.android)
+    implementation(libs.lazysodium.android) {
+        // lazysodium's POM declares jna with no classifier, which resolves
+        // to the .jar. Android needs the .aar below — it is the one that
+        // carries the native libraries — and having both on the classpath
+        // duplicates every com.sun.jna class.
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
     // JNA must be the .aar variant on Android — the .jar ships no native
