@@ -4,7 +4,11 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.depot.app.pairing.DepotPairingCallbacks
+import com.depot.app.pairing.QrPayload
+import com.depot.app.pairing.DepotReconnectCallbacks
+import com.depot.app.pairing.DepotReconnectListener
 import com.depot.app.pairing.runDepotPairing
+import com.depot.app.pairing.runDepotReconnectListener
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +26,8 @@ data class PairingUiState(
     val justPaired: DeviceRecord? = null,
     val log: List<String> = emptyList(),
     val devices: List<DeviceRecord> = emptyList(),
+    val signalUrl: String = "",
+    val listeningAs: String? = null,
 )
 
 class PairingViewModel(app: Application) : AndroidViewModel(app) {
@@ -31,6 +37,8 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Set when the SAS is on screen; invoking it releases the pairing flow. */
     private var approve: (() -> Unit)? = null
+
+    private var listener: DepotReconnectListener? = null
 
     init {
         refreshDevices()
@@ -49,6 +57,63 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onPayloadChange(value: String) = _state.update { it.copy(payload = value) }
 
+    fun onSignalUrlChange(value: String) = _state.update { it.copy(signalUrl = value) }
+
+    /**
+     * protocol.md §4. Registering presence is what lets a paired Client
+     * reach this Depot again without the QR flow, so it stays running
+     * until explicitly stopped.
+     */
+    fun toggleListening() {
+        listener?.let {
+            it.stop()
+            listener = null
+            _state.update { s -> s.copy(listeningAs = null, log = s.log + "stopped listening") }
+            return
+        }
+
+        val url = _state.value.signalUrl.ifBlank { null } ?: run {
+            _state.update { it.copy(error = "set the signal URL first") }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                listener = runDepotReconnectListener(
+                    context = getApplication(),
+                    scope = viewModelScope,
+                    signalUrl = url,
+                    cb = object : DepotReconnectCallbacks {
+                        override fun onStatus(status: String) {
+                            _state.update { it.copy(log = it.log + status) }
+                        }
+
+                        override fun onRegistered(depotId: String) {
+                            _state.update { it.copy(listeningAs = depotId) }
+                        }
+
+                        override fun onClientAuthenticated(clientId: String) {
+                            _state.update { it.copy(log = it.log + "client authenticated: $clientId") }
+                            refreshDevices()
+                        }
+
+                        override fun onClientRejected(clientId: String, reason: String) {
+                            _state.update { it.copy(log = it.log + "rejected $clientId: $reason") }
+                        }
+                    },
+                )
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: e.toString()) }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        listener?.stop()
+        listener = null
+        super.onCleared()
+    }
+
     fun onApprove() {
         approve?.invoke()
         approve = null
@@ -58,6 +123,8 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
     fun onRevoke(device: DeviceRecord) {
         viewModelScope.launch(Dispatchers.IO) {
             DeviceStore.revoke(getApplication(), device.clientIdentityPub)
+            // Best-effort routing hint; the refusal above is the real thing.
+            listener?.revoke(device.clientIdentityPub)
             refreshDevices()
         }
     }
@@ -69,6 +136,11 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(busy = true, error = null, sas = null, justPaired = null, log = emptyList())
         }
+
+        // The QR already names the Signal server, so listening later does
+        // not need it typed in by hand.
+        runCatching { QrPayload.parse(_state.value.payload) }
+            .onSuccess { qr -> _state.update { it.copy(signalUrl = qr.signalUrl) } }
 
         viewModelScope.launch(Dispatchers.IO) {
             runDepotPairing(

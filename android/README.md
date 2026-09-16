@@ -15,6 +15,7 @@ Compose, libsodium via lazysodium.
 | Signal client (§7.1) | ✅ implemented |
 | Pairing flow + SAS screen (§3) | ✅ implemented (QR payload pasted) |
 | QR camera scanning | ⬜ not started |
+| Reconnection §4 (challenge-response, renewal, revoke) | ✅ implemented |
 | WebRTC transport (§5) | ⬜ not started |
 
 ## Build

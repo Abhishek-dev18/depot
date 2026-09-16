@@ -37,6 +37,8 @@ class MainActivity : ComponentActivity() {
                         onApprove = viewModel::onApprove,
                         onRevoke = viewModel::onRevoke,
                         onDismissResult = viewModel::dismissResult,
+                        onSignalUrlChange = viewModel::onSignalUrlChange,
+                        onToggleListening = viewModel::toggleListening,
                         modifier = Modifier.padding(innerPadding),
                     )
                 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -136,6 +137,8 @@ fun PairingScreen(
     onApprove: () -> Unit,
     onRevoke: (DeviceRecord) -> Unit,
     onDismissResult: () -> Unit,
+    onSignalUrlChange: (String) -> Unit,
+    onToggleListening: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -209,7 +212,11 @@ fun PairingScreen(
                     style = MonoStyle,
                     modifier = Modifier.padding(top = 8.dp),
                 )
-                TextButton(onClick = onDismissResult, modifier = Modifier.padding(top = 4.dp)) {
+                TextButton(
+                    onClick = onDismissResult,
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
                     Text("Dismiss", color = DepotColors.Ink2, style = MonoStyle)
                 }
             }
@@ -224,9 +231,62 @@ fun PairingScreen(
                     .padding(12.dp),
             ) {
                 Text(error, color = DepotColors.Red, style = MonoStyle)
-                TextButton(onClick = onDismissResult) {
+                TextButton(onClick = onDismissResult, contentPadding = PaddingValues(vertical = 8.dp)) {
                     Text("Dismiss", color = DepotColors.Ink2, style = MonoStyle)
                 }
+            }
+        }
+
+        Text(
+            "RECONNECTION",
+            color = DepotColors.Ink3,
+            style = MonoStyle.copy(fontSize = 11.sp, letterSpacing = 1.sp),
+            modifier = Modifier.padding(top = 26.dp),
+        )
+        Text(
+            "Paired Clients can only reach this Depot while it is listening.",
+            color = DepotColors.Ink3,
+            style = MonoStyle.copy(fontSize = 12.sp),
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        OutlinedTextField(
+            value = state.signalUrl,
+            onValueChange = onSignalUrlChange,
+            label = { Text("Signal URL") },
+            placeholder = { Text("ws://host:8080/ws", style = MonoStyle) },
+            singleLine = true,
+            enabled = state.listeningAs == null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp),
+            textStyle = MonoStyle.copy(fontSize = 12.sp),
+        )
+        Button(
+            onClick = onToggleListening,
+            modifier = Modifier.padding(top = 10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (state.listeningAs != null) DepotColors.Surface2 else DepotColors.Amber,
+                contentColor = if (state.listeningAs != null) DepotColors.Ink else DepotColors.Bg,
+            ),
+            shape = RoundedCornerShape(9.dp),
+        ) {
+            Text(if (state.listeningAs != null) "Stop listening" else "Start listening", fontSize = 16.sp)
+        }
+        state.listeningAs?.let { depotId ->
+            Row(
+                modifier = Modifier.padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .background(DepotColors.Green, RoundedCornerShape(4.dp)),
+                )
+                Text(
+                    "  listening as ${shortId(depotId)}",
+                    color = DepotColors.Green,
+                    style = MonoStyle.copy(fontSize = 12.sp),
+                )
             }
         }
 
