@@ -35,6 +35,8 @@ class MainActivity : ComponentActivity() {
                         onPayloadChange = viewModel::onPayloadChange,
                         onJoin = viewModel::join,
                         onApprove = viewModel::onApprove,
+                        onRevoke = viewModel::onRevoke,
+                        onDismissResult = viewModel::dismissResult,
                         modifier = Modifier.padding(innerPadding),
                     )
                 }
