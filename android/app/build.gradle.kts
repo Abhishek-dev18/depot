@@ -33,6 +33,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets.getByName("androidTest") {
+        // docs/vectors holds the known-answer vectors shared with web/.
+        // Pointing at the directory rather than copying keeps one source of
+        // truth, so the two implementations cannot silently drift apart.
+        assets.srcDir(rootProject.file("../docs/vectors"))
+    }
 }
 
 dependencies {
@@ -44,6 +51,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.lazysodium.android)
+    // JNA must be the .aar variant on Android — the .jar ships no native
+    // libraries. A version catalog cannot express the @aar classifier, so
+    // this one stays literal.
+    implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
