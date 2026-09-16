@@ -294,6 +294,27 @@ no silent renewal — because it never asks for one — and simply has to re-pai
 via §3 next time, which is the correct outcome for a device that may no longer
 be trusted or in the owner's possession.
 
+### 4.2 Rejection
+
+A Depot that refuses a reconnection tells the Client rather than going silent:
+
+```json
+{ "type": "REJECTED", "payload": { "reason": "not a known, un-revoked device" } }
+```
+
+The reason travels in the **payload**, not the envelope's `reason` field: Signal
+populates that field only on errors it generates itself, and drops it when
+relaying between peers (§7.1), so a Depot cannot use it.
+
+This discloses nothing useful. The reasons say only whether a credential is
+still honoured, which the outcome reveals anyway — a peer that is refused learns
+nothing it could not infer from never receiving a `CHALLENGE`. What it buys is
+that a revoked device is told it was revoked, instead of appearing to the user
+as an unexplained timeout.
+
+Rejection is advisory, not a security boundary: a Depot that crashes or vanishes
+sends nothing, so a Client must still treat a timeout as failure.
+
 ---
 
 ## 5. Transport
@@ -467,6 +488,9 @@ direction).
 Each of these is carried inside an encrypted control frame (§5.3), one
 message per frame — Signal sees only ciphertext and a monotonic counter.
 
+**`REJECTED` (§4.2).** Sent by the Depot over the same relay route as
+`CHALLENGE`, carrying its reason in the payload.
+
 **Frame `type` byte (§5.3).** `1` = CHUNK, `2` = CTL. Further kinds can be
 added without changing either header layout.
 
@@ -596,5 +620,6 @@ whoever builds the Android app against this spec.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |
 | 0.1 | 2026-09-15 | Initial draft |

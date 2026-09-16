@@ -8,6 +8,7 @@ import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing, savePairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
 import { TypeError as SignalError } from '../signal/envelope'
+import { TypeRejected, throwIfRejected } from './rejection'
 import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
 import { requestFile, type ReceiverEvent } from '../transport/transferSession'
 
@@ -57,8 +58,12 @@ export async function runClientReconnect(
     })
 
     cb.onStatus('awaiting challenge')
-    const challenge = await client.waitFor((e) => e.type === 'CHALLENGE' || e.type === SignalError, 15_000)
+    const challenge = await client.waitFor(
+      (e) => e.type === 'CHALLENGE' || e.type === TypeRejected || e.type === SignalError,
+      15_000,
+    )
     if (challenge.type === SignalError) throw new Error(`reconnection rejected: ${challenge.reason}`)
+    throwIfRejected(challenge)
 
     const { depotEk, challengeNonce } = challenge.payload as ChallengePayload
     const depotEkBytes = fromBase64(depotEk)
@@ -70,8 +75,12 @@ export async function runClientReconnect(
     cb.onStatus('sending signed response')
     client.relay('RESPONSE', { sig })
 
-    const ok = await client.waitFor((e) => e.type === 'SESSION_OK' || e.type === SignalError, 15_000)
+    const ok = await client.waitFor(
+      (e) => e.type === 'SESSION_OK' || e.type === TypeRejected || e.type === SignalError,
+      15_000,
+    )
     if (ok.type === SignalError) throw new Error(`reconnection rejected: ${ok.reason}`)
+    throwIfRejected(ok)
 
     // protocol.md §4.1: silent credential renewal — save it only if it
     // actually verifies against this Depot's identity, so a compromised

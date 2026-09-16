@@ -39,6 +39,13 @@ import org.json.JSONObject
  */
 private const val RENEW_WITHIN_MS = 30L * 24 * 60 * 60 * 1000
 
+/**
+ * protocol.md §4.2. The reason travels in the payload rather than the
+ * envelope's `reason` field: Signal populates that only on errors it
+ * generates itself and drops it when relaying between peers.
+ */
+private const val TYPE_REJECTED = "REJECTED"
+
 interface DepotReconnectCallbacks {
     fun onStatus(status: String)
     fun onRegistered(depotId: String)
@@ -243,6 +250,13 @@ private suspend fun handleIncoming(
             channels.close()
         }
     } catch (e: Exception) {
-        cb.onClientRejected(clientId, e.message ?: e.toString())
+        val reason = e.message ?: e.toString()
+        // protocol.md §4.2 — say so rather than leaving the Client to sit
+        // until its timeout. These reasons say only whether a credential
+        // is still honoured, which the outcome reveals anyway.
+        runCatching {
+            signal.relay(TYPE_REJECTED, JSONObject().put("reason", reason), clientId)
+        }
+        cb.onClientRejected(clientId, reason)
     }
 }

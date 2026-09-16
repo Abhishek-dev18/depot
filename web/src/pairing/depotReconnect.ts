@@ -9,6 +9,7 @@ import { getDevice, touchDevice } from '../storage/devices'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { SignalClient } from '../signal/client'
 import { TypePeerLeft } from '../signal/envelope'
+import { TypeRejected, type RejectedPayload } from './rejection'
 import { negotiateAsAnswerer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
 import { runFileSender, type OfferedFile, type SenderEvent } from '../transport/transferSession'
 
@@ -170,6 +171,12 @@ async function handleIncoming(
       channels.close()
     })
   } catch (err) {
-    cb.onClientRejected({ clientId, reason: err instanceof Error ? err.message : String(err) })
+    const reason = err instanceof Error ? err.message : String(err)
+    // Tell the Client instead of letting it sit until its timeout. These
+    // reasons only say whether a credential is still honoured, which the
+    // outcome reveals anyway — a rejected peer learns nothing it could
+    // not infer from never getting a challenge.
+    client.relay(TypeRejected, { reason } satisfies RejectedPayload, clientId)
+    cb.onClientRejected({ clientId, reason })
   }
 }
