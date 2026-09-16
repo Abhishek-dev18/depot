@@ -60,7 +60,12 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
         setSas(null)
         setQrText('')
       },
-      onError: (msg) => push(`error: ${msg}`),
+      onError: (msg) => {
+        // A failed pairing must not leave a stale code on screen that the
+        // user could still be comparing against.
+        setSas(null)
+        push(`error: ${msg}`)
+      },
     })
     setBusy(false)
   }

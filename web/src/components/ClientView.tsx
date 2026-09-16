@@ -60,8 +60,18 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
       onStatus: push,
       onQrReady: (payload: QRPayload, dataUrl) => setQr({ dataUrl, json: JSON.stringify(payload, null, 2) }),
       onSas: setSas,
-      onPaired: () => refreshPairings(),
-      onError: (msg) => push(`error: ${msg}`),
+      onPaired: () => {
+        // The comparison is done. Leaving the digits up invites the user
+        // to check them again against a screen that has moved on, and the
+        // QR's session is single-use, so neither should outlive pairing.
+        setSas(null)
+        setQr(null)
+        refreshPairings()
+      },
+      onError: (msg) => {
+        setSas(null)
+        push(`error: ${msg}`)
+      },
     })
     setBusy(false)
   }
