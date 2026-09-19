@@ -1352,6 +1352,58 @@ code {
   }
 }
 
+/* ---------- waiting for a Depot that is not listening yet ---------- */
+
+.waitwrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+  padding: 40px;
+  text-align: center;
+}
+
+/*
+ * A slow amber pulse, not a spinner. A spinner says "working, nearly
+ * there"; this is a wait with no known end, and the difference matters to
+ * someone deciding whether to go and look at their phone.
+ */
+.waitmark {
+  width: 56px;
+  height: 56px;
+  border: 2px solid var(--amber-dim);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+.waitmark i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: depot-breathe 2.4s ease-in-out infinite;
+}
+@keyframes depot-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .waitmark i {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
 /* ---------- FALLBACK · no direct route ---------- */
 
 .failwrap {

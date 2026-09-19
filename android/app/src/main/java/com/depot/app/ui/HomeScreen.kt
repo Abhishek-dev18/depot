@@ -39,6 +39,7 @@ import com.depot.app.ui.components.Cta
 import com.depot.app.ui.components.GrantSwitch
 import com.depot.app.ui.components.HeroStat
 import com.depot.app.ui.components.IconBlock
+import com.depot.app.ui.components.IconFile
 import com.depot.app.ui.components.IconGrant
 import com.depot.app.ui.components.IconSettings
 import com.depot.app.ui.components.IcoButton
@@ -68,6 +69,7 @@ fun HomeScreen(
     state: DepotUiState,
     onToggleListening: () -> Unit,
     onOpenGrants: () -> Unit,
+    onPickFile: () -> Unit,
     onOpenSettings: () -> Unit,
     onDeviceClick: (DeviceRecord) -> Unit,
     onLinkDevice: () -> Unit,
@@ -103,6 +105,7 @@ fun HomeScreen(
 
             SectionLabel("SHARED")
             SharedSummaryRow(state = state, onOpen = onOpenGrants)
+            SingleFileRow(state = state, onPickFile = onPickFile)
 
             SectionLabel("LINKED DEVICES")
             if (state.devices.isEmpty()) {
@@ -334,6 +337,32 @@ private fun SharedSummaryRow(state: DepotUiState, onOpen: () -> Unit) {
             RowTile { IconGrant(if (sharing) DepotColors.Amber else DepotColors.Ink3, 18.dp) }
         },
         trailing = { GrantSwitch(on = sharing) },
+    )
+}
+
+/**
+ * One file, shared on its own, without granting a folder around it.
+ *
+ * Kept beside the folder summary rather than inside the ACCESS screen
+ * because it is the quickest thing anyone wants to do — the same reason
+ * Depot also accepts a share from another app's share sheet.
+ */
+@Composable
+private fun SingleFileRow(state: DepotUiState, onPickFile: () -> Unit) {
+    val name = state.offeredFileName
+    ListRow(
+        name = name ?: "Share a single file",
+        meta = if (name == null) {
+            "WITHOUT GRANTING A WHOLE FOLDER"
+        } else {
+            "${formatBytes(state.offeredFileSize.toLong())} · SHARED ON ITS OWN"
+        },
+        nameColor = if (name == null) DepotColors.Ink2 else DepotColors.Ink,
+        onClick = onPickFile,
+        leading = {
+            RowTile { IconFile(if (name == null) DepotColors.Ink3 else DepotColors.Amber, 18.dp) }
+        },
+        trailing = { GrantSwitch(on = name != null) },
     )
 }
 

@@ -112,6 +112,27 @@ fun IconGrant(tint: Color, size: Dp = 16.dp, modifier: Modifier = Modifier) =
         drawLine(tint, Offset(u * 0.28f, u * 0.64f), Offset(u * 0.72f, u * 0.64f), stroke.width, StrokeCap.Butt)
     }
 
+/** A sheet with a turned corner — one file, shared on its own. */
+@Composable
+fun IconFile(tint: Color, size: Dp = 16.dp, modifier: Modifier = Modifier) =
+    Glyph(size, modifier, weight = 0.10f) { u, stroke ->
+        val body = Path().apply {
+            moveTo(u * 0.58f, u * 0.12f)
+            lineTo(u * 0.24f, u * 0.12f)
+            lineTo(u * 0.24f, u * 0.88f)
+            lineTo(u * 0.76f, u * 0.88f)
+            lineTo(u * 0.76f, u * 0.30f)
+            close()
+        }
+        drawPath(body, tint, style = stroke)
+        val fold = Path().apply {
+            moveTo(u * 0.58f, u * 0.12f)
+            lineTo(u * 0.58f, u * 0.30f)
+            lineTo(u * 0.76f, u * 0.30f)
+        }
+        drawPath(fold, tint, style = stroke)
+    }
+
 /** ⚙ — settings, drawn as sliders so it stays in the geometric family. */
 @Composable
 fun IconSettings(tint: Color, size: Dp = 16.dp, modifier: Modifier = Modifier) =

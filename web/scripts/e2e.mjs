@@ -57,26 +57,26 @@ log('SAS  client =', clientSas, ' depot =', depotSas, clientSas === depotSas ? '
 
 await depot.getByRole('button', { name: /^Approve$/i }).click()
 log('approved')
-await client.waitForTimeout(2500)
+await client.waitForTimeout(3000)
+
+// --- the Depot is paired but not listening yet ----------------------
+// A phone whose owner has not started it is not a broken network. This
+// asserts the difference, because getting it wrong sent someone off to
+// debug Wi-Fi that was working, and made them reload the page by hand.
+const waiting = await client.locator('.waitwrap').count()
+const failed = await client.locator('.failwrap').count()
+log(`depot not started yet -> waiting=${waiting} failed=${failed}`,
+  waiting === 1 && failed === 0 ? '✓ waits' : '✗ WRONG STATE')
 
 // --- depot offers a file and listens --------------------------------
 await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
 await depot.waitForTimeout(700)
 await depot.getByRole('button', { name: /Start listening/i }).click()
-log('depot listening')
-await depot.waitForTimeout(2500)
+log('depot listening — client should notice on its own, with no clicks')
 
-// --- client connects -------------------------------------------------
-for (let attempt = 1; attempt <= 6; attempt++) {
-  const browsing = await client.locator('.ftable').count()
-  if (browsing > 0) break
-  const failed = await client.locator('.failwrap').count()
-  if (failed > 0) {
-    log(`attempt ${attempt}: no route yet, retrying`)
-    await client.locator('.opt').first().click()
-  }
-  await client.waitForTimeout(4000)
-}
+// Deliberately no retry click and no reload: the poll has to do it.
+await client.waitForSelector('.ftable', { timeout: 45000 })
+log('client reconnected unaided')
 
 await client.waitForSelector('.ftable', { timeout: 30000 })
 log('FILES screen reached')

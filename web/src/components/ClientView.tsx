@@ -12,6 +12,7 @@ import { FilesPanel } from './FilesPanel'
 import { Log } from './Log'
 import { NoRoutePanel } from './NoRoutePanel'
 import { PairPanel } from './PairPanel'
+import { WaitingPanel } from './WaitingPanel'
 
 interface Props {
   signalUrl: string
@@ -36,6 +37,8 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
   const [session, setSession] = useState<DepotConnection | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const [offline, setOffline] = useState(false)
+  const [attempts, setAttempts] = useState(0)
 
   const [qr, setQr] = useState<{ dataUrl: string; json: string } | null>(null)
   const [sas, setSas] = useState<string | null>(null)
@@ -45,6 +48,9 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
 
   const sessionRef = useRef<DepotConnection | null>(null)
   const autoConnected = useRef(false)
+  // A ref, not the state: two callers racing to connect would both read
+  // the old `connecting` before React re-rendered either of them.
+  const connectingRef = useRef(false)
 
   useEffect(() => {
     sessionRef.current = session
@@ -69,7 +75,8 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
 
   const connect = useCallback(
     async (depotId: string) => {
-      if (sessionRef.current) return
+      if (sessionRef.current || connectingRef.current) return
+      connectingRef.current = true
       setConnecting(true)
       setFailure(null)
       await runClientReconnect(signalUrl, depotId, turnConfig, {
@@ -78,12 +85,19 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
         onSession: (open) => {
           sessionRef.current = open
           setSession(open)
+          setOffline(false)
+          setAttempts(0)
+        },
+        onDepotOffline: () => {
+          setOffline(true)
+          setAttempts((n) => n + 1)
         },
         onError: (message) => {
           push(`error: ${message}`)
           setFailure(message)
         },
       })
+      connectingRef.current = false
       setConnecting(false)
     },
     [signalUrl, turnConfig, push],
@@ -98,6 +112,24 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     void connect(pairings[0].depotId)
   }, [pairings, session, connecting, failure, connect])
 
+  // A Depot that is not listening yet will be, shortly. Polling for it
+  // costs one WebSocket round trip and saves the user reloading the page
+  // at the right moment, which is the behaviour this replaces.
+  //
+  // The retry calls connect() rather than nudging the effect above: that
+  // one does not list `offline` among its dependencies, so clearing the
+  // flag retriggered nothing and the page waited for ever. `attempts`
+  // changing on each refusal is what schedules the next poll.
+  useEffect(() => {
+    if (!offline || session) return
+    const depotId = pairings[0]?.depotId
+    if (!depotId) return
+    const timer = setTimeout(() => {
+      void connect(depotId)
+    }, 4000)
+    return () => clearTimeout(timer)
+  }, [offline, session, attempts, pairings, connect])
+
   const disconnect = () => {
     sessionRef.current?.close()
     sessionRef.current = null
@@ -108,7 +140,16 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
 
   const retry = () => {
     setFailure(null)
+    setOffline(false)
     autoConnected.current = false
+  }
+
+  /** Drop the stored credential and start over with a fresh code. */
+  const pairAgain = () => {
+    setOffline(false)
+    setFailure(null)
+    setPairings([])
+    autoConnected.current = true
   }
 
   const startPairing = async () => {
@@ -153,6 +194,8 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
             <ConnectionBadge type={session.connectionType} rate={rate} />
           ) : failure ? (
             <NoRouteBadge />
+          ) : offline ? (
+            <NoRouteBadge label="DEPOT OFFLINE" tone="idle" />
           ) : connecting ? (
             <NoRouteBadge label="CONNECTING" tone="idle" />
           ) : (
@@ -184,6 +227,8 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
         />
       ) : failure ? (
         <NoRoutePanel message={failure} onRetry={retry} onSettings={onOpenSettings} />
+      ) : offline ? (
+        <WaitingPanel attempts={attempts} onRetryNow={retry} onPairAgain={pairAgain} />
       ) : connecting ? (
         <div className="connecting">
           <div className="connecting-mark" aria-hidden="true" />

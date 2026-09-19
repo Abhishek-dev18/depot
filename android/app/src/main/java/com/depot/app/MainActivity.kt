@@ -1,7 +1,9 @@
 package com.depot.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -18,6 +20,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import com.depot.app.ui.DepotApp
 import com.depot.app.ui.DepotViewModel
 import com.depot.app.ui.theme.DepotColors
@@ -27,9 +30,31 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: DepotViewModel by viewModels()
 
+    /** A share that arrives while the app is already running. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        offerSharedFile(intent)
+    }
+
+    /**
+     * Another app shared a file with Depot.
+     *
+     * ACTION_SEND grants this activity read access to that one URI, which
+     * is the same shape of permission the file picker hands back: the user
+     * chose exactly this file and nothing else. It becomes the single
+     * offered file, alongside — not instead of — any granted folders.
+     */
+    private fun offerSharedFile(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+        uri?.let(viewModel::onFileSelected)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        offerSharedFile(intent)
         setContent {
             DepotTheme {
                 val state by viewModel.state.collectAsState()
@@ -85,6 +110,7 @@ class MainActivity : ComponentActivity() {
                         onDismissResult = viewModel::dismissResult,
                         onRename = viewModel::onRename,
                         onRevoke = viewModel::onRevoke,
+                        onForgetDevice = viewModel::onForgetDevice,
                     )
                 }
             }

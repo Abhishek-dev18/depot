@@ -37,6 +37,7 @@ fun DeviceSheet(
     connection: ConnectionType?,
     onRename: (String) -> Unit,
     onRevoke: () -> Unit,
+    onForget: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -97,7 +98,17 @@ fun DeviceSheet(
                 color = DepotColors.Ink3,
                 modifier = Modifier.padding(bottom = 18.dp),
             )
-            SheetButton("Close", primary = false, onClick = onClose, modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                // Forgetting changes nothing about access — the device is
+                // already refused. It only stops the list mentioning it.
+                SheetButton(
+                    "Forget",
+                    primary = false,
+                    onClick = onForget,
+                    modifier = Modifier.weight(1f),
+                )
+                SheetButton("Close", primary = true, onClick = onClose, modifier = Modifier.weight(1f))
+            }
         } else if (confirmingRevoke) {
             Text(
                 // §6: revocation is the Depot refusing the §4 handshake.

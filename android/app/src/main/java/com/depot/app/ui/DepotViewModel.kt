@@ -249,6 +249,23 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
                     val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
                 } ?: "file"
+                // Unlike a granted folder, which is streamed, a single
+                // offered file is held in memory so it survives the picker's
+                // permission grant expiring. That puts a ceiling on it: a
+                // whole video would take the process down, and a Depot that
+                // dies is worse than one that says no.
+                val ceiling = Runtime.getRuntime().maxMemory() / 4
+                val size = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    val index = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (index >= 0 && c.moveToFirst() && !c.isNull(index)) c.getLong(index) else -1L
+                } ?: -1L
+                if (size > ceiling) {
+                    throw IllegalStateException(
+                        "$name is ${size / (1024 * 1024)} MB — too large to offer on its own. " +
+                            "Share the folder it is in instead; folders are streamed.",
+                    )
+                }
+
                 val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: throw IllegalStateException("could not open the selected file")
                 DepotSession.setOfferedFile(OfferedFile(name, bytes))
@@ -322,6 +339,18 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
             // Signal is what stops routing to a device that is connected
             // right now. Both, or a revoked laptop keeps its channel.
             DepotSession.revoke(device.clientIdentityPub)
+            refreshDevices()
+        }
+    }
+
+    /**
+     * Removes the record altogether. Offered only once a device is already
+     * revoked, so losing it from the list is a second, deliberate step
+     * rather than a mis-tap on a device that still works.
+     */
+    fun onForgetDevice(device: DeviceRecord) {
+        viewModelScope.launch(Dispatchers.IO) {
+            DeviceStore.forget(getApplication(), device.clientIdentityPub)
             refreshDevices()
         }
     }

@@ -7,13 +7,24 @@ import { reconnectTranscript, signReconnectResponse } from '../crypto/reconnect'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing, savePairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
-import { TypeError as SignalError } from '../signal/envelope'
+import { ReasonDepotOffline, TypeError as SignalError } from '../signal/envelope'
 import { TypeRejected, throwIfRejected } from './rejection'
 import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
 import { openClientSession, type ClientSession } from '../transport/transferSession'
 
 export interface ClientReconnectCallbacks {
   onStatus: (status: string) => void
+
+  /**
+   * The Depot is simply not registered with Signal right now — its owner
+   * has not started it, or the phone is asleep.
+   *
+   * Reported apart from onError because it is not a failure: nothing is
+   * misconfigured and nothing needs fixing, the other end is just not
+   * there yet. Telling someone their network is at fault when their phone
+   * is merely switched off sends them to debug the wrong thing.
+   */
+  onDepotOffline: () => void
   onConnected: (info: { depotId: string; connectionType: ConnectionType }) => void
   /**
    * The session is open and can be browsed. Closing it tears down the
@@ -75,7 +86,13 @@ export async function runClientReconnect(
       (e) => e.type === 'CHALLENGE' || e.type === TypeRejected || e.type === SignalError,
       15_000,
     )
-    if (challenge.type === SignalError) throw new Error(`reconnection rejected: ${challenge.reason}`)
+    if (challenge.type === SignalError) {
+      if (challenge.reason === ReasonDepotOffline) {
+        cb.onDepotOffline()
+        return
+      }
+      throw new Error(`reconnection rejected: ${challenge.reason}`)
+    }
     throwIfRejected(challenge)
 
     const { depotEk, challengeNonce } = challenge.payload as ChallengePayload
@@ -92,7 +109,13 @@ export async function runClientReconnect(
       (e) => e.type === 'SESSION_OK' || e.type === TypeRejected || e.type === SignalError,
       15_000,
     )
-    if (ok.type === SignalError) throw new Error(`reconnection rejected: ${ok.reason}`)
+    if (ok.type === SignalError) {
+      if (ok.reason === ReasonDepotOffline) {
+        cb.onDepotOffline()
+        return
+      }
+      throw new Error(`reconnection rejected: ${ok.reason}`)
+    }
     throwIfRejected(ok)
 
     // protocol.md §4.1: silent credential renewal — save it only if it

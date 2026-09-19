@@ -49,6 +49,7 @@ fun DepotApp(
     onDismissResult: () -> Unit,
     onRename: (DeviceRecord, String) -> Unit,
     onRevoke: (DeviceRecord) -> Unit,
+    onForgetDevice: (DeviceRecord) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Saveable rather than remembered: a rotation should not close the
@@ -134,6 +135,7 @@ fun DepotApp(
                     }
                 },
                 onOpenGrants = { grantsOpen = true },
+                onPickFile = onPickFile,
                 onOpenSettings = { settingsOpen = true },
                 onDeviceClick = { selectedDeviceId = it.clientIdentityPub },
                 onLinkDevice = { scanning = true },
@@ -201,6 +203,10 @@ fun DepotApp(
                 },
                 onRevoke = {
                     onRevoke(selectedDevice)
+                    selectedDeviceId = null
+                },
+                onForget = {
+                    onForgetDevice(selectedDevice)
                     selectedDeviceId = null
                 },
                 onClose = { selectedDeviceId = null },
