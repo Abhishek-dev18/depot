@@ -4,6 +4,12 @@
   foreground because a status-bar icon is masked to its alpha and tinted
   by the system: it needs to be a flat silhouette at 24dp, not a 108dp
   layer with a launcher's safe-zone padding around it.
+
+  Inset well within the 24dp canvas rather than filling it. Android does
+  not formally mask these, but several systems — OneUI among them — draw
+  notification icons inside a circular badge, and a mark that reaches the
+  edges loses its corners there. 14dp across puts the corners at a radius
+  of 9.9, inside a 20dp circle.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -15,16 +21,16 @@
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.9"
-        android:pathData="M4.5,1.5 H19.5 A3,3 0 0 1 22.5,4.5 V19.5 A3,3 0 0 1 19.5,22.5 H4.5 A3,3 0 0 1 1.5,19.5 V4.5 A3,3 0 0 1 4.5,1.5 Z" />
+        android:strokeWidth="1.2"
+        android:pathData="M7.45,5.6 H16.55 A1.85,1.85 0 0 1 18.4,7.45 V16.55 A1.85,1.85 0 0 1 16.55,18.4 H7.45 A1.85,1.85 0 0 1 5.6,16.55 V7.45 A1.85,1.85 0 0 1 7.45,5.6 Z" />
 
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.9"
-        android:pathData="M4.875,8.25 H19.125" />
+        android:strokeWidth="1.2"
+        android:pathData="M7.65,9.7 H16.35" />
 
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M15.75,15 H20.25 V19.5 H15.75 Z" />
+        android:pathData="M14.3,13.85 H17.05 V16.6 H14.3 Z" />
 </vector>

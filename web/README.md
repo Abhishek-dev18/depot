@@ -57,7 +57,10 @@ node scripts/check-mark.mjs
 
 renders each one, measures where its seam and corner block actually land as
 fractions of its own box, and exits non-zero if any has drifted more than 0.03
-from the favicon. They had previously drifted into four visibly different
+from the favicon. For the two Android vectors it also checks the mark fits its
+mask: a launcher may crop an adaptive icon to a circle, and a square mark is
+limited by its diagonal rather than its width — which is how an icon that
+looked comfortably inside its canvas lost its corners on a real phone. They had previously drifted into four visibly different
 shapes, and side-by-side eyeballing is not sensitive enough to catch it.
 
 The Depot simulator stays at `?role=depot`. It stands in for the phone so the

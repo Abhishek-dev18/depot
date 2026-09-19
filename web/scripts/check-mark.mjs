@@ -57,6 +57,21 @@ const cells = {
   wmark: '<span class="wmark z26"></span>',
 }
 
+/**
+ * How much of its canvas each drawn icon may occupy before a mask eats it.
+ *
+ * A launcher may crop an adaptive icon to a circle, a squircle or a
+ * teardrop; Android guarantees only the central 66dp of the 108dp canvas.
+ * Several systems draw notification icons inside a circular badge too. A
+ * square mark is limited by its diagonal rather than its width, which is
+ * what made an icon that looked comfortably inside its canvas lose its
+ * corners on a real launcher.
+ */
+const SAFE = {
+  launcher: { canvas: 108, safeDiameter: 66 },
+  notification: { canvas: 24, safeDiameter: 20 },
+}
+
 const html = `<!doctype html><meta charset="utf-8"><style>
 :root { --amber:#FFB020; }
 /*
@@ -155,7 +170,7 @@ async function measure(id) {
     )
     const [by0, by1] = cr.length ? [cr[cr.length - 1][0] / H, cr[cr.length - 1][1] / H] : [NaN, NaN]
 
-    return { seamY, sx0, sx1, bx0, bx1, by0, by1 }
+    return { seamY, sx0, sx1, bx0, bx1, by0, by1, W, H, cell: c.width }
   }, dataUrl)
 }
 
@@ -176,6 +191,20 @@ console.log('-'.repeat(88))
 let worst = 0
 for (const id of names) {
   const r = results[id]
+  const safe = SAFE[id]
+  if (safe) {
+    // The mark's own size in canvas units, and the radius its corners
+    // reach from the centre.
+    const extent = (Math.max(r.W, r.H) / r.cell) * safe.canvas
+    const corner = (extent * Math.SQRT2) / 2
+    const limit = safe.safeDiameter / 2
+    const ok = corner <= limit
+    console.log(
+      `  ${id}: ${extent.toFixed(1)}dp of ${safe.canvas}, corners reach ${corner.toFixed(1)}dp ` +
+        `(safe radius ${limit}) ${ok ? 'ok' : 'WILL BE CLIPPED'}`,
+    )
+    if (!ok) process.exitCode = 1
+  }
   const drift = Math.max(
     ...keys.map((k) => (Number.isNaN(r[k]) || Number.isNaN(ref[k]) ? 0 : Math.abs(r[k] - ref[k]))),
   )
