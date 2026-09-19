@@ -32,3 +32,24 @@ Endpoints:
 ```bash
 go test ./... -race
 ```
+
+The race detector is not optional decoration here — a real data race lived
+in `hub.go` (a `*conn` read outside the mutex) and this is what caught it.
+
+**On Windows**, `-race` needs cgo, and cgo needs a 64-bit gcc. If you see
+
+```
+# runtime/cgo
+cc1.exe: sorry, unimplemented: 64-bit mode not compiled in
+```
+
+the gcc on your PATH is a 32-bit build. Either install a 64-bit toolchain —
+in MSYS2, `pacman -S mingw-w64-x86_64-gcc` from the MINGW64 shell — or drop
+the flag:
+
+```bash
+go test ./...
+```
+
+That still runs every test, just without race instrumentation. CI runs the
+`-race` build on Linux on every push, so nothing goes unchecked either way.
