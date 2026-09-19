@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { putChunks, resetChunkCacheForTests } from '../storage/chunkCache'
+import { buildManifest } from './manifest'
+import { cdcParamsForAvg } from './chunkSize'
 import {
   openClientSession,
   runFileSender,
@@ -75,17 +78,30 @@ function fileOf(name: string, size: number, seed = 1): OfferedFile {
   return { name, bytes }
 }
 
+async function bytesOf(file: { blob: Blob }): Promise<number[]> {
+  return Array.from(new Uint8Array(await file.blob.arrayBuffer()))
+}
+
 async function connect(source: DepotSource) {
   const { client, depot } = linkedChannels()
   const k = keys()
+  const sent: number[] = []
   const [stop, session] = await Promise.all([
-    runFileSender(depot, k, source, () => {}),
+    runFileSender(depot, k, source, (e) => {
+      if (e.type === 'chunk-sent' && e.index !== undefined) sent.push(e.index)
+    }),
     openClientSession(client, k),
   ])
-  return { session, stop }
+  return { session, stop, sent }
 }
 
 describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
+  beforeEach(() => {
+    // jsdom has no IndexedDB, so the cache falls back to memory — which
+    // is shared between tests and has to be cleared between them.
+    resetChunkCacheForTests()
+  })
+
   it('lists what the Depot is offering', async () => {
     const file = fileOf('IMG_0001.jpg', 40_000)
     const { session, stop } = await connect(singleFileSource(() => file))
@@ -108,8 +124,8 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
     const received = await session.fetch(entry.handle)
 
     expect(received.name).toBe('report.bin')
-    expect(received.bytes.length).toBe(file.bytes.length)
-    expect(Array.from(received.bytes)).toEqual(Array.from(file.bytes))
+    expect(received.size).toBe(file.bytes.length)
+    expect(await bytesOf(received)).toEqual(Array.from(file.bytes))
 
     session.close()
     stop()
@@ -129,8 +145,8 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
 
     const a = await session.fetch(first[0].handle)
     const b = await session.fetch(first[0].handle)
-    expect(Array.from(a.bytes)).toEqual(Array.from(file.bytes))
-    expect(Array.from(b.bytes)).toEqual(Array.from(file.bytes))
+    expect(await bytesOf(a)).toEqual(Array.from(file.bytes))
+    expect(await bytesOf(b)).toEqual(Array.from(file.bytes))
 
     session.close()
     stop()
@@ -168,7 +184,51 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
     expect(children[0].name).toBe('VID_0002.mp4')
 
     const received = await session.fetch(children[0].handle)
-    expect(Array.from(received.bytes)).toEqual(Array.from(inner.bytes))
+    expect(await bytesOf(received)).toEqual(Array.from(inner.bytes))
+
+    session.close()
+    stop()
+  }, 20_000)
+
+  it('asks for nothing it already holds', async () => {
+    // §5.7 step 3 is the whole of resumption: NEED carries only the
+    // indices the Client is missing. Seeding the cache with every chunk
+    // stands in for an attempt that got all the way through and then lost
+    // the connection before assembling.
+    const file = fileOf('resumable.bin', 400_000, 13)
+    const manifest = await buildManifest(1, file.name, file.bytes, cdcParamsForAvg(64 * 1024))
+    expect(manifest.chunkCount).toBeGreaterThan(1)
+    await putChunks(
+      manifest.chunks.map((c) => [c.hash, file.bytes.slice(c.offset, c.offset + c.length)] as [string, Uint8Array]),
+    )
+
+    const { session, stop, sent } = await connect(singleFileSource(() => file))
+    const [entry] = await session.list('')
+    const received = await session.fetch(entry.handle)
+
+    expect(await bytesOf(received)).toEqual(Array.from(file.bytes))
+    expect(sent).toEqual([]) // not one chunk crossed the wire
+
+    session.close()
+    stop()
+  }, 20_000)
+
+  it('asks only for the chunks it is missing', async () => {
+    const file = fileOf('partial.bin', 400_000, 17)
+    const manifest = await buildManifest(1, file.name, file.bytes, cdcParamsForAvg(64 * 1024))
+    expect(manifest.chunkCount).toBeGreaterThan(1)
+    const held = manifest.chunks.slice(0, 1)
+    await putChunks(
+      held.map((c) => [c.hash, file.bytes.slice(c.offset, c.offset + c.length)] as [string, Uint8Array]),
+    )
+
+    const { session, stop, sent } = await connect(singleFileSource(() => file))
+    const [entry] = await session.list('')
+    const received = await session.fetch(entry.handle)
+
+    expect(await bytesOf(received)).toEqual(Array.from(file.bytes))
+    expect(sent.length).toBe(manifest.chunkCount - held.length)
+    expect(sent).not.toContain(held[0].index)
 
     session.close()
     stop()

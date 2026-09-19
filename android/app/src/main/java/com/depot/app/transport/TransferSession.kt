@@ -5,10 +5,15 @@ import com.depot.app.crypto.decodeCtlFrame
 import com.depot.app.crypto.encodeChunkFrame
 import com.depot.app.crypto.EncodedChunk
 import com.depot.app.crypto.encodeCtlFrame
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.webrtc.DataChannel
 
@@ -88,12 +93,18 @@ class FileSender(
     private val channels: DataChannels,
     private val keys: SessionKeys,
     private val source: DepotSource,
+    private val scope: CoroutineScope,
     private val cb: TransferCallbacks,
 ) {
     private val ctl = CtlCodec(channels.ctl, keys, isDepot = true)
-    private val transfers = mutableMapOf<Int, Pair<Manifest, ByteArray>>()
+    private val transfers = mutableMapOf<Int, Pair<Manifest, ServableFile>>()
     private var nextTransferId = 1
     private val peerCaps = CompletableDeferred<JSONObject>()
+    private val chunkSizer = AdaptiveChunkSize()
+    private var sampler: Job? = null
+
+    /** Reused by skipTo when a stream declines to skip. */
+    private val scratch = ByteArray(8 * 1024)
 
     /** Installs the ctl observer and sends our CAPS. */
     fun start(onCtl: (JSONObject) -> Unit) {
@@ -106,6 +117,16 @@ class FileSender(
             }
         })
         ctl.send(OUR_CAPS)
+
+        // protocol.md §5.5. Sampling on a timer rather than once per
+        // transfer is what gives the EWMA anything to smooth: a single
+        // reading per file would make the averaging decorative.
+        sampler = scope.launch {
+            while (isActive) {
+                runCatching { sampleNetwork(channels.pc) }.getOrNull()?.let(chunkSizer::update)
+                delay(2000)
+            }
+        }
     }
 
     suspend fun handle(msg: JSONObject) {
@@ -159,8 +180,12 @@ class FileSender(
             OUR_CAPS.getInt("maxChunkSize"),
             peerCaps.await().optInt("maxChunkSize", 1024 * 1024),
         )
-        val manifest = buildManifest(transferId, file.name, file.bytes, cdcParamsForAvg(minOf(64 * 1024, maxChunkSize)))
-        transfers[transferId] = manifest to file.bytes
+        // §5.5 picks the target size; CAPS bounds it. The manifest
+        // carries the real lengths either way, so the two sides never have
+        // to agree about sizing — only about what was actually sent.
+        val avgSize = minOf(chunkSizer.current(), maxChunkSize)
+        val manifest = buildManifestStreaming(transferId, file.name, cdcParamsForAvg(avgSize), file.openStream)
+        transfers[transferId] = manifest to file
         ctl.send(JSONObject().put("type", "MANIFEST").put("manifest", manifest.toJson()))
         cb.onManifestSent(transferId, manifest.chunkCount)
     }
@@ -168,37 +193,83 @@ class FileSender(
     private suspend fun handleNeed(msg: JSONObject) {
         val transferId = msg.optInt("transferId", -1)
         val entry = transfers[transferId] ?: return
-        val (manifest, bytes) = entry
+        val (manifest, file) = entry
         val indices = msg.optJSONArray("indices") ?: return
 
+        // Sorted, so the file is read in one forward pass. A Client may
+        // ask in any order — a resumed transfer often does — and seeking
+        // backwards on a content-provider stream is not something to rely
+        // on.
+        val wanted = (0 until indices.length())
+            .map { indices.getInt(it) }
+            .filter { it in manifest.chunks.indices }
+            .distinct()
+            .sorted()
+
         var bytesSent = 0L
-        for (i in 0 until indices.length()) {
-            val index = indices.getInt(i)
-            val info = manifest.chunks.getOrNull(index) ?: continue
-            val plaintext = bytes.copyOfRange(info.offset, info.offset + info.length)
+        file.openStream().use { stream ->
+            var position = 0L
+            for (index in wanted) {
+                val info = manifest.chunks[index]
+                skipTo(stream, position, info.offset)
+                val plaintext = ByteArray(info.length)
+                readFully(stream, plaintext)
+                position = info.offset + info.length
 
-            var payload = plaintext
-            var compressed = false
-            if (shouldCompress(plaintext)) {
-                val packed = compress(plaintext)
-                // Only worth it if it actually got smaller.
-                if (packed.size < plaintext.size) {
-                    payload = packed
-                    compressed = true
+                var payload = plaintext
+                var compressed = false
+                if (shouldCompress(plaintext)) {
+                    val packed = compress(plaintext)
+                    // Only worth it if it actually got smaller.
+                    if (packed.size < plaintext.size) {
+                        payload = packed
+                        compressed = true
+                    }
                 }
+
+                val frame = encodeChunkFrame(
+                    keys.kD2C,
+                    Direction.DEPOT_TO_CLIENT,
+                    EncodedChunk(transferId, index, payload, compressed),
+                )
+
+                awaitDrain()
+                channels.data.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))
+
+                bytesSent += info.length
+                cb.onChunkSent(index, manifest.chunkCount, bytesSent, manifest.size)
             }
+        }
+    }
 
-            val frame = encodeChunkFrame(
-                keys.kD2C,
-                Direction.DEPOT_TO_CLIENT,
-                EncodedChunk(transferId, index, payload, compressed),
-            )
+    /**
+     * Forward-only positioning. InputStream.skip() is allowed to skip
+     * fewer bytes than asked — or none at all — so a short skip falls back
+     * to reading and discarding rather than silently leaving the stream in
+     * the wrong place, which would corrupt every chunk after it.
+     */
+    private fun skipTo(stream: InputStream, from: Long, target: Long) {
+        var position = from
+        while (position < target) {
+            val remaining = target - position
+            val skipped = stream.skip(remaining)
+            if (skipped > 0) {
+                position += skipped
+                continue
+            }
+            val read = stream.read(scratch, 0, minOf(scratch.size.toLong(), remaining).toInt())
+            if (read < 0) throw IllegalStateException("file ended before offset $target")
+            position += read
+        }
+    }
 
-            awaitDrain()
-            channels.data.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))
-
-            bytesSent += info.length
-            cb.onChunkSent(index, manifest.chunkCount, bytesSent, manifest.size.toLong())
+    /** read() may return short; a partly filled chunk would fail its hash. */
+    private fun readFully(stream: InputStream, into: ByteArray) {
+        var filled = 0
+        while (filled < into.size) {
+            val read = stream.read(into, filled, into.size - filled)
+            if (read < 0) throw IllegalStateException("file ended mid-chunk")
+            filled += read
         }
     }
 
@@ -210,6 +281,8 @@ class FileSender(
     }
 
     fun stop() {
+        sampler?.cancel()
+        sampler = null
         runCatching { channels.ctl.unregisterObserver() }
     }
 }

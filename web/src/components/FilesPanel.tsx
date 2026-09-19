@@ -105,13 +105,12 @@ export function FilesPanel({ session, depotLabel, onDisconnect, onSettings, onEr
                 },
           )
         }
+        if (e.type === 'resumed') log(`resuming — ${e.index} of ${e.total} chunk(s) already held`)
         if (e.type === 'chunk-invalid') log(`chunk ${e.index} failed verification, dropped`)
       })
-      // slice() so the Blob owns a plain ArrayBuffer rather than a view
-      // into libsodium's heap, which can be detached out from under it.
-      const url = URL.createObjectURL(new Blob([file.bytes.slice()]))
+      const url = URL.createObjectURL(file.blob)
       urlsRef.current.push(url)
-      setReceived((prev) => [{ name: file.name, size: file.bytes.length, url }, ...prev])
+      setReceived((prev) => [{ name: file.name, size: file.size, url }, ...prev])
       log(`${file.name} verified against the manifest and whole-file hash`)
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err))

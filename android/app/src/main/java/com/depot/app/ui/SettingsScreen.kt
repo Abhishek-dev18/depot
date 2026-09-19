@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.depot.app.storage.TurnSettings
 import com.depot.app.ui.components.Cta
 import com.depot.app.ui.components.DepotTextField
 import com.depot.app.ui.components.IconBack
@@ -42,6 +43,7 @@ import com.depot.app.ui.theme.DepotType
 fun SettingsScreen(
     state: DepotUiState,
     onSignalUrlChange: (String) -> Unit,
+    onTurnChange: (TurnSettings) -> Unit,
     onToggleListening: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -84,6 +86,39 @@ fun SettingsScreen(
                 style = DepotType.Body.copy(fontSize = 13.sp),
                 color = DepotColors.Ink3,
                 modifier = Modifier.padding(top = 9.dp),
+            )
+
+            SectionLabel("RELAY (OPTIONAL)")
+            Text(
+                "Only needed when a direct or STUN-assisted connection fails — usually " +
+                    "because this phone is on mobile data behind carrier NAT. Your own " +
+                    "server, so relayed bytes still cross only machines you chose.",
+                style = DepotType.Body.copy(fontSize = 13.sp),
+                color = DepotColors.Ink3,
+                modifier = Modifier.padding(bottom = 10.dp),
+            )
+            DepotTextField(
+                value = state.turn.url,
+                onValueChange = { onTurnChange(state.turn.copy(url = it)) },
+                placeholder = "turn:turn.example.com:3478",
+                enabled = !listening,
+                textStyle = DepotType.FactSmall,
+            )
+            Spacer(Modifier.height(9.dp))
+            DepotTextField(
+                value = state.turn.username,
+                onValueChange = { onTurnChange(state.turn.copy(username = it)) },
+                placeholder = "username",
+                enabled = !listening,
+                textStyle = DepotType.FactSmall,
+            )
+            Spacer(Modifier.height(9.dp))
+            DepotTextField(
+                value = state.turn.credential,
+                onValueChange = { onTurnChange(state.turn.copy(credential = it)) },
+                placeholder = "credential",
+                enabled = !listening,
+                textStyle = DepotType.FactSmall,
             )
 
             SectionLabel("THIS DEPOT")

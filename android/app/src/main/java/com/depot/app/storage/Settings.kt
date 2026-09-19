@@ -15,10 +15,16 @@ import java.util.Locale
  * the right place for it — unlike the identity key, there is nothing here
  * worth wrapping in the keystore.
  */
+/** What the settings screen collects for a relay; blank url means none. */
+data class TurnSettings(val url: String = "", val username: String = "", val credential: String = "")
+
 object Settings {
 
     private const val PREFS = "depot.settings"
     private const val KEY_SIGNAL_URL = "signalUrl"
+    private const val KEY_TURN_URL = "turnUrl"
+    private const val KEY_TURN_USER = "turnUsername"
+    private const val KEY_TURN_CREDENTIAL = "turnCredential"
     private const val KEY_MOVED_DAY = "movedDay"
     private const val KEY_MOVED_BYTES = "movedBytes"
 
@@ -28,6 +34,28 @@ object Settings {
 
     fun setSignalUrl(context: Context, url: String) {
         prefs(context).edit().putString(KEY_SIGNAL_URL, url.trim()).apply()
+    }
+
+    /**
+     * The optional TURN relay (§5.1). A blank URL means "not configured",
+     * which is different from a configured server that happens to fail —
+     * the UI can only say "add a relay" honestly if it knows which it is.
+     */
+    fun turn(context: Context): TurnSettings {
+        val p = prefs(context)
+        return TurnSettings(
+            url = p.getString(KEY_TURN_URL, "") ?: "",
+            username = p.getString(KEY_TURN_USER, "") ?: "",
+            credential = p.getString(KEY_TURN_CREDENTIAL, "") ?: "",
+        )
+    }
+
+    fun setTurn(context: Context, turn: TurnSettings) {
+        prefs(context).edit()
+            .putString(KEY_TURN_URL, turn.url.trim())
+            .putString(KEY_TURN_USER, turn.username.trim())
+            .putString(KEY_TURN_CREDENTIAL, turn.credential)
+            .apply()
     }
 
     /** Today as yyyy-MM-dd, which is what the running total is keyed on. */

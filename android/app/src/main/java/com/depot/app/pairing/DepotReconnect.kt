@@ -236,6 +236,7 @@ private suspend fun handleIncoming(
             channels = channels,
             keys = SessionKeys(keys.kC2D, keys.kD2C),
             source = source,
+            scope = scope,
             cb = object : TransferCallbacks {
                 override fun onManifestSent(transferId: Int, chunkCount: Int) {
                     cb.onStatus("offering $chunkCount chunk(s)")

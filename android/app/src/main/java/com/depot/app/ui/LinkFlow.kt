@@ -238,7 +238,7 @@ fun LinkFailSheet(
             )
             OptionRow(
                 title = "Check both devices reach the same Signal server",
-                detail = "SETTINGS › SIGNAL · THE QR CARRIES THIS ADDRESS",
+                detail = "SETTINGS › SIGNAL SERVER · THE QR CARRIES THIS ADDRESS",
                 icon = { IconDiamond(DepotColors.Amber, 16.dp) },
                 onClick = onClose,
             )

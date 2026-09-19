@@ -462,6 +462,53 @@ Chunk boundaries use content-defined chunking (FastCDC) rather than fixed
 offsets, so that inserting bytes into a file does not invalidate every subsequent
 chunk.
 
+### 5.8 Wire messages and implementation notes
+
+As with §7.1, this document specifies transport *behaviour* but left several
+wire-level details to whoever implemented it first. Recorded here so the
+running code and this document don't drift apart:
+
+**WebRTC signaling.** SDP offer/answer and trickle ICE candidates travel as
+opaque relay messages over the same signal connection used for §4
+(`RTC_OFFER`, `RTC_ANSWER`, `RTC_ICE` — Signal never inspects their
+contents, same as everything else it relays). The Client is always the
+WebRTC offerer and creates both DataChannels; the Depot is always the
+answerer. This is an arbitrary but fixed convention — nothing in §5 depends
+on which side offers.
+
+**`ctl` channel messages.** `CAPS` (§5.4), `LIST` and `LIST_OK` (§5.9),
+`REQUEST_FILE` (Client → Depot, naming a handle from §5.9 or, with no
+handle, whatever file the Depot is currently offering), `MANIFEST` (Depot →
+Client, carries `transferId`, `size`, and each chunk's
+`offset`/`length`/`hash` since chunks are content-defined and therefore
+variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
+
+Each of these is carried inside an encrypted control frame (§5.3), one
+message per frame — Signal sees only ciphertext and a monotonic counter.
+
+**`REJECTED` (§4.2).** Sent by the Depot over the same relay route as
+`CHALLENGE`, carrying its reason in the payload.
+
+**Frame `type` byte (§5.3).** `1` = CHUNK, `2` = CTL. Further kinds can be
+added without changing either header layout.
+
+**§5.5 tiers.** Implemented as three discrete steps — 64 KB / 256 KB / 1 MB,
+matching the table — with EWMA smoothing (α = 0.3), a 5s cooldown, and
+stricter thresholds to step up than to step down (hysteresis). RTT comes
+from `RTCPeerConnection.getStats()`'s selected candidate pair; standard
+`getStats()` doesn't expose a reliable cross-browser loss fraction for SCTP
+data channels, so loss is treated as 0 (optimistic) rather than
+overclaiming precision sizing can't actually get today.
+
+**§5.6 compression codec.** This implementation uses the browser's native
+`CompressionStream('deflate-raw')` instead of zstd, to avoid adding a wasm
+zstd codec as a build dependency for a demo-stage feature. The entropy-gated
+decision (§5.6) and the wire flag (`FLAG_COMPRESSED`) are unchanged — this
+is a codec substitution, not a protocol change, and swapping in real zstd
+later touches only the compression module.
+
+---
+
 ### 5.9 Browsing
 
 A Depot grants access per folder. §5.7 alone lets a Client ask for "the file
@@ -513,53 +560,6 @@ Listing carries no file contents, but it does carry names, sizes and
 timestamps, which §1.2 promises Signal cannot see. Both messages are
 therefore ordinary encrypted `ctl` frames (§5.3) like everything else on
 that channel.
-
-### 5.8 Wire messages and implementation notes
-
-As with §7.1, this document specifies transport *behaviour* but left several
-wire-level details to whoever implemented it first. Recorded here so the
-running code and this document don't drift apart:
-
-**WebRTC signaling.** SDP offer/answer and trickle ICE candidates travel as
-opaque relay messages over the same signal connection used for §4
-(`RTC_OFFER`, `RTC_ANSWER`, `RTC_ICE` — Signal never inspects their
-contents, same as everything else it relays). The Client is always the
-WebRTC offerer and creates both DataChannels; the Depot is always the
-answerer. This is an arbitrary but fixed convention — nothing in §5 depends
-on which side offers.
-
-**`ctl` channel messages.** `CAPS` (§5.4), `LIST` and `LIST_OK` (§5.9),
-`REQUEST_FILE` (Client → Depot, naming a handle from §5.9 or, with no
-handle, whatever file the Depot is currently offering), `MANIFEST` (Depot →
-Client, carries `transferId`, `size`, and each chunk's
-`offset`/`length`/`hash` since chunks are content-defined and therefore
-variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
-
-Each of these is carried inside an encrypted control frame (§5.3), one
-message per frame — Signal sees only ciphertext and a monotonic counter.
-
-**`REJECTED` (§4.2).** Sent by the Depot over the same relay route as
-`CHALLENGE`, carrying its reason in the payload.
-
-**Frame `type` byte (§5.3).** `1` = CHUNK, `2` = CTL. Further kinds can be
-added without changing either header layout.
-
-**§5.5 tiers.** Implemented as three discrete steps — 64 KB / 256 KB / 1 MB,
-matching the table — with EWMA smoothing (α = 0.3), a 5s cooldown, and
-stricter thresholds to step up than to step down (hysteresis). RTT comes
-from `RTCPeerConnection.getStats()`'s selected candidate pair; standard
-`getStats()` doesn't expose a reliable cross-browser loss fraction for SCTP
-data channels, so loss is treated as 0 (optimistic) rather than
-overclaiming precision sizing can't actually get today.
-
-**§5.6 compression codec.** This implementation uses the browser's native
-`CompressionStream('deflate-raw')` instead of zstd, to avoid adding a wasm
-zstd codec as a build dependency for a demo-stage feature. The entropy-gated
-decision (§5.6) and the wire flag (`FLAG_COMPRESSED`) are unchanged — this
-is a codec substitution, not a protocol change, and swapping in real zstd
-later touches only the compression module.
-
----
 
 ## 6. Revocation
 

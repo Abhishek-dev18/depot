@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.depot.app.storage.DeviceRecord
+import com.depot.app.storage.TurnSettings
 import com.depot.app.ui.components.BottomSheet
 import com.depot.app.ui.components.FailState
 import com.depot.app.ui.components.SheetButton
@@ -38,6 +39,7 @@ fun DepotApp(
     onToggleGrant: (GrantView, Boolean) -> Unit,
     onForgetGrant: (GrantView) -> Unit,
     onSignalUrlChange: (String) -> Unit,
+    onTurnChange: (TurnSettings) -> Unit,
     onPayloadChange: (String) -> Unit,
     onLink: () -> Unit,
     onQrScanned: (String) -> Unit,
@@ -115,6 +117,7 @@ fun DepotApp(
             SettingsScreen(
                 state = state,
                 onSignalUrlChange = onSignalUrlChange,
+                onTurnChange = onTurnChange,
                 onToggleListening = onToggleListening,
                 onBack = { settingsOpen = false },
             )

@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
                         onToggleGrant = viewModel::onToggleGrant,
                         onForgetGrant = viewModel::onForgetGrant,
                         onSignalUrlChange = viewModel::onSignalUrlChange,
+                        onTurnChange = viewModel::onTurnChange,
                         onPayloadChange = viewModel::onPayloadChange,
                         onLink = viewModel::link,
                         onQrScanned = viewModel::onQrScanned,

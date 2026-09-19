@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.util.Base64
+import java.io.ByteArrayInputStream
+import java.io.InputStream
 import com.depot.app.crypto.randomBytes
 import com.depot.app.storage.GrantStore
 import java.util.concurrent.ConcurrentHashMap
@@ -20,6 +22,19 @@ data class DirEntry(
 )
 
 /**
+ * A file the Depot will serve, read on demand rather than held.
+ *
+ * [openStream] is called once to build the manifest and again to answer
+ * NEED, so it has to be re-openable — a single consumed stream could not
+ * do both.
+ */
+class ServableFile(
+    val name: String,
+    val size: Long,
+    val openStream: () -> InputStream,
+)
+
+/**
  * What this Depot exposes to a Client (protocol.md §5.9). The empty string
  * lists the grants themselves; any other handle is one this Depot minted.
  */
@@ -27,7 +42,7 @@ interface DepotSource {
     fun list(handle: String): List<DirEntry>
 
     /** Null means "no such file", which is also the answer for a handle we never issued. */
-    fun open(handle: String?): OfferedFile?
+    fun open(handle: String?): ServableFile?
 }
 
 /** What a handle points at. Never sent anywhere. */
@@ -138,50 +153,42 @@ class AndroidDepotSource(
         } ?: emptyList()
     }.getOrElse { emptyList() }
 
-    override fun open(handle: String?): OfferedFile? {
-        if (handle == null || handle == offeredHandle) return offered()
+    override fun open(handle: String?): ServableFile? {
+        if (handle == null || handle == offeredHandle) return offered()?.servable()
         val location = handles[handle] ?: return null
         if (location.isDirectory) return null
-        return readDocument(location)
-    }
-
-    private fun readDocument(location: Location): OfferedFile {
-        val uri = DocumentsContract.buildDocumentUriUsingTree(location.treeUri, location.documentId)
-        val resolver = context.contentResolver
-
-        val name = resolver.query(uri, null, null, null, null)?.use { c ->
-            val index = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (index >= 0 && c.moveToFirst()) c.getString(index) else null
-        } ?: "file"
-
-        // §5.7 is streamed on the wire but assembled in memory here, which
-        // is the one place this implementation cannot serve what its own
-        // interface shows: a 600 MB video would take the process down.
-        // Refusing loudly beats an OutOfMemoryError that kills a Depot
-        // other people are connected to.
-        val size = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
-            val index = c.getColumnIndex(OpenableColumns.SIZE)
-            if (index >= 0 && c.moveToFirst() && !c.isNull(index)) c.getLong(index) else -1L
-        } ?: -1L
-        if (size > maxServableBytes()) {
-            throw IllegalStateException(
-                "$name is ${size / (1024 * 1024)} MB; this build reads a whole file into memory " +
-                    "and can serve at most ${maxServableBytes() / (1024 * 1024)} MB",
-            )
-        }
-
-        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("could not open $name")
-        return OfferedFile(name, bytes)
+        return describeDocument(location)
     }
 
     /**
-     * A quarter of the heap. Chunking, compression and the outgoing frame
-     * all need room beyond the file itself, so the ceiling is well under
-     * what would fit exactly once.
+     * Describes the document without reading it. §5.7 streams, so the
+     * bytes are pulled through twice — once to build the manifest, once to
+     * answer NEED — and neither pass holds more than a chunk. A 600 MB
+     * video is no different here from a 600 KB one.
      */
-    private fun maxServableBytes(): Long = Runtime.getRuntime().maxMemory() / 4
+    private fun describeDocument(location: Location): ServableFile? {
+        val uri = DocumentsContract.buildDocumentUriUsingTree(location.treeUri, location.documentId)
+        val resolver = context.contentResolver
+
+        val cursor = resolver.query(uri, null, null, null, null) ?: return null
+        val (name, size) = cursor.use { c ->
+            if (!c.moveToFirst()) return null
+            val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIndex = c.getColumnIndex(OpenableColumns.SIZE)
+            val name = if (nameIndex >= 0) c.getString(nameIndex) ?: "file" else "file"
+            val size = if (sizeIndex >= 0 && !c.isNull(sizeIndex)) c.getLong(sizeIndex) else -1L
+            name to size
+        }
+
+        return ServableFile(name, size) {
+            resolver.openInputStream(uri) ?: throw IllegalStateException("could not open $name")
+        }
+    }
 }
+
+/** An in-memory offer, served through the same streaming path. */
+fun OfferedFile.servable(): ServableFile =
+    ServableFile(name, bytes.size.toLong()) { ByteArrayInputStream(bytes) }
 
 /** What the ACCESS screen shows under a grant's name. */
 data class GrantStats(val files: Int, val bytes: Long)
@@ -227,6 +234,6 @@ class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
         return listOf(DirEntry("offered", file.name, isDirectory = false, size = file.bytes.size.toLong()))
     }
 
-    override fun open(handle: String?): OfferedFile? =
-        if (handle == null || handle == "offered") offered() else null
+    override fun open(handle: String?): ServableFile? =
+        if (handle == null || handle == "offered") offered()?.servable() else null
 }

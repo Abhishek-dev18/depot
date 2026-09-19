@@ -16,8 +16,10 @@ Compose, libsodium via lazysodium.
 | Pairing flow + SAS screen (§3) | ✅ implemented |
 | QR camera scanning | ✅ implemented (paste remains as fallback) |
 | Reconnection §4 (challenge-response, renewal, revoke) | ✅ implemented |
-| WebRTC transport (§5) | ✅ implemented (sender side) |
+| WebRTC transport (§5) | ✅ implemented (sender side, streamed) |
+| Adaptive chunk sizing (§5.5) | ✅ implemented |
 | Folder grants + browsing (§5.9) | ✅ implemented |
+| Revocation (§6) | ✅ implemented |
 | Foreground service | ✅ implemented |
 | Interface, per the design spec | ✅ implemented |
 
@@ -47,6 +49,8 @@ away, which keeps the terminal's own state continuously in view.
 Four deliberate departures from the artifact, all because the app cannot yet
 honestly draw what it shows:
 
+- **Grants are folders, and the ACCESS screen is real.** With `LIST` in the
+  protocol, the spec's folder toggles stopped being a mock.
 - **The SAS is six digits, not four.** protocol.md §3.3 is the authority; the
   treatment is the spec's.
 - **Grant rows count immediate children, not the whole tree.** The spec's
@@ -78,11 +82,18 @@ something the Depot already chose to tell it about, so there is no traversal
 to get wrong. The rule to preserve is that nothing outside a grant is ever
 given a handle.
 
-One thing the app cannot yet do that its own interface will happily show you:
-`FileSender` assembles a whole file in memory. A 600 MB video would take the
-process down, so `AndroidDepotSource` refuses anything above a quarter of the
-heap with an explicit reason rather than dying. Streaming §5.7 straight off
-the `InputStream` is the fix, and is not done.
+Files are streamed, not buffered. `DepotSource.open` returns a `ServableFile`
+that can open its own `InputStream`, and §5.7 pulls the bytes through twice:
+once for `buildManifestStreaming`, which chunks and hashes as it goes and folds
+the whole-file hash in incrementally, and once for `NEED`, which walks forward
+through the requested offsets. Neither pass holds more than one chunk, so the
+size of a file no longer has anything to do with the size of the heap.
+
+That only works because the streaming chunker cuts in exactly the same places
+as the buffered one — its sliding window is twice `maxSize`, so every boundary
+decision sees the same lookahead the whole-array version would have.
+`ChunkStreamTest` pins that down on the JVM, and `TransportTest` checks the two
+manifests come out identical.
 
 Space Grotesk and IBM Plex Mono are bundled in `app/src/main/res/font` rather
 than fetched, so the type is right on a device with no network and no Play

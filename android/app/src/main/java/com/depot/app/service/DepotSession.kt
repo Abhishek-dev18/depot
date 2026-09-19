@@ -7,6 +7,7 @@ import com.depot.app.pairing.runDepotReconnectListener
 import com.depot.app.storage.Settings
 import com.depot.app.transport.AndroidDepotSource
 import com.depot.app.transport.ConnectionType
+import com.depot.app.transport.TurnConfig
 import com.depot.app.transport.OfferedFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +81,22 @@ object DepotSession {
         }
     }
 
+    /**
+     * protocol.md §6 steps 4-5. What actually revokes a device is this
+     * Depot refusing its §4 handshake, which DeviceStore already records —
+     * but telling Signal drops the route now instead of at the next
+     * attempt, which matters when the device is connected as you revoke it.
+     */
+    fun revoke(clientId: String) {
+        listener?.revoke(clientId)
+        _state.update {
+            it.copy(
+                connected = it.connected - clientId,
+                log = it.log + "revoked $clientId",
+            )
+        }
+    }
+
     fun reportError(message: String) = _state.update { it.copy(error = message) }
 
     fun dismissError() = _state.update { it.copy(error = null) }
@@ -131,7 +148,11 @@ object DepotSession {
                     context = app,
                     scope = scope,
                     signalUrl = signalUrl,
-                    turn = null,
+                    turn = Settings.turn(app).let { t ->
+                        // A blank URL is "no relay at all" rather than a
+                        // TURN server with an empty address.
+                        if (t.url.isBlank()) null else TurnConfig(t.url, t.username, t.credential)
+                    },
                     source = AndroidDepotSource(app) { offered },
                     cb = object : DepotReconnectCallbacks {
                         override fun onStatus(status: String) {

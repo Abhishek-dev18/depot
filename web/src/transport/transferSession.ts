@@ -1,3 +1,6 @@
+import { toBase64 } from '../crypto/codec'
+import { sodium } from '../crypto/sodium'
+import { cachedChunks, dropChunks, getChunk, putChunks } from '../storage/chunkCache'
 import { AdaptiveChunkSize, cdcParamsForAvg, sampleNetwork } from './chunkSize'
 import { compress, decompress, shouldCompress } from './compression'
 import { Direction, decodeChunkFrame, decodeCtlFrame, encodeChunkFrame, encodeCtlFrame } from './frame'
@@ -338,11 +341,22 @@ export async function runFileSender(
 }
 
 export interface ReceiverEvent {
-  type: 'manifest' | 'chunk-received' | 'chunk-invalid'
+  type: 'manifest' | 'resumed' | 'chunk-received' | 'chunk-invalid'
   index?: number
   total?: number
   bytesReceived?: number
   bytesTotal?: number
+}
+
+/**
+ * A file that arrived. A Blob rather than a Uint8Array: the bytes may
+ * never have been contiguous in memory, and the only thing a browser does
+ * with them is save or display them, both of which take a Blob.
+ */
+export interface ReceivedFile {
+  name: string
+  size: number
+  blob: Blob
 }
 
 /**
@@ -357,7 +371,7 @@ export interface ReceiverEvent {
  */
 export interface ClientSession {
   list: (handle: string) => Promise<DirEntry[]>
-  fetch: (handle: string | undefined, onEvent?: (e: ReceiverEvent) => void) => Promise<OfferedFile>
+  fetch: (handle: string | undefined, onEvent?: (e: ReceiverEvent) => void) => Promise<ReceivedFile>
   close: () => void
 }
 
@@ -384,7 +398,7 @@ export async function openClientSession(
   async function fetch(
     handle: string | undefined,
     onEvent: (e: ReceiverEvent) => void = () => {},
-  ): Promise<OfferedFile> {
+  ): Promise<ReceivedFile> {
     return receiveFile(channels, keys, ctl, handle, onEvent)
   }
 
@@ -404,7 +418,7 @@ async function receiveFile(
   ctl: CtlCodec,
   handle: string | undefined,
   onEvent: (e: ReceiverEvent) => void,
-): Promise<OfferedFile> {
+): Promise<ReceivedFile> {
   await ctl.send({ type: 'REQUEST_FILE', handle })
   const reply = await ctl.waitFor(
     (m): m is ManifestMessage | ErrorMessage => m.type === 'MANIFEST' || m.type === 'ERROR',
@@ -414,70 +428,114 @@ async function receiveFile(
   const manifest = reply.manifest
   onEvent({ type: 'manifest', total: manifest.chunkCount })
 
-  const needed = manifest.chunks.map((c) => c.index)
-  await ctl.send({ type: 'NEED', transferId: manifest.transferId, indices: needed })
+  // §5.7 step 3, and the whole of resumption: ask only for what is
+  // missing. Chunks are cached by their own hash, so anything a previous
+  // attempt verified is already good and never crosses the wire again.
+  const allHashes = manifest.chunks.map((c) => c.hash)
+  const held = await cachedChunks(allHashes)
+  const needed = manifest.chunks.filter((c) => !held.has(c.hash)).map((c) => c.index)
 
-  const received = new Map<number, Uint8Array>()
-  let bytesReceived = 0
+  let bytesReceived = manifest.chunks
+    .filter((c) => held.has(c.hash))
+    .reduce((sum, c) => sum + c.length, 0)
 
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      channels.data.removeEventListener('message', onMessage)
-      reject(new Error('timed out receiving all chunks'))
-    }, 120_000)
-
-    function finish() {
-      clearTimeout(timer)
-      channels.data.removeEventListener('message', onMessage)
-      resolve()
-    }
-
-    function onMessage(ev: MessageEvent) {
-      void (async () => {
-        try {
-          const raw = new Uint8Array(ev.data as ArrayBuffer)
-          const decoded = await decodeChunkFrame(keys.kD2C, Direction.DepotToClient, raw)
-          if (decoded.transferId !== manifest.transferId) return
-          const info = manifest.chunks[decoded.chunkIndex]
-          if (!info) return
-
-          const plaintext = decoded.compressed ? await decompress(decoded.plaintext) : decoded.plaintext
-          const hash = await hashBytes(plaintext)
-          if (hash !== info.hash) {
-            onEvent({ type: 'chunk-invalid', index: decoded.chunkIndex })
-            return
-          }
-
-          received.set(decoded.chunkIndex, plaintext)
-          bytesReceived += info.length
-          onEvent({
-            type: 'chunk-received',
-            index: decoded.chunkIndex,
-            total: manifest.chunkCount,
-            bytesReceived,
-            bytesTotal: manifest.size,
-          })
-          if (received.size === manifest.chunkCount) finish()
-        } catch (err) {
-          clearTimeout(timer)
-          channels.data.removeEventListener('message', onMessage)
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })()
-    }
-
-    channels.data.addEventListener('message', onMessage)
-  })
-
-  const bytes = new Uint8Array(manifest.size)
-  for (const info of manifest.chunks) {
-    const chunk = received.get(info.index)
-    if (!chunk) throw new Error(`missing chunk ${info.index} after all chunks reported received`)
-    bytes.set(chunk, info.offset)
+  if (held.size > 0) {
+    onEvent({
+      type: 'resumed',
+      index: held.size,
+      total: manifest.chunkCount,
+      bytesReceived,
+      bytesTotal: manifest.size,
+    })
   }
 
-  const fileHash = await hashBytes(bytes)
+  if (needed.length > 0) {
+    await ctl.send({ type: 'NEED', transferId: manifest.transferId, indices: needed })
+
+    const outstanding = new Set(needed)
+    // Written in batches rather than one transaction per chunk: a
+    // 600 MB file is thousands of chunks, and a transaction each would
+    // cost more than the transfer.
+    let pending: Array<[string, Uint8Array]> = []
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        channels.data.removeEventListener('message', onMessage)
+        // Whatever arrived is already cached, so the next attempt starts
+        // from here rather than from nothing.
+        void putChunks(pending).finally(() => reject(new Error('timed out receiving all chunks')))
+      }, 120_000)
+
+      function finish() {
+        clearTimeout(timer)
+        channels.data.removeEventListener('message', onMessage)
+        void putChunks(pending).then(resolve, reject)
+      }
+
+      function onMessage(ev: MessageEvent) {
+        void (async () => {
+          try {
+            const raw = new Uint8Array(ev.data as ArrayBuffer)
+            const decoded = await decodeChunkFrame(keys.kD2C, Direction.DepotToClient, raw)
+            if (decoded.transferId !== manifest.transferId) return
+            const info = manifest.chunks[decoded.chunkIndex]
+            if (!info || !outstanding.has(decoded.chunkIndex)) return
+
+            const plaintext = decoded.compressed ? await decompress(decoded.plaintext) : decoded.plaintext
+            const hash = await hashBytes(plaintext)
+            if (hash !== info.hash) {
+              onEvent({ type: 'chunk-invalid', index: decoded.chunkIndex })
+              return
+            }
+
+            outstanding.delete(decoded.chunkIndex)
+            pending.push([info.hash, plaintext])
+            bytesReceived += info.length
+            onEvent({
+              type: 'chunk-received',
+              index: decoded.chunkIndex,
+              total: manifest.chunkCount,
+              bytesReceived,
+              bytesTotal: manifest.size,
+            })
+
+            if (pending.length >= 64) {
+              const batch = pending
+              pending = []
+              await putChunks(batch)
+            }
+            if (outstanding.size === 0) finish()
+          } catch (err) {
+            clearTimeout(timer)
+            channels.data.removeEventListener('message', onMessage)
+            reject(err instanceof Error ? err : new Error(String(err)))
+          }
+        })()
+      }
+
+      channels.data.addEventListener('message', onMessage)
+    })
+  }
+
+  // Assembled as Blob parts and hashed incrementally, so a large file is
+  // never held in one contiguous buffer. A 600 MB video would otherwise
+  // need that buffer plus the Blob's own copy.
+  const s = await sodium()
+  const hashState = s.crypto_generichash_init(null, 32)
+  const parts: BlobPart[] = []
+  for (const info of manifest.chunks) {
+    const chunk = await getChunk(info.hash)
+    if (!chunk) throw new Error(`missing chunk ${info.index} after all chunks reported received`)
+    s.crypto_generichash_update(hashState, chunk)
+    parts.push(chunk.slice())
+  }
+  const fileHash = toBase64(s.crypto_generichash_final(hashState, 32))
   if (fileHash !== manifest.fileHash) throw new Error('whole-file hash mismatch after reassembly')
 
-  return { name: manifest.name, bytes }
+  // Delivered, so the cache has done its job. Holding on to the contents
+  // of a file that has already been handed over would make this browser a
+  // copy of the Depot, which is exactly what the product does not do.
+  await dropChunks(allHashes)
+
+  return { name: manifest.name, size: manifest.size, blob: new Blob(parts) }
 }

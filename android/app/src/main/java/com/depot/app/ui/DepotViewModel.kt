@@ -17,6 +17,7 @@ import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.Grant
 import com.depot.app.storage.GrantStore
 import com.depot.app.storage.Settings
+import com.depot.app.storage.TurnSettings
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.OfferedFile
 import com.depot.app.transport.grantStats
@@ -59,6 +60,7 @@ data class DepotUiState(
 
     // The terminal.
     val signalUrl: String = "",
+    val turn: TurnSettings = TurnSettings(),
     val listeningAs: String? = null,
     val listeningSince: Long? = null,
     val connected: Map<String, ConnectionType> = emptyMap(),
@@ -75,7 +77,9 @@ data class DepotUiState(
 
 class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val _state = MutableStateFlow(DepotUiState(signalUrl = Settings.signalUrl(app)))
+    private val _state = MutableStateFlow(
+        DepotUiState(signalUrl = Settings.signalUrl(app), turn = Settings.turn(app)),
+    )
     val state: StateFlow<DepotUiState> = _state.asStateFlow()
 
     /** Set while the SAS is on screen; one of these releases the flow. */
@@ -232,6 +236,11 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         Settings.setSignalUrl(getApplication(), value)
     }
 
+    fun onTurnChange(turn: TurnSettings) {
+        _state.update { it.copy(turn = turn) }
+        Settings.setTurn(getApplication(), turn)
+    }
+
     fun onFileSelected(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -309,6 +318,10 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
     fun onRevoke(device: DeviceRecord) {
         viewModelScope.launch(Dispatchers.IO) {
             DeviceStore.revoke(getApplication(), device.clientIdentityPub)
+            // The store is what enforces §6 at the next handshake; telling
+            // Signal is what stops routing to a device that is connected
+            // right now. Both, or a revoked laptop keeps its channel.
+            DepotSession.revoke(device.clientIdentityPub)
             refreshDevices()
         }
     }

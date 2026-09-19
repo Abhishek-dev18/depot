@@ -39,7 +39,24 @@ class SingleFileSourceTest {
     fun aRequestWithNoHandleStillGetsTheOfferedFile() {
         val offered = file("a.bin", 8)
         val source = SingleFileSource { offered }
-        assertEquals(offered, source.open(null))
+
+        val servable = source.open(null)!!
+        assertEquals("a.bin", servable.name)
+        assertEquals(8L, servable.size)
+        assertEquals(offered.bytes.toList(), servable.openStream().readBytes().toList())
+    }
+
+    @Test
+    fun theStreamCanBeOpenedMoreThanOnce() {
+        // §5.7 reads a file twice — once for the manifest, once to answer
+        // NEED — so a source that handed back a single consumed stream
+        // would serve an empty second pass.
+        val source = SingleFileSource { file("a.bin", 32) }
+        val servable = source.open(null)!!
+        assertEquals(
+            servable.openStream().readBytes().toList(),
+            servable.openStream().readBytes().toList(),
+        )
     }
 
     @Test
