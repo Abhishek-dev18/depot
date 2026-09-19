@@ -21,7 +21,6 @@ import com.depot.app.signal.TYPE_PEER_LEFT
 import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.IdentityStore
 import com.depot.app.transport.ConnectionType
-import com.depot.app.transport.FileSender
 import com.depot.app.transport.DepotSource
 import com.depot.app.transport.FileSender
 import com.depot.app.transport.SessionKeys

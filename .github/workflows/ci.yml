@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Working branches too, not just main. The Android job exists to catch
+    # what only a compiler can, and it was only running on main and on
+    # pull requests — so a branch with a fortnight of work on it got no
+    # build at all, and the first thing to find a broken import was
+    # someone's laptop.
+    branches: [main, 'claude/**']
   pull_request:
 
 jobs:
