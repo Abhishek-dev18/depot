@@ -2,13 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DepotConnection } from '../pairing/clientReconnect'
 import type { DirEntry } from '../transport/transferSession'
 import { formatBytes, formatDay, nowMs } from '../format'
+import { isStale, type HeldFile } from '../heldFiles'
+import { describePreview } from '../preview'
+import { PreviewOverlay } from './PreviewOverlay'
 import { TransferCard, type TransferState } from './TransferCard'
-
-interface ReceivedFile {
-  name: string
-  size: number
-  url: string
-}
 
 interface Props {
   session: DepotConnection
@@ -34,8 +31,9 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [transfer, setTransfer] = useState<TransferState | null>(null)
-  const [received, setReceived] = useState<ReceivedFile[]>([])
+  const [received, setReceived] = useState<HeldFile[]>([])
   const [pending, setPending] = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState<string | null>(null)
 
   // The refresh callbacks fire from outside React and must not capture a
   // stale trail, so the current one is kept in a ref alongside the state.
@@ -101,15 +99,17 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
    * showing "Listing…" over content that is about to be almost identical
    * would be a worse lie than the staleness.
    */
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<DirEntry[] | null> => {
     const handle = trailRef.current.length === 0 ? '' : trailRef.current[trailRef.current.length - 1].handle
     try {
       const listed = await session.list(handle)
       setEntries(listed)
       if (trailRef.current.length === 0) setRoots(listed)
+      return listed
     } catch {
       // A failed refresh leaves what is already shown; the connection
       // watcher is what notices if the session itself is gone.
+      return null
     }
   }, [session])
 
@@ -129,38 +129,99 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [refresh])
 
-  const download = async (entry: DirEntry) => {
-    if (pending) return
-    setPending(entry.handle)
-    const startedAt = nowMs()
-    setTransfer({ name: entry.name, bytesReceived: 0, bytesTotal: entry.size ?? 0, startedAt, updatedAt: startedAt })
-    try {
-      const file = await session.fetch(entry.handle, (e) => {
-        if (e.type === 'chunk-received') {
-          setTransfer((prev) =>
-            prev === null
-              ? prev
-              : {
-                  ...prev,
-                  bytesReceived: e.bytesReceived ?? prev.bytesReceived,
-                  bytesTotal: e.bytesTotal ?? prev.bytesTotal,
-                  updatedAt: nowMs(),
-                },
-          )
+  const heldFor = useCallback(
+    (handle: string) => received.find((file) => file.handle === handle),
+    [received],
+  )
+
+  const fetchFile = useCallback(
+    async (entry: DirEntry) => {
+      setPending(entry.handle)
+      const startedAt = nowMs()
+      setTransfer({ name: entry.name, bytesReceived: 0, bytesTotal: entry.size ?? 0, startedAt, updatedAt: startedAt })
+      try {
+        const file = await session.fetch(entry.handle, (e) => {
+          if (e.type === 'chunk-received') {
+            setTransfer((prev) =>
+              prev === null
+                ? prev
+                : {
+                    ...prev,
+                    bytesReceived: e.bytesReceived ?? prev.bytesReceived,
+                    bytesTotal: e.bytesTotal ?? prev.bytesTotal,
+                    updatedAt: nowMs(),
+                  },
+            )
+          }
+          if (e.type === 'resumed') log(`resuming — ${e.index} of ${e.total} chunk(s) already held`)
+          if (e.type === 'chunk-invalid') log(`chunk ${e.index} failed verification, dropped`)
+        })
+        const url = URL.createObjectURL(file.blob)
+        urlsRef.current.push(url)
+        const held: HeldFile = {
+          handle: entry.handle,
+          name: file.name,
+          size: file.size,
+          modifiedAt: entry.modifiedAt,
+          blob: file.blob,
+          url,
         }
-        if (e.type === 'resumed') log(`resuming — ${e.index} of ${e.total} chunk(s) already held`)
-        if (e.type === 'chunk-invalid') log(`chunk ${e.index} failed verification, dropped`)
-      })
-      const url = URL.createObjectURL(file.blob)
-      urlsRef.current.push(url)
-      setReceived((prev) => [{ name: file.name, size: file.size, url }, ...prev])
-      log(`${file.name} verified against the manifest and whole-file hash`)
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setTransfer(null)
-      setPending(null)
+        // A re-fetch replaces the copy it supersedes rather than sitting
+        // beside it: two rows with one name and different bytes is a
+        // question nobody can answer from the outside.
+        setReceived((prev) => {
+          const previous = prev.find((f) => f.handle === entry.handle)
+          if (previous) {
+            URL.revokeObjectURL(previous.url)
+            urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
+          }
+          return [held, ...prev.filter((f) => f.handle !== entry.handle)]
+        })
+        log(`${file.name} verified against the manifest and whole-file hash`)
+      } catch (err) {
+        onError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setTransfer(null)
+        setPending(null)
+      }
+    },
+    [session, log, onError],
+  )
+
+  /**
+   * Clicking a file.
+   *
+   * A file already in hand is opened, not asked for again: the bytes are
+   * here, and re-fetching would spend the phone's battery and both ends'
+   * data to arrive at what the browser is already holding. Only a listing
+   * that disagrees with the held copy sends it back over the wire.
+   */
+  const activate = async (entry: DirEntry) => {
+    if (pending) return
+    const held = heldFor(entry.handle)
+    if (held && !isStale(held, entry)) {
+      setPreviewing(held.handle)
+      return
     }
+    if (held) log(`${entry.name} changed on the Depot since it was received — fetching again`)
+    await fetchFile(entry)
+  }
+
+  const refetch = async (handle: string) => {
+    if (pending) return
+    const held = heldFor(handle)
+    setPreviewing(null)
+    // Re-read the listing first, so the copy that comes back records the
+    // Depot's current figures. Fetching against a remembered row would
+    // store the old timestamp alongside the new bytes, and the next
+    // click would find them disagreeing and fetch a third time.
+    const entry = (await refresh())?.find((e) => e.handle === handle)
+    // If the row is gone — the user navigated away, or the Depot stopped
+    // offering it — the handle alone is still enough to ask with, and
+    // what is already known about the file is the best record available.
+    await fetchFile(
+      entry ?? { handle, name: held?.name ?? '', kind: 'file', size: held?.size, modifiedAt: held?.modifiedAt },
+    )
   }
 
   const rate =
@@ -171,6 +232,8 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   useEffect(() => {
     onRate(rate)
   }, [rate, onRate])
+
+  const previewFile = previewing === null ? undefined : received.find((f) => f.handle === previewing)
 
   return (
     <div className="wbody">
@@ -240,39 +303,60 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
               </div>
             )}
             {!loading &&
-              entries.map((entry) => (
-                <button
-                  key={entry.handle}
-                  className={pending === entry.handle ? 'fr fr-busy' : 'fr'}
-                  onClick={() => (entry.kind === 'dir' ? void open([...trail, entry]) : void download(entry))}
-                  disabled={pending !== null}
-                >
-                  <div className="n">
-                    <i aria-hidden="true">{entry.kind === 'dir' ? '▤' : '▣'}</i>
-                    {entry.name}
-                  </div>
-                  <div className="sz">{entry.kind === 'dir' ? '—' : formatBytes(entry.size ?? 0)}</div>
-                  <div className="dt">{formatDay(entry.modifiedAt)}</div>
-                </button>
-              ))}
+              entries.map((entry) => {
+                const held = entry.kind === 'file' ? heldFor(entry.handle) : undefined
+                const current = held !== undefined && !isStale(held, entry)
+                return (
+                  <button
+                    key={entry.handle}
+                    className={pending === entry.handle ? 'fr fr-busy' : 'fr'}
+                    onClick={() => (entry.kind === 'dir' ? void open([...trail, entry]) : void activate(entry))}
+                    // A held file opens from memory, so a transfer in
+                    // flight is no reason to make it unclickable.
+                    disabled={pending !== null && !current}
+                    title={current ? 'Already received — opens without asking the Depot again' : undefined}
+                  >
+                    <div className="n">
+                      <i aria-hidden="true">{entry.kind === 'dir' ? '▤' : '▣'}</i>
+                      <span className="fn">{entry.name}</span>
+                      {current && <span className="held">✓ HELD</span>}
+                    </div>
+                    <div className="sz">{entry.kind === 'dir' ? '—' : formatBytes(entry.size ?? 0)}</div>
+                    <div className="dt">{formatDay(entry.modifiedAt)}</div>
+                  </button>
+                )
+              })}
           </div>
 
           {received.length > 0 && (
             <div className="received">
               <div className="sl">RECEIVED · VERIFIED</div>
-              {received.map((file, i) => (
-                <a key={`${file.name}-${i}`} className="received-row" href={file.url} download={file.name}>
-                  <span className="received-name">{file.name}</span>
-                  <span className="received-size">{formatBytes(file.size)}</span>
-                  <span className="received-save">Save</span>
-                </a>
+              {received.map((file) => (
+                <div key={file.handle} className="received-row">
+                  <button className="received-open" onClick={() => setPreviewing(file.handle)}>
+                    <span className="received-name">{file.name}</span>
+                    <span className="received-size">{formatBytes(file.size)}</span>
+                    <span className="received-view">
+                      {describePreview(file.name).kind === 'none' ? 'DETAILS' : 'VIEW'}
+                    </span>
+                  </button>
+                  <a className="received-save" href={file.url} download={file.name}>
+                    SAVE
+                  </a>
+                </div>
               ))}
             </div>
           )}
         </div>
 
+      {previewFile && (
+        <PreviewOverlay
+          file={previewFile}
+          onClose={() => setPreviewing(null)}
+          onRefetch={() => void refetch(previewFile.handle)}
+        />
+      )}
       {transfer && <TransferCard transfer={transfer} />}
     </div>
   )
 }
-

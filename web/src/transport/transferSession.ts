@@ -224,15 +224,34 @@ export interface DepotSource {
  * the Android app, and it lists granted folders.
  */
 export function singleFileSource(getFile: () => OfferedFile | null): DepotSource {
-  const HANDLE = 'offered'
+  /*
+   * The handle names the file, not the slot it sits in.
+   *
+   * One constant handle for "whatever is offered right now" would let a
+   * second, different file inherit the first one's identity — and a
+   * Client that keeps what it received recognises files by handle, so it
+   * would go on showing the old bytes under the new name.
+   *
+   * Name and length are what is available without reading the file, so
+   * two different files with the same name and the same size still
+   * collide. Nothing on the wire can distinguish those without hashing
+   * the contents on every listing, which is why the Client's preview
+   * carries an explicit "fetch again".
+   */
+  const handleFor = (file: OfferedFile) => `offered:${file.bytes.length}:${file.name}`
   return {
     list: (handle) => {
       if (handle !== '') return []
       const file = getFile()
       if (!file) return []
-      return [{ handle: HANDLE, name: file.name, kind: 'file', size: file.bytes.length }]
+      return [{ handle: handleFor(file), name: file.name, kind: 'file', size: file.bytes.length }]
     },
-    open: (handle) => (handle === undefined || handle === HANDLE ? getFile() : null),
+    open: (handle) => {
+      const file = getFile()
+      if (!file) return null
+      // undefined is §5.9's "whatever you are currently offering".
+      return handle === undefined || handle === handleFor(file) ? file : null
+    },
   }
 }
 

@@ -1087,8 +1087,21 @@ code {
   align-items: center;
   gap: 11px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+.fr .fn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A file the browser is already holding: clicking opens it rather than
+   asking the Depot to send it a second time. */
+.fr .held {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--green);
 }
 .fr .n i {
   font-style: normal;
@@ -1120,12 +1133,31 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   margin-bottom: 7px;
-  text-decoration: none;
   color: var(--ink);
   font-size: 14px;
 }
 .received-row:hover {
   border-color: var(--green);
+}
+
+/*
+ * The row and the save link do two different things now — open it here,
+ * or write it to disk — so they are two controls rather than one link
+ * that has to guess which was meant.
+ */
+.received-open {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 .received-name {
   flex: 1;
@@ -1138,11 +1170,186 @@ code {
   font-size: 12px;
   color: var(--ink3);
 }
+.received-view {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--ink3);
+}
+.received-open:hover .received-view {
+  color: var(--ink);
+}
 .received-save {
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.1em;
   color: var(--green);
+  text-decoration: none;
+  flex: 0 0 auto;
+}
+.received-save:hover {
+  text-decoration: underline;
+}
+
+/* ---------- .pv — a look at what already arrived ---------- */
+
+.pv {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(8, 9, 11, 0.84);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+}
+
+.pv-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  height: min(860px, 100%);
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.pv-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+.pv-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  color: var(--green);
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius-xs);
+  padding: 3px 7px;
+  flex: 0 0 auto;
+}
+.pv-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pv-size {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink3);
+  flex: 0 0 auto;
+}
+.pv-act {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--green);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: none;
+  flex: 0 0 auto;
+}
+.pv-act-quiet {
+  color: var(--ink3);
+}
+.pv-act:hover {
+  text-decoration: underline;
+}
+.pv-close {
+  background: none;
+  border: 0;
+  color: var(--ink3);
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  flex: 0 0 auto;
+}
+.pv-close:hover {
+  color: var(--ink);
+  background: var(--surface2);
+}
+
+.pv-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow: auto;
+  background: var(--bg);
+}
+/* A checker under images only, so a PNG with an alpha channel is not
+   mistaken for one with a black background. Behind a PDF — which brings
+   its own white page and grey surround — it is just noise. */
+.pv-body-image {
+  background:
+    repeating-conic-gradient(var(--bg) 0% 25%, var(--surface) 0% 50%) 50% / 22px 22px;
+}
+.pv-body-text {
+  align-items: stretch;
+  justify-content: stretch;
+}
+.pv-body-pdf {
+  padding: 0;
+}
+
+.pv-body img,
+.pv-body video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+.pv-body audio {
+  width: min(520px, 100%);
+}
+.pv-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+.pv-text {
+  margin: 0;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pv-none {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--ink3);
+  font-size: 13px;
+  max-width: 420px;
+}
+.pv-none b {
+  color: var(--ink2);
+  font-weight: 500;
+  font-size: 14px;
 }
 
 /* ---------- .xfer — the floating transfer readout ---------- */
@@ -1568,5 +1775,26 @@ code {
   .fh > :last-child,
   .fr .dt {
     display: none;
+  }
+
+  /* On a phone the overlay is the screen, not a panel floating on it. */
+  .pv {
+    padding: 0;
+  }
+  .pv-panel {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+  .pv-bar {
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+  .pv-name {
+    /* Long enough to be the whole first line, so the actions wrap below
+       it rather than squeezing the name down to an ellipsis. */
+    flex: 1 0 100%;
+    order: -1;
   }
 }

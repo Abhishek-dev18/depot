@@ -65,14 +65,39 @@ class AndroidDepotSource(
 ) : DepotSource {
 
     private val handles = ConcurrentHashMap<String, Location>()
+    private val minted = ConcurrentHashMap<Location, String>()
 
     /** The pre-§5.9 REQUEST_FILE, which names nothing at all. */
     private val offeredHandle = "offered"
 
-    private fun mint(location: Location): String {
+    /**
+     * A handle names a file, so a second pick is a second handle. One
+     * constant for "whatever is picked right now" would let a new file
+     * inherit the last one's identity at a Client that keeps what it
+     * received. Name and length are all that is known without reading
+     * the file, so two picks alike in both still collide.
+     */
+    private fun offeredHandleFor(file: OfferedFile) = "offered:${file.bytes.size}:${file.name}"
+
+    /**
+     * The same location keeps the same handle for as long as this source
+     * lives.
+     *
+     * Minting a fresh one per listing looked harmless — every handle is
+     * valid and the Client only ever echoes back what it was given. It is
+     * not: a Client that holds a received file recognises it by handle,
+     * so re-minting on every refresh told it that everything it held had
+     * become something else, and a refresh happens on every
+     * SHARED_CHANGED and every return to the tab. It also grew this map
+     * without bound, a row at a time, for the life of the session.
+     *
+     * Still unguessable and still session-scoped, which is what the
+     * access control actually rests on. Only the churn is gone.
+     */
+    private fun mint(location: Location): String = minted.computeIfAbsent(location) { key ->
         val handle = Base64.encodeToString(randomBytes(12), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-        handles[handle] = location
-        return handle
+        handles[handle] = key
+        handle
     }
 
     override fun list(handle: String): List<DirEntry> {
@@ -100,7 +125,7 @@ class AndroidDepotSource(
         val file = offered()
         if (file == null) return roots
         return roots + DirEntry(
-            handle = offeredHandle,
+            handle = offeredHandleFor(file),
             name = file.name,
             isDirectory = false,
             size = file.bytes.size.toLong(),
@@ -154,7 +179,13 @@ class AndroidDepotSource(
     }.getOrElse { emptyList() }
 
     override fun open(handle: String?): ServableFile? {
+        // A null handle, and the bare constant behind it, both mean
+        // "whatever you are offering" — they resolve live, so they can
+        // never be stale. A minted offered-handle has to match the file
+        // that is actually picked now.
         if (handle == null || handle == offeredHandle) return offered()?.servable()
+        val file = offered()
+        if (file != null && handle == offeredHandleFor(file)) return file.servable()
         val location = handles[handle] ?: return null
         if (location.isDirectory) return null
         return describeDocument(location)
@@ -228,12 +259,18 @@ fun grantStats(context: Context, treeUri: Uri): GrantStats? = runCatching {
 
 /** Serves one file and nothing else — what the app did before §5.9. */
 class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
+    // As in AndroidDepotSource: the handle names the file, not the slot.
+    private fun handleFor(file: OfferedFile) = "offered:${file.bytes.size}:${file.name}"
+
     override fun list(handle: String): List<DirEntry> {
         if (handle.isNotEmpty()) return emptyList()
         val file = offered() ?: return emptyList()
-        return listOf(DirEntry("offered", file.name, isDirectory = false, size = file.bytes.size.toLong()))
+        return listOf(DirEntry(handleFor(file), file.name, isDirectory = false, size = file.bytes.size.toLong()))
     }
 
-    override fun open(handle: String?): ServableFile? =
-        if (handle == null || handle == "offered") offered()?.servable() else null
+    override fun open(handle: String?): ServableFile? {
+        val file = offered() ?: return null
+        // null and the bare constant are §5.9's "whatever you are offering".
+        return if (handle == null || handle == "offered" || handle == handleFor(file)) file.servable() else null
+    }
 }

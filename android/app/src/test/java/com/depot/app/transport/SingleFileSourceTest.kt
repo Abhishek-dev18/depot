@@ -60,6 +60,34 @@ class SingleFileSourceTest {
     }
 
     @Test
+    fun theHandleIsStableAcrossListings() {
+        // A Client that keeps what it received recognises a file by its
+        // handle. Re-minting on every listing would tell it that the file
+        // it is holding had become something else, on every refresh.
+        val source = SingleFileSource { file("a.bin", 8) }
+        assertEquals(source.list("")[0].handle, source.list("")[0].handle)
+    }
+
+    @Test
+    fun aDifferentFileGetsADifferentHandle() {
+        // One constant handle for "whatever is picked right now" would
+        // let a new file inherit the last one's identity, and a Client
+        // holding the old bytes would go on showing them.
+        var offered = file("a.bin", 8)
+        val source = SingleFileSource { offered }
+        val first = source.list("")[0].handle
+
+        offered = file("b.bin", 9)
+        val second = source.list("")[0].handle
+        assertTrue("a second file must not reuse the first handle", first != second)
+
+        // And the handle for the file that is gone no longer opens
+        // anything, rather than quietly serving the new one.
+        assertNull(source.open(first))
+        assertEquals("b.bin", source.open(second)!!.name)
+    }
+
+    @Test
     fun aHandleItNeverIssuedResolvesToNothing() {
         // §5.9: handles are minted by the Depot, so anything the Client
         // invents — including something shaped like a path — is simply
@@ -67,6 +95,7 @@ class SingleFileSourceTest {
         val source = SingleFileSource { file("a.bin", 8) }
         assertNull(source.open("../../etc/passwd"))
         assertNull(source.open("offered-but-not-quite"))
+        assertNull(source.open("offered:8:b.bin"))
         assertEquals(emptyList<DirEntry>(), source.list("anything"))
     }
 }

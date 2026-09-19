@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.5 (draft)
+**Version:** 0.6 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -544,6 +544,23 @@ incoming handles only through that table. A Client that invents a handle
 gets `ERROR`; one that replays a handle from a previous session gets
 `ERROR`, because the table does not outlive the session.
 
+**Within a session a handle is stable, and it names a file rather than a
+slot.** Listing the same directory twice MUST return the same handle for
+each entry that has not changed, and a Depot MUST NOT reuse a handle for a
+different file — so "the file I am currently offering" does not keep one
+constant handle across two different picks. Neither rule is about access
+control, which the paragraph above already settles; both are about a Client
+being able to recognise a file it has already received. A Client is entitled
+to treat an unchanged handle as meaning unchanged bytes, and to reuse what
+it holds instead of asking again. A Depot that mints a fresh handle on every
+listing makes that impossible and sends every file twice; one that reuses a
+handle for different bytes makes it wrong, and the Client shows the old file
+under the new name.
+
+A Depot cannot always tell two files apart without reading them — name and
+length are usually all a listing knows — so a Client MUST also offer the user
+some way to ask for a file again regardless of what it holds.
+
 This is the whole of the access control, and it is deliberately not a path
 check. Validating a path means writing a correct traversal check and being
 right about `..`, symlinks, Unicode normalisation and whatever the platform's
@@ -690,6 +707,7 @@ whoever builds the Android app against this spec.
 | Version | Date | Change |
 |---|---|---|
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
+| 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |
