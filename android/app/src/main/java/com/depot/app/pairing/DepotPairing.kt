@@ -24,6 +24,8 @@ import org.json.JSONObject
 
 class PairingException(message: String) : Exception(message)
 
+private enum class SasOutcome { APPROVED, REJECTED, GONE }
+
 interface DepotPairingCallbacks {
     fun onStatus(status: String)
 
@@ -31,8 +33,13 @@ interface DepotPairingCallbacks {
      * The SAS is ready. Nothing proceeds until the human compares it with
      * the Client's screen and calls [approve] — this comparison, not any
      * signature, is what actually defeats a Signal-in-the-middle (§3.4).
+     *
+     * [reject] is the other half of that comparison, and it has to exist:
+     * telling someone the digits might not match and then offering them
+     * no way to say so turns the check into theatre. Rejecting tears the
+     * session down without issuing a credential.
      */
-    fun onSas(sas: String, approve: () -> Unit)
+    fun onSas(sas: String, approve: () -> Unit, reject: () -> Unit)
 
     fun onPaired(device: DeviceRecord)
     fun onError(message: String)
@@ -99,24 +106,36 @@ suspend fun runDepotPairing(
 
         cb.onStatus("compare this code with the Client, then approve")
         val approved = CompletableDeferred<Unit>()
-        cb.onSas(sas) { approved.complete(Unit) }
+        val rejected = CompletableDeferred<Unit>()
+        cb.onSas(sas, { approved.complete(Unit) }, { rejected.complete(Unit) })
 
-        // Whichever happens first: the human approves, or the Client gives
-        // up and disconnects. Waiting only on approval would leave the
-        // screen showing a code for a peer that is already gone.
+        // Whichever happens first: the human approves, the human rejects,
+        // or the Client gives up and disconnects. Waiting only on approval
+        // would leave the screen showing a code for a peer already gone.
         val peerLeft = CompletableDeferred<Unit>()
         val unsubscribe = signal.onMessage { e ->
             if (e.type == TYPE_PEER_LEFT || e.type == TYPE_ERROR) peerLeft.complete(Unit)
         }
-        val stillConnected = try {
+        val outcome = try {
             select {
-                approved.onAwait { true }
-                peerLeft.onAwait { false }
+                approved.onAwait { SasOutcome.APPROVED }
+                rejected.onAwait { SasOutcome.REJECTED }
+                peerLeft.onAwait { SasOutcome.GONE }
             }
         } finally {
             unsubscribe()
         }
-        if (!stillConnected) throw PairingException("Client disconnected before pairing was approved")
+        when (outcome) {
+            // No credential is issued and no device record is written, so
+            // the Client is left exactly as unknown as it started. The
+            // `finally` below closes the socket, which is what the Client
+            // sees.
+            SasOutcome.REJECTED ->
+                throw PairingException("codes did not match — pairing refused")
+            SasOutcome.GONE ->
+                throw PairingException("Client disconnected before pairing was approved")
+            SasOutcome.APPROVED -> Unit
+        }
 
         val clientIdB64 = clientIk.toBase64()
         val depotIdB64 = depotIdentity.publicKey.toBase64()

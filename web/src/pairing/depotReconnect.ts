@@ -11,7 +11,7 @@ import { SignalClient } from '../signal/client'
 import { TypePeerLeft } from '../signal/envelope'
 import { TypeRejected, type RejectedPayload } from './rejection'
 import { negotiateAsAnswerer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
-import { runFileSender, type OfferedFile, type SenderEvent } from '../transport/transferSession'
+import { runFileSender, type DepotSource, type RunningSender, type SenderEvent } from '../transport/transferSession'
 
 export interface DepotReconnectCallbacks {
   onStatus: (status: string) => void
@@ -40,6 +40,14 @@ const RENEW_WITHIN_MS = 30 * 24 * 60 * 60 * 1000
 
 export interface DepotReconnectListener {
   depotId: string
+
+  /**
+   * protocol.md §5.9 — tell every connected Client that what it was shown
+   * is out of date. Called when a file is offered or a grant changes,
+   * which is the difference between a browser that updates and one that
+   * has to be reloaded by hand.
+   */
+  notifySharedChanged: () => void
   stop: () => void
   /** Sends REVOKE on the same registered connection (Go hub requires this — see hub.go handleRevoke). */
   revoke: (clientId: string) => void
@@ -48,12 +56,12 @@ export interface DepotReconnectListener {
 /**
  * Depot side of protocol.md §4, run as a background listener: registers
  * presence once, then handles as many concurrent reconnecting clients as
- * arrive, each independently, offering whatever file getFile() returns at
- * the moment a client requests one (§5.7).
+ * arrive, each independently, serving whatever the DepotSource exposes at
+ * the moment a client asks (§5.7, §5.9).
  */
 export async function runDepotReconnectListener(
   signalUrl: string,
-  getFile: () => OfferedFile | null,
+  source: DepotSource,
   turn: TurnConfig | undefined,
   cb: DepotReconnectCallbacks,
 ): Promise<DepotReconnectListener> {
@@ -72,25 +80,33 @@ export async function runDepotReconnectListener(
   // immediately" is the step that actually matters; signal-level REVOKE is
   // only the routing optimisation. Track live connections so revoke() can do it.
   const activeConnections = new Map<string, () => void>()
+  const senders = new Map<string, RunningSender>()
 
   const unsubscribe = client.onMessage((e) => {
     if (e.type === 'incoming' && e.clientId) {
-      void handleIncoming(client, depotIdentity, e.clientId, e.payload, getFile, turn, activeConnections, cb)
+      void handleIncoming(
+        client, depotIdentity, e.clientId, e.payload, source, turn, activeConnections, senders, cb,
+      )
     }
   })
 
   return {
     depotId,
+    notifySharedChanged: () => {
+      for (const sender of senders.values()) sender.notifyChanged()
+    },
     stop: () => {
       unsubscribe()
       client.close()
       for (const close of activeConnections.values()) close()
       activeConnections.clear()
+      senders.clear()
     },
     revoke: (clientId: string) => {
       client.revoke(clientId)
       activeConnections.get(clientId)?.()
       activeConnections.delete(clientId)
+      senders.delete(clientId)
     },
   }
 }
@@ -100,9 +116,10 @@ async function handleIncoming(
   depotIdentity: KeyPair,
   clientId: string,
   payload: unknown,
-  getFile: () => OfferedFile | null,
+  source: DepotSource,
   turn: TurnConfig | undefined,
   activeConnections: Map<string, () => void>,
+  senders: Map<string, RunningSender>,
   cb: DepotReconnectCallbacks,
 ): Promise<void> {
   try {
@@ -165,9 +182,11 @@ async function handleIncoming(
         })
       }
     }
-    const stopSending = await runFileSender(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, getFile, onSenderEvent)
+    const sender = await runFileSender(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, source, onSenderEvent)
+    senders.set(clientId, sender)
     activeConnections.set(clientId, () => {
-      stopSending()
+      senders.delete(clientId)
+      sender.stop()
       channels.close()
     })
   } catch (err) {

@@ -90,6 +90,31 @@ class StorageTest {
     }
 
     @Test
+    fun renamingKeepsTheKeyAndEverythingElse() {
+        val now = System.currentTimeMillis()
+        DeviceStore.save(context, DeviceRecord("client-a", "Paired client", now, now, false))
+
+        DeviceStore.rename(context, "client-a", "Work laptop")
+
+        val device = DeviceStore.get(context, "client-a")!!
+        assertEquals("Work laptop", device.label)
+        assertEquals(now, device.createdAt)
+        assertTrue(!device.revoked)
+    }
+
+    @Test
+    fun aBlankNameIsIgnoredRatherThanStored() {
+        // The name is the only thing distinguishing two rows in the list,
+        // so clearing the field should not leave one nameless.
+        val now = System.currentTimeMillis()
+        DeviceStore.save(context, DeviceRecord("client-a", "Work laptop", now, now, false))
+
+        DeviceStore.rename(context, "client-a", "   ")
+
+        assertEquals("Work laptop", DeviceStore.get(context, "client-a")!!.label)
+    }
+
+    @Test
     fun touchUpdatesLastSeenWithoutClearingRevocation() {
         // Backdated so the comparison cannot land in the same millisecond.
         val stale = System.currentTimeMillis() - 10_000

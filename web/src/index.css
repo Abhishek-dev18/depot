@@ -21,6 +21,11 @@
   --amber: #ffb020;
   --amber-dim: #8a5f12;
   --amber-bg: rgba(255, 176, 32, 0.09);
+  --amber-bg-faint: rgba(255, 176, 32, 0.05);
+  /* Amber text needs a dark foreground on amber fills, not the page bg. */
+  --amber-on: #1a1203;
+  --green-line: rgba(63, 207, 142, 0.25);
+  --red-line: rgba(242, 84, 91, 0.25);
   --green: #3fcf8e;
   --green-bg: rgba(63, 207, 142, 0.12);
   --red: #f2545b;

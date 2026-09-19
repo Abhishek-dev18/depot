@@ -1,8 +1,8 @@
 # Depot Protocol Specification
 
-**Version:** 0.1 (draft)
-**Status:** Pre-implementation
-**Scope:** Device pairing, session establishment, encrypted transport, revocation.
+**Version:** 0.6 (draft)
+**Status:** Implemented on both sides
+**Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
 ---
 
@@ -476,14 +476,13 @@ WebRTC offerer and creates both DataChannels; the Depot is always the
 answerer. This is an arbitrary but fixed convention — nothing in §5 depends
 on which side offers.
 
-**`ctl` channel messages.** `CAPS` (§5.4), `REQUEST_FILE` (Client → Depot,
-requests whatever file the Depot is currently offering — this
-implementation doesn't do file browsing/selection-by-path, since that's a
-product-level concern for the Android app's own UI, not part of this
-protocol), `MANIFEST` (Depot → Client, carries `transferId`, `size`, and
-each chunk's `offset`/`length`/`hash` since chunks are content-defined and
-therefore variable-length), `NEED` (Client → Depot), and `ERROR` (either
-direction).
+**`ctl` channel messages.** `CAPS` (§5.4), `LIST` and `LIST_OK` (§5.9),
+`SHARED_CHANGED` (§5.9), `REQUEST_FILE` (Client → Depot, naming a handle
+from §5.9 or, with no handle, whatever file the Depot is currently
+offering), `MANIFEST` (Depot →
+Client, carries `transferId`, `size`, and each chunk's
+`offset`/`length`/`hash` since chunks are content-defined and therefore
+variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
 
 Each of these is carried inside an encrypted control frame (§5.3), one
 message per frame — Signal sees only ciphertext and a monotonic counter.
@@ -510,6 +509,93 @@ is a codec substitution, not a protocol change, and swapping in real zstd
 later touches only the compression module.
 
 ---
+
+### 5.9 Browsing
+
+A Depot grants access per folder. §5.7 alone lets a Client ask for "the file
+the Depot is offering", which is enough to prove the transport works and not
+enough to be a file server. Browsing adds two messages on `ctl`:
+
+```json
+{ "type": "LIST", "handle": "" }
+```
+
+```json
+{
+  "type": "LIST_OK",
+  "handle": "",
+  "entries": [
+    { "handle": "k3f9…", "name": "Camera",   "kind": "dir",  "modifiedAt": 1757808000000 },
+    { "handle": "9a21…", "name": "IMG_0001.jpg", "kind": "file", "size": 4404019, "modifiedAt": 1757808000000 }
+  ]
+}
+```
+
+An empty `handle` lists the grants themselves — the folders the user has
+chosen to share. Any other handle lists that directory's children.
+`REQUEST_FILE` (§5.8) gains an optional `handle` naming which file to send;
+omitting it keeps the older meaning, "whatever the Depot is currently
+offering", so a Client that predates this section still works.
+
+**Handles are opaque and minted per session.** They are not paths, not
+document IDs and not anything the Client can construct — the Depot keeps a
+table mapping each handle it has issued to a real location, and resolves
+incoming handles only through that table. A Client that invents a handle
+gets `ERROR`; one that replays a handle from a previous session gets
+`ERROR`, because the table does not outlive the session.
+
+**Within a session a handle is stable, and it names a file rather than a
+slot.** Listing the same directory twice MUST return the same handle for
+each entry that has not changed, and a Depot MUST NOT reuse a handle for a
+different file — so "the file I am currently offering" does not keep one
+constant handle across two different picks. Neither rule is about access
+control, which the paragraph above already settles; both are about a Client
+being able to recognise a file it has already received. A Client is entitled
+to treat an unchanged handle as meaning unchanged bytes, and to reuse what
+it holds instead of asking again. A Depot that mints a fresh handle on every
+listing makes that impossible and sends every file twice; one that reuses a
+handle for different bytes makes it wrong, and the Client shows the old file
+under the new name.
+
+A Depot cannot always tell two files apart without reading them — name and
+length are usually all a listing knows — so a Client MUST also offer the user
+some way to ask for a file again regardless of what it holds.
+
+This is the whole of the access control, and it is deliberately not a path
+check. Validating a path means writing a correct traversal check and being
+right about `..`, symlinks, Unicode normalisation and whatever the platform's
+storage layer does with them. There is no such check here, because the Client
+never names a location at all: it can only echo back something the Depot
+already decided to tell it about. A Depot must therefore never mint a handle
+for anything outside a grant — that, and not the shape of any string, is the
+property to preserve.
+
+A Depot may refuse `LIST` for a handle that is a file rather than a
+directory, and must refuse `REQUEST_FILE` for a handle that is a directory;
+both are `ERROR`.
+
+A Depot whose shared set changes while a Client is connected — a folder
+granted or withdrawn, a file offered — sends:
+
+```json
+{ "type": "SHARED_CHANGED" }
+```
+
+It carries nothing. It means only "what you were told is now out of date",
+and the Client re-issues `LIST` for whatever it is showing. Sending the new
+listing unasked would be worse: the Depot does not know which directory the
+Client is looking at, and a Client that has navigated elsewhere would have
+to discard it.
+
+This is advisory. A Client that never sees it — because the message was
+lost, or because it predates this section — is stale rather than broken,
+and re-listing at any point puts it right. A Depot must therefore never
+treat having sent it as proof the Client knows.
+
+Listing carries no file contents, but it does carry names, sizes and
+timestamps, which §1.2 promises Signal cannot see. Both messages are
+therefore ordinary encrypted `ctl` frames (§5.3) like everything else on
+that channel.
 
 ## 6. Revocation
 
@@ -620,6 +706,9 @@ whoever builds the Android app against this spec.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
+| 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
+| 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |
 | 0.1 | 2026-09-15 | Initial draft |

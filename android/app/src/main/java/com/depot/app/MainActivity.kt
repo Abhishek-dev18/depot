@@ -1,7 +1,9 @@
 package com.depot.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,30 +12,49 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import com.depot.app.ui.PairingScreen
-import com.depot.app.ui.QrScannerScreen
-import com.depot.app.ui.PairingViewModel
+import androidx.core.content.IntentCompat
+import com.depot.app.ui.DepotApp
+import com.depot.app.ui.DepotViewModel
 import com.depot.app.ui.theme.DepotColors
 import com.depot.app.ui.theme.DepotTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: PairingViewModel by viewModels()
+    private val viewModel: DepotViewModel by viewModels()
+
+    /** A share that arrives while the app is already running. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        offerSharedFile(intent)
+    }
+
+    /**
+     * Another app shared a file with Depot.
+     *
+     * ACTION_SEND grants this activity read access to that one URI, which
+     * is the same shape of permission the file picker hands back: the user
+     * chose exactly this file and nothing else. It becomes the single
+     * offered file, alongside — not instead of — any granted folders.
+     */
+    private fun offerSharedFile(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+        uri?.let(viewModel::onFileSelected)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        offerSharedFile(intent)
         setContent {
             DepotTheme {
                 val state by viewModel.state.collectAsState()
@@ -62,35 +83,34 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument(),
                 ) { uri -> uri?.let(viewModel::onFileSelected) }
 
-                var scanning by remember { mutableStateOf(false) }
+                // A whole folder, so a Client has something to browse
+                // (protocol.md §5.9). The tree permission is taken
+                // persistably in the view model, or the grant would stop
+                // working at the next reboot.
+                val pickFolder = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocumentTree(),
+                ) { uri -> uri?.let(viewModel::onFolderGranted) }
 
-                if (scanning) {
-                    QrScannerScreen(
-                        onScanned = { payload ->
-                            scanning = false
-                            viewModel.onQrScanned(payload)
-                        },
-                        onCancel = { scanning = false },
-                    )
-                    return@DepotTheme
-                }
-
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = DepotColors.Bg,
-                ) { innerPadding ->
-                    PairingScreen(
+                Box(Modifier.fillMaxSize().background(DepotColors.Bg)) {
+                    DepotApp(
                         state = state,
-                        onPayloadChange = viewModel::onPayloadChange,
-                        onJoin = viewModel::join,
-                        onApprove = viewModel::onApprove,
-                        onRevoke = viewModel::onRevoke,
-                        onDismissResult = viewModel::dismissResult,
-                        onSignalUrlChange = viewModel::onSignalUrlChange,
                         onToggleListening = viewModel::toggleListening,
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
-                        onScanQr = { scanning = true },
-                        modifier = Modifier.padding(innerPadding),
+                        onAddFolder = { pickFolder.launch(null) },
+                        onToggleGrant = viewModel::onToggleGrant,
+                        onForgetGrant = viewModel::onForgetGrant,
+                        onSignalUrlChange = viewModel::onSignalUrlChange,
+                        onTurnChange = viewModel::onTurnChange,
+                        onPayloadChange = viewModel::onPayloadChange,
+                        onLink = viewModel::link,
+                        onQrScanned = viewModel::onQrScanned,
+                        onApprove = viewModel::onApprove,
+                        onReject = viewModel::onReject,
+                        onCancelLink = viewModel::cancelLink,
+                        onDismissResult = viewModel::dismissResult,
+                        onRename = viewModel::onRename,
+                        onRevoke = viewModel::onRevoke,
+                        onForgetDevice = viewModel::onForgetDevice,
                     )
                 }
             }

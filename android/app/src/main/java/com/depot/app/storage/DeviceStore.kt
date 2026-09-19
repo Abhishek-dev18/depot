@@ -41,10 +41,9 @@ object DeviceStore {
         }
     }
 
-    fun save(context: Context, device: DeviceRecord) {
-        val next = list(context).filterNot { it.clientIdentityPub == device.clientIdentityPub } + device
+    private fun write(context: Context, devices: List<DeviceRecord>) {
         val array = JSONArray()
-        for (d in next) {
+        for (d in devices) {
             array.put(
                 JSONObject()
                     .put("clientIdentityPub", d.clientIdentityPub)
@@ -57,6 +56,10 @@ object DeviceStore {
         prefs(context).edit().putString(KEY, array.toString()).apply()
     }
 
+    fun save(context: Context, device: DeviceRecord) {
+        write(context, list(context).filterNot { it.clientIdentityPub == device.clientIdentityPub } + device)
+    }
+
     fun get(context: Context, clientIdentityPub: String): DeviceRecord? =
         list(context).find { it.clientIdentityPub == clientIdentityPub }
 
@@ -64,6 +67,30 @@ object DeviceStore {
     fun revoke(context: Context, clientIdentityPub: String) {
         val device = get(context, clientIdentityPub) ?: return
         save(context, device.copy(revoked = true))
+    }
+
+    /**
+     * The Client never tells the Depot what it is called. That is
+     * deliberate — a self-reported name is worth nothing, since a Client
+     * could claim to be anything — so the name is whatever the person
+     * holding the phone decides to write down.
+     */
+    fun rename(context: Context, clientIdentityPub: String, label: String) {
+        val device = get(context, clientIdentityPub) ?: return
+        save(context, device.copy(label = label.trim().ifBlank { device.label }))
+    }
+
+    /**
+     * Drops the record entirely.
+     *
+     * Different from [revoke], which keeps the device listed as refused —
+     * a record worth having, since it says a device was once trusted and
+     * no longer is. Forgetting is for when the list itself should stop
+     * mentioning it. The Client is then simply unknown, and pairing again
+     * from a fresh code would work exactly as it did the first time.
+     */
+    fun forget(context: Context, clientIdentityPub: String) {
+        write(context, list(context).filterNot { it.clientIdentityPub == clientIdentityPub })
     }
 
     fun touch(context: Context, clientIdentityPub: String) {

@@ -1,5 +1,7 @@
 package com.depot.app.transport
 
+import java.io.InputStream
+
 /**
  * Content-defined chunking (FastCDC-style, normalized level 1), per
  * protocol.md §5.7: boundaries depend on local content rather than fixed
@@ -49,11 +51,19 @@ private fun maskWithBits(bits: Double): Int {
     return (1 shl n) - 1
 }
 
-/** Length of the next chunk starting at [offset]. */
-private fun findCutLength(bytes: ByteArray, offset: Int, params: CdcParams): Int {
-    val remaining = bytes.size - offset
-    if (remaining <= params.minSize) return remaining
-    val end = minOf(remaining, params.maxSize)
+/**
+ * Length of the next chunk starting at [offset], considering [available]
+ * bytes from there.
+ *
+ * [available] is separate from the array's length so the streaming
+ * chunker can pass a window rather than a whole file. The two agree
+ * exactly as long as the caller offers at least maxSize bytes whenever
+ * more of the file remains — which is what makes a streamed manifest
+ * identical to one built from a buffer.
+ */
+private fun findCutLength(bytes: ByteArray, offset: Int, available: Int, params: CdcParams): Int {
+    if (available <= params.minSize) return available
+    val end = minOf(available, params.maxSize)
 
     val avgBits = kotlin.math.ln(params.avgSize.toDouble()) / kotlin.math.ln(2.0)
     val maskS = maskWithBits(avgBits + 2) // stricter: fewer boundaries before avgSize
@@ -78,11 +88,45 @@ fun chunkLengths(bytes: ByteArray, params: CdcParams = DEFAULT_CDC_PARAMS): List
     val lengths = mutableListOf<Int>()
     var offset = 0
     while (offset < bytes.size) {
-        val length = findCutLength(bytes, offset, params)
+        val length = findCutLength(bytes, offset, bytes.size - offset, params)
         lengths.add(length)
         offset += length
     }
     return lengths
+}
+
+/**
+ * Splits a stream into content-defined chunks without holding it.
+ *
+ * A sliding window of twice maxSize means every boundary decision is made
+ * with at least maxSize bytes in hand, so the cuts are the same ones
+ * [chunkLengths] would make over the whole file — which matters, because
+ * the manifest is built in one pass and the bytes are re-read in another,
+ * and the two have to agree.
+ *
+ * [sink] receives each chunk as its own array; it must not retain it
+ * beyond the call if the point is to stay off the heap.
+ */
+fun chunkStream(input: InputStream, params: CdcParams, sink: (ByteArray) -> Unit) {
+    val capacity = maxOf(params.maxSize * 2, 64 * 1024)
+    val buffer = ByteArray(capacity)
+    var filled = 0
+    var eof = false
+
+    while (true) {
+        while (!eof && filled < capacity) {
+            val read = input.read(buffer, filled, capacity - filled)
+            if (read < 0) eof = true else filled += read
+        }
+        if (filled == 0) return
+
+        // Either the buffer is full (so at least maxSize is available) or
+        // the file has ended and this is genuinely all that is left.
+        val length = findCutLength(buffer, 0, filled, params)
+        sink(buffer.copyOfRange(0, length))
+        System.arraycopy(buffer, length, buffer, 0, filled - length)
+        filled -= length
+    }
 }
 
 /** protocol.md §5.5 — CDC parameters for a target average chunk size. */

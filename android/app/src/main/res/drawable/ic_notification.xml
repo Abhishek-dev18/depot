@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The same crate at notification size. Separate from the launcher
+  foreground because a status-bar icon is masked to its alpha and tinted
+  by the system: it needs to be a flat silhouette at 24dp, not a 108dp
+  layer with a launcher's safe-zone padding around it.
+
+  9dp across the 24dp canvas, corners at a radius of 6.4.
+
+  That ratio is not from a specification — it is the one the launcher icon
+  was found to survive at on a real phone, 40dp of 108, applied here.
+  Everything larger was tried and clipped: 23dp of 24, then 14, then 12.
+  Whatever draws these crops well inside anything Android documents, so
+  the measured ratio is better evidence than the documented one.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.75"
+        android:pathData="M9.055,7.875 H14.945 A1.18,1.18 0 0 1 16.125,9.055 V14.945 A1.18,1.18 0 0 1 14.945,16.125 H9.055 A1.18,1.18 0 0 1 7.875,14.945 V9.055 A1.18,1.18 0 0 1 9.055,7.875 Z" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.75"
+        android:pathData="M9.2,10.52 H14.8" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13.48,13.18 H15.25 V14.95 H13.48 Z" />
+</vector>

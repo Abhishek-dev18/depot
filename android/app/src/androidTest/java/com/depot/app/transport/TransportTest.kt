@@ -84,17 +84,41 @@ class TransportTest {
         val bytes = pseudoRandom(200 * 1024, seed = 5)
         val manifest = buildManifest(transferId = 1, name = "test.bin", bytes = bytes)
 
-        assertEquals(bytes.size, manifest.size)
+        assertEquals(bytes.size.toLong(), manifest.size)
         assertEquals(manifest.chunks.size, manifest.chunkCount)
         assertEquals(hashBytes(bytes), manifest.fileHash)
 
         var offset = 0
         for (chunk in manifest.chunks) {
-            assertEquals(offset, chunk.offset)
-            assertEquals(hashBytes(bytes.copyOfRange(chunk.offset, chunk.offset + chunk.length)), chunk.hash)
+            assertEquals(offset.toLong(), chunk.offset)
+            assertEquals(
+                hashBytes(bytes.copyOfRange(chunk.offset.toInt(), chunk.offset.toInt() + chunk.length)),
+                chunk.hash,
+            )
             offset += chunk.length
         }
         assertEquals(bytes.size, offset)
+    }
+
+    @Test
+    fun theStreamedManifestIsIdenticalToTheBufferedOne() {
+        // The one that matters for large files: a Depot builds the
+        // manifest by reading the file rather than holding it, and the
+        // result has to be the same manifest — same cuts, same hashes,
+        // same whole-file hash — or the second pass sends bytes that do
+        // not match what it promised.
+        val bytes = pseudoRandom(900 * 1024, seed = 23)
+        val params = cdcParamsForAvg(64 * 1024)
+
+        val buffered = buildManifest(transferId = 7, name = "big.bin", bytes = bytes, cdcParams = params)
+        val streamed = buildManifestStreaming(transferId = 7, name = "big.bin", cdcParams = params) {
+            java.io.ByteArrayInputStream(bytes)
+        }
+
+        assertEquals(buffered.size, streamed.size)
+        assertEquals(buffered.chunkCount, streamed.chunkCount)
+        assertEquals(buffered.fileHash, streamed.fileHash)
+        assertEquals(buffered.chunks, streamed.chunks)
     }
 
     @Test

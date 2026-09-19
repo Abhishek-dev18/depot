@@ -21,8 +21,8 @@ import com.depot.app.signal.TYPE_PEER_LEFT
 import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.IdentityStore
 import com.depot.app.transport.ConnectionType
+import com.depot.app.transport.DepotSource
 import com.depot.app.transport.FileSender
-import com.depot.app.transport.OfferedFile
 import com.depot.app.transport.SessionKeys
 import com.depot.app.transport.TransferCallbacks
 import com.depot.app.transport.TurnConfig
@@ -51,6 +51,18 @@ interface DepotReconnectCallbacks {
     fun onRegistered(depotId: String)
     fun onClientAuthenticated(clientId: String)
     fun onClientConnected(clientId: String, connectionType: ConnectionType)
+
+    /**
+     * The Client's transport is gone. The UI shows a live/idle dot per
+     * device, and without this it could only ever light up.
+     */
+    fun onClientDisconnected(clientId: String)
+
+    /**
+     * This Depot's own connection to Signal has gone. It is no longer
+     * registered, so nothing can reach it until it registers again.
+     */
+    fun onDisconnected(reason: String)
     fun onProgress(clientId: String, index: Int, total: Int, bytesSent: Long, bytesTotal: Long)
     fun onClientRejected(clientId: String, reason: String)
 }
@@ -59,13 +71,26 @@ class DepotReconnectListener(
     val depotId: String,
     private val signal: SignalClient,
     private val connections: ConcurrentHashMap<String, () -> Unit>,
+    private val senders: ConcurrentHashMap<String, FileSender>,
 ) {
+
+    /**
+     * protocol.md §5.9 — tell every connected Client that what it was
+     * shown is out of date.
+     *
+     * This is the difference between a browser that updates when you
+     * share something and one that has to be reloaded by hand.
+     */
+    fun notifySharedChanged() {
+        for (sender in senders.values) sender.notifySharedChanged()
+    }
     fun stop() {
         // Closing only the WebSocket would leave every PeerConnection from
         // this session alive, still holding ICE sockets and running
         // keepalives, and the next session would negotiate alongside them.
         for (close in connections.values) runCatching { close() }
         connections.clear()
+        senders.clear()
         signal.close()
     }
 
@@ -86,7 +111,7 @@ suspend fun runDepotReconnectListener(
     scope: CoroutineScope,
     signalUrl: String,
     turn: TurnConfig?,
-    getFile: () -> OfferedFile?,
+    source: DepotSource,
     cb: DepotReconnectCallbacks,
 ): DepotReconnectListener {
     val depotIdentity = IdentityStore.loadOrCreate(context)
@@ -101,7 +126,10 @@ suspend fun runDepotReconnectListener(
     cb.onStatus("registered, listening for reconnections")
     cb.onRegistered(depotId)
 
+    signal.onDisconnected { reason -> cb.onDisconnected(reason) }
+
     val connections = ConcurrentHashMap<String, () -> Unit>()
+    val senders = ConcurrentHashMap<String, FileSender>()
 
     signal.onMessage { e ->
         val clientId = e.clientId
@@ -109,18 +137,22 @@ suspend fun runDepotReconnectListener(
             e.type == TYPE_INCOMING && clientId != null -> scope.launch {
                 handleIncoming(
                     context, scope, signal, depotIdentity.privateKey, depotId,
-                    e, turn, getFile, connections, cb,
+                    e, turn, source, connections, senders, cb,
                 )
             }
             // A Client that goes away releases its transport immediately
             // rather than at the next stop().
             e.type == TYPE_PEER_LEFT && clientId != null -> {
-                connections.remove(clientId)?.let { runCatching { it() } }
+                senders.remove(clientId)
+                connections.remove(clientId)?.let {
+                    runCatching { it() }
+                    cb.onClientDisconnected(clientId)
+                }
             }
         }
     }
 
-    return DepotReconnectListener(depotId, signal, connections)
+    return DepotReconnectListener(depotId, signal, connections, senders)
 }
 
 private suspend fun handleIncoming(
@@ -131,8 +163,9 @@ private suspend fun handleIncoming(
     depotId: String,
     incoming: Envelope,
     turn: TurnConfig?,
-    getFile: () -> OfferedFile?,
+    source: DepotSource,
     connections: ConcurrentHashMap<String, () -> Unit>,
+    senders: ConcurrentHashMap<String, FileSender>,
     cb: DepotReconnectCallbacks,
 ) {
     val clientId = incoming.clientId ?: return
@@ -226,7 +259,8 @@ private suspend fun handleIncoming(
         val sender = FileSender(
             channels = channels,
             keys = SessionKeys(keys.kC2D, keys.kD2C),
-            getFile = getFile,
+            source = source,
+            scope = scope,
             cb = object : TransferCallbacks {
                 override fun onManifestSent(transferId: Int, chunkCount: Int) {
                     cb.onStatus("offering $chunkCount chunk(s)")
@@ -245,7 +279,9 @@ private suspend fun handleIncoming(
         // handed to the scope rather than handled inline.
         sender.start { msg -> scope.launch { sender.handle(msg) } }
 
+        senders[clientId] = sender
         connections[clientId] = {
+            senders.remove(clientId)
             sender.stop()
             channels.close()
         }
@@ -257,6 +293,9 @@ private suspend fun handleIncoming(
         runCatching {
             signal.relay(TYPE_REJECTED, JSONObject().put("reason", reason), clientId)
         }
+        // A failure part-way through leaves nothing connected, so clear any
+        // live mark this Client had from an earlier attempt.
+        cb.onClientDisconnected(clientId)
         cb.onClientRejected(clientId, reason)
     }
 }

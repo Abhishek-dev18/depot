@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Working branches too, not just main. The Android job exists to catch
+    # what only a compiler can, and it was only running on main and on
+    # pull requests — so a branch with a fortnight of work on it got no
+    # build at all, and the first thing to find a broken import was
+    # someone's laptop.
+    branches: [main, 'claude/**']
   pull_request:
 
 jobs:
@@ -39,3 +44,30 @@ jobs:
       - run: npm run lint
       - run: npm test -- --run
       - run: npm run build
+
+  android:
+    name: android (Kotlin)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+      # assembleDebug is the point of this job. The instrumented suite —
+      # the vectors, storage and transport tests — needs a real device for
+      # libsodium's native library, so CI cannot run it; what CI *can* do
+      # is prove the app still compiles, which is the failure mode that
+      # otherwise only shows up on someone's phone.
+      - run: ./gradlew --no-daemon assembleDebug
+      - run: ./gradlew --no-daemon testDebugUnitTest
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-unit-test-results
+          path: android/app/build/reports/tests/

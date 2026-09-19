@@ -3,7 +3,7 @@ import { useLog } from '../hooks/useLog'
 import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
-import type { OfferedFile } from '../transport/transferSession'
+import { singleFileSource, type OfferedFile } from '../transport/transferSession'
 import type { ConnectionType, TurnConfig } from '../transport/webrtc'
 import { Badge } from './Badge'
 import { Card } from './Card'
@@ -77,11 +77,13 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
     offeredFileRef.current = { name: file.name, bytes }
     setOfferedFile({ name: file.name, size: bytes.length })
     push(`offering ${file.name} (${bytes.length.toLocaleString()} bytes)`)
+    // §5.9: anyone already connected is now looking at a stale listing.
+    listenerRef.current?.notifySharedChanged()
   }
 
   const startListening = async () => {
     if (listenerRef.current) return
-    const l = await runDepotReconnectListener(signalUrl, () => offeredFileRef.current, turnConfig, {
+    const l = await runDepotReconnectListener(signalUrl, singleFileSource(() => offeredFileRef.current), turnConfig, {
       onStatus: push,
       onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
       onClientConnected: ({ clientId, connectionType }) => {
