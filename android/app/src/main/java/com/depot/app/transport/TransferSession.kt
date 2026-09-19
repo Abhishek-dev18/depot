@@ -20,7 +20,7 @@ private val OUR_CAPS = JSONObject()
     .put("protocolVersion", 1)
     .put("compression", org.json.JSONArray(listOf("deflate", "none")))
     .put("maxChunkSize", 1024 * 1024)
-    .put("features", org.json.JSONArray(listOf("cdc")))
+    .put("features", org.json.JSONArray(listOf("cdc", "browse")))
 
 /**
  * SCTP will buffer without bound if fed faster than the link drains, and a
@@ -87,7 +87,7 @@ class OfferedFile(val name: String, val bytes: ByteArray)
 class FileSender(
     private val channels: DataChannels,
     private val keys: SessionKeys,
-    private val getFile: () -> OfferedFile?,
+    private val source: DepotSource,
     private val cb: TransferCallbacks,
 ) {
     private val ctl = CtlCodec(channels.ctl, keys, isDepot = true)
@@ -111,15 +111,45 @@ class FileSender(
     suspend fun handle(msg: JSONObject) {
         when (msg.optString("type")) {
             "CAPS" -> if (!peerCaps.isCompleted) peerCaps.complete(msg)
-            "REQUEST_FILE" -> handleRequestFile()
+            "LIST" -> handleList(msg)
+            "REQUEST_FILE" -> handleRequestFile(msg)
             "NEED" -> handleNeed(msg)
         }
     }
 
-    private suspend fun handleRequestFile() {
-        val file = getFile()
+    /** protocol.md §5.9. */
+    private fun handleList(msg: JSONObject) {
+        val handle = msg.optString("handle")
+        val entries = org.json.JSONArray()
+        for (entry in runCatching { source.list(handle) }.getOrDefault(emptyList())) {
+            val o = JSONObject()
+                .put("handle", entry.handle)
+                .put("name", entry.name)
+                .put("kind", if (entry.isDirectory) "dir" else "file")
+            entry.size?.let { o.put("size", it) }
+            entry.modifiedAt?.let { o.put("modifiedAt", it) }
+            entry.count?.let { o.put("count", it) }
+            entries.put(o)
+        }
+        ctl.send(JSONObject().put("type", "LIST_OK").put("handle", handle).put("entries", entries))
+    }
+
+    private suspend fun handleRequestFile(msg: JSONObject) {
+        // An absent handle is the pre-§5.9 meaning, "whatever you are
+        // offering" — not the empty string, which is a handle the Client
+        // could have sent deliberately.
+        val handle = if (msg.has("handle")) msg.optString("handle") else null
+        val file = try {
+            source.open(handle)
+        } catch (e: Exception) {
+            ctl.send(JSONObject().put("type", "ERROR").put("message", e.message ?: "could not read that file"))
+            return
+        }
         if (file == null) {
-            ctl.send(JSONObject().put("type", "ERROR").put("message", "no file offered"))
+            // Deliberately the same answer for "nothing is offered" and
+            // "that is not a handle I issued": a Client should not be able
+            // to probe which handles exist.
+            ctl.send(JSONObject().put("type", "ERROR").put("message", "no such file"))
             return
         }
         val transferId = nextTransferId++

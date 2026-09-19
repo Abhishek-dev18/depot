@@ -8,6 +8,25 @@ Implements `../docs/protocol.md` §3 (pairing), §4 (reconnection), §5 (transpo
 (revocation). React 19 + TypeScript + Vite, libsodium for crypto, WebRTC DataChannels for
 transfer.
 
+## The Client
+
+The Client is built to the project's interface spec — the [Depot — Interface
+Design](https://claude.ai/artifact/CMxsYXcZNY8XTzkoSGYwPn) artifact — and has three
+states, which are that spec's three browser frames:
+
+| Frame | Where |
+|---|---|
+| PAIR · awaiting approval | `components/PairPanel.tsx` |
+| FILES · browse & transfer | `components/FilesPanel.tsx` |
+| FALLBACK · no direct route | `components/NoRoutePanel.tsx` |
+
+There is no fourth "logged out" state, because there is no account to log out of.
+What this browser holds is a credential; losing it means pairing again.
+
+The Depot simulator stays at `?role=depot`. It stands in for the phone so the
+protocol can be exercised in two tabs — it is a development tool, the interface spec
+does not cover it, and the real Depot is the Android app.
+
 ## Run
 
 ```bash

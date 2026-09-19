@@ -10,14 +10,23 @@ import { SignalClient } from '../signal/client'
 import { TypeError as SignalError } from '../signal/envelope'
 import { TypeRejected, throwIfRejected } from './rejection'
 import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
-import { requestFile, type ReceiverEvent } from '../transport/transferSession'
+import { openClientSession, type ClientSession } from '../transport/transferSession'
 
 export interface ClientReconnectCallbacks {
   onStatus: (status: string) => void
   onConnected: (info: { depotId: string; connectionType: ConnectionType }) => void
-  onProgress: (info: { index: number; total: number; bytesReceived?: number; bytesTotal?: number }) => void
-  onFileReceived: (file: { name: string; bytes: Uint8Array }) => void
+  /**
+   * The session is open and can be browsed. Closing it tears down the
+   * data channels and the signal connection with it.
+   */
+  onSession: (session: DepotConnection) => void
   onError: (message: string) => void
+}
+
+/** A live connection to a Depot: browse it, pull files from it, close it. */
+export interface DepotConnection extends ClientSession {
+  depotId: string
+  connectionType: ConnectionType
 }
 
 interface ChallengePayload {
@@ -28,9 +37,13 @@ interface ChallengePayload {
 /**
  * Client side of protocol.md §4 and §5. Proves possession of
  * ClientIdentity's private key (§4), then negotiates a WebRTC data channel
- * over the same signal relay and requests whatever file the Depot is
- * offering (§5.7) — the transfer succeeding end to end is the proof that
- * everything from key derivation through frame decryption actually works.
+ * over the same signal relay and hands back an open session the caller can
+ * browse and pull files from (§5.7, §5.9).
+ *
+ * The signal connection is kept open for the life of that session rather
+ * than closed on the way out: WebRTC renegotiation and any later ICE
+ * candidates travel over it, and a Depot that revokes this Client mid-
+ * session announces it there too.
  */
 export async function runClientReconnect(
   signalUrl: string,
@@ -99,22 +112,25 @@ export async function runClientReconnect(
     cb.onStatus('connected')
     cb.onConnected({ depotId, connectionType: channels.connectionType })
 
-    cb.onStatus('requesting file')
-    const onReceiverEvent = (e: ReceiverEvent) => {
-      if (e.type === 'manifest') cb.onStatus(`receiving ${e.total} chunk(s)`)
-      if (e.type === 'chunk-received' && e.index !== undefined && e.total !== undefined) {
-        cb.onProgress({ index: e.index, total: e.total, bytesReceived: e.bytesReceived, bytesTotal: e.bytesTotal })
-      }
-      if (e.type === 'chunk-invalid') cb.onStatus(`chunk ${e.index} failed verification, dropped`)
-    }
-    const file = await requestFile(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, onReceiverEvent)
+    const session = await openClientSession(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C })
+    const signal = client
+    let closed = false
 
-    cb.onStatus('file verified')
-    cb.onFileReceived(file)
-    channels.close()
+    cb.onStatus('ready')
+    cb.onSession({
+      ...session,
+      depotId,
+      connectionType: channels.connectionType,
+      close: () => {
+        if (closed) return
+        closed = true
+        session.close()
+        channels.close()
+        signal.close()
+      },
+    })
   } catch (err) {
     cb.onError(err instanceof Error ? err.message : String(err))
-  } finally {
     client?.close()
   }
 }

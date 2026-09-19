@@ -58,11 +58,22 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument(),
                 ) { uri -> uri?.let(viewModel::onFileSelected) }
 
+                // A whole folder, so a Client has something to browse
+                // (protocol.md §5.9). The tree permission is taken
+                // persistably in the view model, or the grant would stop
+                // working at the next reboot.
+                val pickFolder = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocumentTree(),
+                ) { uri -> uri?.let(viewModel::onFolderGranted) }
+
                 Box(Modifier.fillMaxSize().background(DepotColors.Bg)) {
                     DepotApp(
                         state = state,
                         onToggleListening = viewModel::toggleListening,
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
+                        onAddFolder = { pickFolder.launch(null) },
+                        onToggleGrant = viewModel::onToggleGrant,
+                        onForgetGrant = viewModel::onForgetGrant,
                         onSignalUrlChange = viewModel::onSignalUrlChange,
                         onPayloadChange = viewModel::onPayloadChange,
                         onLink = viewModel::link,

@@ -1,8 +1,8 @@
 # Depot Protocol Specification
 
-**Version:** 0.1 (draft)
-**Status:** Pre-implementation
-**Scope:** Device pairing, session establishment, encrypted transport, revocation.
+**Version:** 0.4 (draft)
+**Status:** Implemented on both sides
+**Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
 ---
 
@@ -462,6 +462,58 @@ Chunk boundaries use content-defined chunking (FastCDC) rather than fixed
 offsets, so that inserting bytes into a file does not invalidate every subsequent
 chunk.
 
+### 5.9 Browsing
+
+A Depot grants access per folder. §5.7 alone lets a Client ask for "the file
+the Depot is offering", which is enough to prove the transport works and not
+enough to be a file server. Browsing adds two messages on `ctl`:
+
+```json
+{ "type": "LIST", "handle": "" }
+```
+
+```json
+{
+  "type": "LIST_OK",
+  "handle": "",
+  "entries": [
+    { "handle": "k3f9…", "name": "Camera",   "kind": "dir",  "modifiedAt": 1757808000000 },
+    { "handle": "9a21…", "name": "IMG_0001.jpg", "kind": "file", "size": 4404019, "modifiedAt": 1757808000000 }
+  ]
+}
+```
+
+An empty `handle` lists the grants themselves — the folders the user has
+chosen to share. Any other handle lists that directory's children.
+`REQUEST_FILE` (§5.8) gains an optional `handle` naming which file to send;
+omitting it keeps the older meaning, "whatever the Depot is currently
+offering", so a Client that predates this section still works.
+
+**Handles are opaque and minted per session.** They are not paths, not
+document IDs and not anything the Client can construct — the Depot keeps a
+table mapping each handle it has issued to a real location, and resolves
+incoming handles only through that table. A Client that invents a handle
+gets `ERROR`; one that replays a handle from a previous session gets
+`ERROR`, because the table does not outlive the session.
+
+This is the whole of the access control, and it is deliberately not a path
+check. Validating a path means writing a correct traversal check and being
+right about `..`, symlinks, Unicode normalisation and whatever the platform's
+storage layer does with them. There is no such check here, because the Client
+never names a location at all: it can only echo back something the Depot
+already decided to tell it about. A Depot must therefore never mint a handle
+for anything outside a grant — that, and not the shape of any string, is the
+property to preserve.
+
+A Depot may refuse `LIST` for a handle that is a file rather than a
+directory, and must refuse `REQUEST_FILE` for a handle that is a directory;
+both are `ERROR`.
+
+Listing carries no file contents, but it does carry names, sizes and
+timestamps, which §1.2 promises Signal cannot see. Both messages are
+therefore ordinary encrypted `ctl` frames (§5.3) like everything else on
+that channel.
+
 ### 5.8 Wire messages and implementation notes
 
 As with §7.1, this document specifies transport *behaviour* but left several
@@ -476,14 +528,12 @@ WebRTC offerer and creates both DataChannels; the Depot is always the
 answerer. This is an arbitrary but fixed convention — nothing in §5 depends
 on which side offers.
 
-**`ctl` channel messages.** `CAPS` (§5.4), `REQUEST_FILE` (Client → Depot,
-requests whatever file the Depot is currently offering — this
-implementation doesn't do file browsing/selection-by-path, since that's a
-product-level concern for the Android app's own UI, not part of this
-protocol), `MANIFEST` (Depot → Client, carries `transferId`, `size`, and
-each chunk's `offset`/`length`/`hash` since chunks are content-defined and
-therefore variable-length), `NEED` (Client → Depot), and `ERROR` (either
-direction).
+**`ctl` channel messages.** `CAPS` (§5.4), `LIST` and `LIST_OK` (§5.9),
+`REQUEST_FILE` (Client → Depot, naming a handle from §5.9 or, with no
+handle, whatever file the Depot is currently offering), `MANIFEST` (Depot →
+Client, carries `transferId`, `size`, and each chunk's
+`offset`/`length`/`hash` since chunks are content-defined and therefore
+variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
 
 Each of these is carried inside an encrypted control frame (§5.3), one
 message per frame — Signal sees only ciphertext and a monotonic counter.
@@ -620,6 +670,7 @@ whoever builds the Android app against this spec.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |
 | 0.1 | 2026-09-15 | Initial draft |

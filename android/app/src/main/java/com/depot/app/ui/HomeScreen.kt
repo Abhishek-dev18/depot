@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.transport.ConnectionType
 import com.depot.app.ui.components.AppBar
+import com.depot.app.ui.components.BrandMark
 import com.depot.app.ui.components.ConnectionBadge
 import com.depot.app.ui.components.Cta
 import com.depot.app.ui.components.GrantSwitch
@@ -66,7 +67,7 @@ import kotlinx.coroutines.delay
 fun HomeScreen(
     state: DepotUiState,
     onToggleListening: () -> Unit,
-    onPickFile: () -> Unit,
+    onOpenGrants: () -> Unit,
     onOpenSettings: () -> Unit,
     onDeviceClick: (DeviceRecord) -> Unit,
     onLinkDevice: () -> Unit,
@@ -79,6 +80,7 @@ fun HomeScreen(
             title = "Depot",
             sub = if (listening) "TERMINAL ONLINE" else "TERMINAL OFFLINE",
             subColor = if (listening) DepotColors.Green else DepotColors.Ink3,
+            leading = { BrandMark(size = 32.dp) },
             action = {
                 IcoButton(onClick = onOpenSettings) {
                     IconSettings(DepotColors.Ink2, 18.dp)
@@ -99,18 +101,8 @@ fun HomeScreen(
                 TransferCard(state)
             }
 
-            SectionLabel("SHARED FILE")
-            SharedFileRow(state = state, onPickFile = onPickFile)
-            Text(
-                // The artifact frames Android's per-item consent as the
-                // feature rather than apologising for it, so the screen
-                // states plainly what is *not* reachable.
-                "Everything else on this phone stays invisible. A Client can only " +
-                    "ever ask for what you have put here.",
-                style = DepotType.Body.copy(fontSize = 13.sp),
-                color = DepotColors.Ink3,
-                modifier = Modifier.padding(top = 4.dp),
-            )
+            SectionLabel("SHARED")
+            SharedSummaryRow(state = state, onOpen = onOpenGrants)
 
             SectionLabel("LINKED DEVICES")
             if (state.devices.isEmpty()) {
@@ -193,8 +185,8 @@ private fun StatusHeroCard(state: DepotUiState, onClick: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             HeroStat(
-                label = "MOVED",
-                value = if (state.moved == 0L) "—" else formatBytes(state.moved),
+                label = "MOVED TODAY",
+                value = if (state.movedToday == 0L) "—" else formatBytes(state.movedToday),
                 modifier = Modifier.weight(1f),
             )
             HeroStat(
@@ -311,22 +303,37 @@ fun RouteBadge(type: ConnectionType, modifier: Modifier = Modifier) {
     )
 }
 
+/**
+ * What a Client would see if it connected now, in one line. The list
+ * itself, and the argument about what is *not* shared, live on the ACCESS
+ * screen where the interface spec puts them.
+ */
 @Composable
-private fun SharedFileRow(state: DepotUiState, onPickFile: () -> Unit) {
-    val name = state.offeredFileName
+private fun SharedSummaryRow(state: DepotUiState, onOpen: () -> Unit) {
+    val folders = state.grants.count { it.grant.enabled }
+    val file = state.offeredFileName
+    val sharing = folders > 0 || file != null
+
+    val meta = when {
+        !sharing -> "A CLIENT WOULD SEE AN EMPTY DEPOT"
+        folders == 0 -> "ONE FILE · ${formatBytes(state.offeredFileSize.toLong())}"
+        else -> {
+            val bytes = state.grants.filter { it.grant.enabled }.sumOf { it.bytes ?: 0L }
+            val folderText = if (folders == 1) "1 FOLDER" else "$folders FOLDERS"
+            val fileText = if (file == null) "" else " + 1 FILE"
+            "$folderText$fileText · ${formatBytes(bytes + (file?.let { state.offeredFileSize.toLong() } ?: 0L))}"
+        }
+    }
+
     ListRow(
-        name = name ?: "Choose a file to share",
-        meta = if (name == null) {
-            "NOTHING SHARED YET"
-        } else {
-            "${formatBytes(state.offeredFileSize.toLong())} · READY TO SEND"
-        },
-        nameColor = if (name == null) DepotColors.Ink2 else DepotColors.Ink,
-        onClick = onPickFile,
+        name = if (sharing) "Shared folders" else "Nothing is shared yet",
+        meta = meta,
+        nameColor = if (sharing) DepotColors.Ink else DepotColors.Ink2,
+        onClick = onOpen,
         leading = {
-            RowTile { IconGrant(if (name == null) DepotColors.Ink3 else DepotColors.Amber, 18.dp) }
+            RowTile { IconGrant(if (sharing) DepotColors.Amber else DepotColors.Ink3, 18.dp) }
         },
-        trailing = { GrantSwitch(on = name != null) },
+        trailing = { GrantSwitch(on = sharing) },
     )
 }
 

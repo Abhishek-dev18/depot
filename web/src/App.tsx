@@ -78,15 +78,19 @@ function App() {
 
   return (
     <div id="app">
-      <header>
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <h1>Depot</h1>
-        </div>
-        <p className="hint">
-          Two roles, one page — open this URL in a second tab with <code>?role=depot</code> to run the Client and
-          the Depot simulator side by side.
-        </p>
+      <header className={role === 'client' ? 'app-header app-header-client' : 'app-header'}>
+        {role === 'depot' && (
+          <>
+            <div className="brand">
+              <span className="brand-mark" aria-hidden="true" />
+              <h1>Depot</h1>
+            </div>
+            <p className="hint">
+              Stands in for the Android app so pairing, reconnection and transfer can be exercised from a
+              second tab. The real Depot is the phone.
+            </p>
+          </>
+        )}
 
         <div className="role-switch" role="tablist" aria-label="Role">
           <button
@@ -107,11 +111,10 @@ function App() {
             <PhoneIcon />
             Depot simulator
           </button>
+          <button type="button" className="settings-toggle" onClick={() => setSettingsOpen((v) => !v)}>
+            {settingsOpen ? 'Hide' : 'Show'} connection settings
+          </button>
         </div>
-
-        <button type="button" className="settings-toggle" onClick={() => setSettingsOpen((v) => !v)}>
-          {settingsOpen ? 'Hide' : 'Show'} connection settings
-        </button>
         {settingsOpen && (
           <div className="settings-panel">
             <label className="signal-url">
@@ -161,7 +164,11 @@ function App() {
       </header>
 
       {role === 'client' ? (
-        <ClientView signalUrl={signalUrl} turnConfig={turnForTransport} />
+        <ClientView
+          signalUrl={signalUrl}
+          turnConfig={turnForTransport}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
       ) : (
         <DepotSimulatorView signalUrl={signalUrl} turnConfig={turnForTransport} />
       )}

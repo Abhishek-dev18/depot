@@ -22,7 +22,7 @@ import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.IdentityStore
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.FileSender
-import com.depot.app.transport.OfferedFile
+import com.depot.app.transport.DepotSource
 import com.depot.app.transport.SessionKeys
 import com.depot.app.transport.TransferCallbacks
 import com.depot.app.transport.TurnConfig
@@ -92,7 +92,7 @@ suspend fun runDepotReconnectListener(
     scope: CoroutineScope,
     signalUrl: String,
     turn: TurnConfig?,
-    getFile: () -> OfferedFile?,
+    source: DepotSource,
     cb: DepotReconnectCallbacks,
 ): DepotReconnectListener {
     val depotIdentity = IdentityStore.loadOrCreate(context)
@@ -115,7 +115,7 @@ suspend fun runDepotReconnectListener(
             e.type == TYPE_INCOMING && clientId != null -> scope.launch {
                 handleIncoming(
                     context, scope, signal, depotIdentity.privateKey, depotId,
-                    e, turn, getFile, connections, cb,
+                    e, turn, source, connections, cb,
                 )
             }
             // A Client that goes away releases its transport immediately
@@ -140,7 +140,7 @@ private suspend fun handleIncoming(
     depotId: String,
     incoming: Envelope,
     turn: TurnConfig?,
-    getFile: () -> OfferedFile?,
+    source: DepotSource,
     connections: ConcurrentHashMap<String, () -> Unit>,
     cb: DepotReconnectCallbacks,
 ) {
@@ -235,7 +235,7 @@ private suspend fun handleIncoming(
         val sender = FileSender(
             channels = channels,
             keys = SessionKeys(keys.kC2D, keys.kD2C),
-            getFile = getFile,
+            source = source,
             cb = object : TransferCallbacks {
                 override fun onManifestSent(transferId: Int, chunkCount: Int) {
                     cb.onStatus("offering $chunkCount chunk(s)")

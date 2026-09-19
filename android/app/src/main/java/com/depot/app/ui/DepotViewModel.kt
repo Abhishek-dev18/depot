@@ -1,7 +1,9 @@
 package com.depot.app.ui
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,15 +14,32 @@ import com.depot.app.service.DepotService
 import com.depot.app.service.DepotSession
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
+import com.depot.app.storage.Grant
+import com.depot.app.storage.GrantStore
 import com.depot.app.storage.Settings
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.OfferedFile
+import com.depot.app.transport.grantStats
+import com.depot.app.ui.components.formatBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+/**
+ * One granted folder, with the figures the ACCESS screen puts under its
+ * name. The counts are absent until they have been read off the provider,
+ * which is a disk query and does not belong on the main thread.
+ */
+data class GrantView(val grant: Grant, val files: Int? = null, val bytes: Long? = null) {
+    fun summary(): String = when {
+        !grant.enabled -> "NOT SHARED"
+        files == null -> "READING…"
+        else -> "$files FILES · ${formatBytes(bytes ?: 0L)}"
+    }
+}
 
 /** Everything the interface draws, in one place. */
 data class DepotUiState(
@@ -35,6 +54,9 @@ data class DepotUiState(
     // What is linked.
     val devices: List<DeviceRecord> = emptyList(),
 
+    // What is shared.
+    val grants: List<GrantView> = emptyList(),
+
     // The terminal.
     val signalUrl: String = "",
     val listeningAs: String? = null,
@@ -45,7 +67,7 @@ data class DepotUiState(
     val progressTotal: Int = 0,
     val bytesSent: Long = 0,
     val bytesTotal: Long = 0,
-    val moved: Long = 0,
+    val movedToday: Long = 0,
     val offeredFileName: String? = null,
     val offeredFileSize: Int = 0,
     val log: List<String> = emptyList(),
@@ -73,6 +95,7 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshDevices()
+        refreshGrants()
         observeSession()
     }
 
@@ -94,7 +117,7 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
                         progressTotal = session.progressTotal,
                         bytesSent = session.bytesSent,
                         bytesTotal = session.bytesTotal,
-                        moved = session.moved,
+                        movedToday = session.movedToday,
                         offeredFileName = session.offeredFileName,
                         offeredFileSize = session.offeredFileSize,
                         log = linkLog + session.log,
@@ -110,6 +133,85 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             val devices = DeviceStore.list(getApplication())
             _state.update { it.copy(devices = devices) }
+        }
+    }
+
+    /**
+     * The grants, then their figures. Two passes deliberately: the list is
+     * a preference read and returns at once, while counting a photo
+     * library's contents is a content-provider query that can take a
+     * noticeable moment, and the screen should not be blank until it
+     * finishes.
+     */
+    private fun refreshGrants() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val grants = GrantStore.list(getApplication())
+            _state.update { it.copy(grants = grants.map { g -> GrantView(g) }) }
+
+            val measured = grants.map { g ->
+                val stats = runCatching { grantStats(getApplication(), Uri.parse(g.treeUri)) }.getOrNull()
+                GrantView(g, stats?.files, stats?.bytes)
+            }
+            _state.update { it.copy(grants = measured) }
+        }
+    }
+
+    /**
+     * Takes a persistable read permission on the folder the user picked.
+     * Without it the grant would survive in preferences but stop working
+     * at the next reboot, which is the worst of both: a list that says a
+     * folder is shared and a Client that cannot see it.
+     */
+    fun onFolderGranted(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                getApplication<Application>().contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+                GrantStore.add(
+                    getApplication(),
+                    Grant(
+                        treeUri = uri.toString(),
+                        label = folderLabel(uri),
+                        enabled = true,
+                        addedAt = System.currentTimeMillis(),
+                    ),
+                )
+                refreshGrants()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: e.toString()) }
+            }
+        }
+    }
+
+    /** The trailing path segment of a tree URI is the folder's own name. */
+    private fun folderLabel(uri: Uri): String {
+        val id = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+            ?: return uri.lastPathSegment ?: "Folder"
+        return id.substringAfterLast(':').substringAfterLast('/').ifBlank { id }
+    }
+
+    fun onToggleGrant(view: GrantView, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            GrantStore.setEnabled(getApplication(), view.grant.treeUri, enabled)
+            refreshGrants()
+        }
+    }
+
+    fun onForgetGrant(view: GrantView) {
+        viewModelScope.launch(Dispatchers.IO) {
+            GrantStore.remove(getApplication(), view.grant.treeUri)
+            // Hand the permission back too. Leaving it held would keep the
+            // app able to read a folder the user has just said it should
+            // not, which is exactly the thing the ACCESS screen promises.
+            runCatching {
+                getApplication<Application>().contentResolver.releasePersistableUriPermission(
+                    Uri.parse(view.grant.treeUri),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            refreshGrants()
         }
     }
 

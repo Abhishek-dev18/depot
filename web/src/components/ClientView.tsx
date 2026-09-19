@@ -1,40 +1,58 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLog } from '../hooks/useLog'
 import { runClientPairing } from '../pairing/clientPairing'
-import { runClientReconnect } from '../pairing/clientReconnect'
+import { runClientReconnect, type DepotConnection } from '../pairing/clientReconnect'
 import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
-import type { ConnectionType, TurnConfig } from '../transport/webrtc'
-import { Card } from './Card'
-import { ConnectionBadge } from './ConnectionBadge'
-import { CopyButton } from './CopyButton'
-import { ShieldIcon, LinkIcon } from './icons'
+import type { TurnConfig } from '../transport/webrtc'
+import { depotLabelFor } from '../format'
+import { FilesPanel } from './FilesPanel'
 import { Log } from './Log'
-import { ProgressBar } from './ProgressBar'
-import { SasDisplay } from './SasDisplay'
+import { NoRoutePanel } from './NoRoutePanel'
+import { PairPanel } from './PairPanel'
 
-interface ReceivedFile {
-  name: string
-  size: number
-  url: string
+interface Props {
+  signalUrl: string
+  turnConfig?: TurnConfig
+  onOpenSettings: () => void
 }
 
-export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnConfig?: TurnConfig }) {
+/**
+ * The Client, as the interface spec draws it: no install, no account.
+ * Open the page, pair once, and the phone's shared folders appear.
+ *
+ * Three states, and they are the spec's three browser frames — pair,
+ * browse, or explain why there is no route. There is no fourth "logged
+ * out" state because there is no account to log out of; what this browser
+ * holds is a credential, and losing it means pairing again.
+ */
+export function ClientView({ signalUrl, turnConfig, onOpenSettings }: Props) {
   const { lines, push, clear } = useLog()
-  const [busy, setBusy] = useState(false)
+  const [pairings, setPairings] = useState<Pairing[]>([])
+  const [session, setSession] = useState<DepotConnection | null>(null)
+  const [connecting, setConnecting] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+
   const [qr, setQr] = useState<{ dataUrl: string; json: string } | null>(null)
   const [sas, setSas] = useState<string | null>(null)
-  const [pairings, setPairings] = useState<Pairing[]>([])
-  const [reconnecting, setReconnecting] = useState<string | null>(null)
-  const [connectionType, setConnectionType] = useState<ConnectionType | null>(null)
-  const [progress, setProgress] = useState<{
-    index: number
-    total: number
-    bytesReceived?: number
-    bytesTotal?: number
-  } | null>(null)
-  const [received, setReceived] = useState<ReceivedFile | null>(null)
-  const receivedUrlRef = useRef<string | null>(null)
+  const [issuedAt, setIssuedAt] = useState<number | null>(null)
+  const [pairingBusy, setPairingBusy] = useState(false)
+
+  const sessionRef = useRef<DepotConnection | null>(null)
+  const autoConnected = useRef(false)
+
+  useEffect(() => {
+    sessionRef.current = session
+  }, [session])
+
+  // The data channels and the signal socket belong to the session, so
+  // navigating away has to close it rather than leaving both dangling.
+  useEffect(
+    () => () => {
+      sessionRef.current?.close()
+    },
+    [],
+  )
 
   const refreshPairings = useCallback(() => {
     void listPairings().then(setPairings)
@@ -44,21 +62,62 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
     refreshPairings()
   }, [refreshPairings])
 
-  useEffect(
-    () => () => {
-      if (receivedUrlRef.current) URL.revokeObjectURL(receivedUrlRef.current)
+  const connect = useCallback(
+    async (depotId: string) => {
+      if (sessionRef.current) return
+      setConnecting(true)
+      setFailure(null)
+      await runClientReconnect(signalUrl, depotId, turnConfig, {
+        onStatus: push,
+        onConnected: ({ connectionType }) => push(`connected (${connectionType})`),
+        onSession: (open) => {
+          sessionRef.current = open
+          setSession(open)
+        },
+        onError: (message) => {
+          push(`error: ${message}`)
+          setFailure(message)
+        },
+      })
+      setConnecting(false)
     },
-    [],
+    [signalUrl, turnConfig, push],
   )
+
+  // A browser that already holds a credential should behave like a client
+  // that is simply connected, not make the user ask for it every time.
+  useEffect(() => {
+    if (autoConnected.current) return
+    if (pairings.length === 0 || session || connecting || failure) return
+    autoConnected.current = true
+    void connect(pairings[0].depotId)
+  }, [pairings, session, connecting, failure, connect])
+
+  const disconnect = () => {
+    sessionRef.current?.close()
+    sessionRef.current = null
+    setSession(null)
+    autoConnected.current = true // do not immediately reconnect
+    push('disconnected')
+  }
+
+  const retry = () => {
+    setFailure(null)
+    autoConnected.current = false
+  }
 
   const startPairing = async () => {
     clear()
     setQr(null)
     setSas(null)
-    setBusy(true)
+    setIssuedAt(null)
+    setPairingBusy(true)
     await runClientPairing(signalUrl, {
       onStatus: push,
-      onQrReady: (payload: QRPayload, dataUrl) => setQr({ dataUrl, json: JSON.stringify(payload, null, 2) }),
+      onQrReady: (payload: QRPayload, dataUrl) => {
+        setQr({ dataUrl, json: JSON.stringify(payload, null, 2) })
+        setIssuedAt(Date.now())
+      },
       onSas: setSas,
       onPaired: () => {
         // The comparison is done. Leaving the digits up invites the user
@@ -66,6 +125,8 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
         // QR's session is single-use, so neither should outlive pairing.
         setSas(null)
         setQr(null)
+        setIssuedAt(null)
+        autoConnected.current = false
         refreshPairings()
       },
       onError: (msg) => {
@@ -73,116 +134,41 @@ export function ClientView({ signalUrl, turnConfig }: { signalUrl: string; turnC
         push(`error: ${msg}`)
       },
     })
-    setBusy(false)
+    setPairingBusy(false)
   }
 
-  const reconnect = async (depotId: string) => {
-    clear()
-    setProgress(null)
-    setConnectionType(null)
-    if (receivedUrlRef.current) {
-      URL.revokeObjectURL(receivedUrlRef.current)
-      receivedUrlRef.current = null
-    }
-    setReceived(null)
-    setReconnecting(depotId)
-    await runClientReconnect(signalUrl, depotId, turnConfig, {
-      onStatus: push,
-      onConnected: ({ connectionType: t }) => {
-        push(`connected (${t})`)
-        setConnectionType(t)
-      },
-      onProgress: ({ index, total, bytesReceived, bytesTotal }) =>
-        setProgress({ index: index + 1, total, bytesReceived, bytesTotal }),
-      onFileReceived: (file) => {
-        const url = URL.createObjectURL(new Blob([file.bytes.slice()]))
-        receivedUrlRef.current = url
-        setReceived({ name: file.name, size: file.bytes.length, url })
-      },
-      onError: (msg) => push(`error: ${msg}`),
-    })
-    setReconnecting(null)
-  }
+  const pairing = pairings[0]
 
   return (
-    <div className="view">
-      <p className="view-intro">This is the browser session that ends up holding a credential for a Depot.</p>
+    <div className="client-shell">
+      {session ? (
+        <FilesPanel
+          session={session}
+          depotLabel={depotLabelFor(session.depotId, pairing?.depotLabel)}
+          onDisconnect={disconnect}
+          onSettings={onOpenSettings}
+          onError={(message) => {
+            push(`error: ${message}`)
+            setFailure(message)
+          }}
+          log={push}
+        />
+      ) : failure ? (
+        <NoRoutePanel message={failure} onRetry={retry} onSettings={onOpenSettings} />
+      ) : connecting ? (
+        <div className="connecting">
+          <div className="connecting-mark" aria-hidden="true" />
+          <div className="pairttl">Reaching your Depot</div>
+          <p className="pairsub">{lines[lines.length - 1] ?? 'starting'}</p>
+        </div>
+      ) : (
+        <PairPanel qr={qr} sas={sas} busy={pairingBusy} issuedAt={issuedAt} onStart={() => void startPairing()} />
+      )}
 
-      <Card title="Pair with a Depot" subtitle="Generates a QR code the Depot scans (or, here, pastes)." icon={<ShieldIcon />}>
-        <button onClick={() => void startPairing()} disabled={busy}>
-          {busy && !qr ? 'Starting…' : 'Start pairing'}
-        </button>
-
-        {qr && (
-          <div className="qr">
-            <img src={qr.dataUrl} alt="pairing QR code" width={200} height={200} />
-            <details>
-              <summary>No camera in a browser tab — copy this into the Depot simulator instead</summary>
-              <div className="qr-json">
-                <pre>{qr.json}</pre>
-                <CopyButton text={qr.json} />
-              </div>
-            </details>
-          </div>
-        )}
-
-        {sas && (
-          <div className="sas">
-            <p className="sas-question">Does the Depot show this number?</p>
-            <SasDisplay code={sas} />
-            <p className="sas-warn">If the numbers differ, someone may be intercepting the connection.</p>
-          </div>
-        )}
-      </Card>
-
-      <Card title="Paired Depots" icon={<LinkIcon />}>
-        {pairings.length === 0 ? (
-          <p className="empty-state">None yet — pair with a Depot above.</p>
-        ) : (
-          <ul className="entity-list">
-            {pairings.map((p) => (
-              <li key={p.depotId}>
-                <div className="entity-icon">▣</div>
-                <div className="entity-main">
-                  <code title={p.depotId}>{p.depotId.slice(0, 16)}…</code>
-                  <div className="entity-meta">{p.depotLabel}</div>
-                </div>
-                <div className="entity-actions">
-                  {reconnecting === p.depotId && connectionType && <ConnectionBadge type={connectionType} />}
-                  <button onClick={() => void reconnect(p.depotId)} disabled={reconnecting === p.depotId}>
-                    {reconnecting === p.depotId ? 'Reconnecting…' : 'Reconnect'}
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {progress && !received && (
-          <div className="transfer-status">
-            <ProgressBar
-              value={progress.index}
-              total={progress.total}
-              bytesDone={progress.bytesReceived}
-              bytesTotal={progress.bytesTotal}
-            />
-          </div>
-        )}
-
-        {received && (
-          <div className="sas success">
-            <p>
-              Received <strong>{received.name}</strong> ({received.size.toLocaleString()} bytes) — verified against
-              the manifest and whole-file hash.
-            </p>
-            <a className="download-link" href={received.url} download={received.name}>
-              Download
-            </a>
-          </div>
-        )}
-      </Card>
-
-      <Log lines={lines} />
+      <details className="wire-log">
+        <summary>Wire log</summary>
+        <Log lines={lines} />
+      </details>
     </div>
   )
 }

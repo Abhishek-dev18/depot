@@ -34,6 +34,9 @@ fun DepotApp(
     state: DepotUiState,
     onToggleListening: () -> Unit,
     onPickFile: () -> Unit,
+    onAddFolder: () -> Unit,
+    onToggleGrant: (GrantView, Boolean) -> Unit,
+    onForgetGrant: (GrantView) -> Unit,
     onSignalUrlChange: (String) -> Unit,
     onPayloadChange: (String) -> Unit,
     onLink: () -> Unit,
@@ -49,6 +52,7 @@ fun DepotApp(
     // Saveable rather than remembered: a rotation should not close the
     // viewfinder the user is holding over a QR code.
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    var grantsOpen by rememberSaveable { mutableStateOf(false) }
     var scanning by rememberSaveable { mutableStateOf(false) }
     var pasting by rememberSaveable { mutableStateOf(false) }
     var selectedDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -66,7 +70,7 @@ fun DepotApp(
         pasting ||
         selectedDevice != null
 
-    BackHandler(enabled = scanning || sheetOpen || settingsOpen) {
+    BackHandler(enabled = scanning || sheetOpen || settingsOpen || grantsOpen) {
         when {
             state.sas != null -> onReject()
             state.justPaired != null -> onDismissResult()
@@ -75,6 +79,7 @@ fun DepotApp(
             state.linking -> onCancelLink()
             selectedDevice != null -> selectedDeviceId = null
             scanning -> { scanning = false; onCancelLink() }
+            grantsOpen -> grantsOpen = false
             settingsOpen -> settingsOpen = false
         }
     }
@@ -95,6 +100,17 @@ fun DepotApp(
                     pasting = true
                 },
             )
+        } else if (grantsOpen) {
+            GrantsScreen(
+                grants = state.grants,
+                offeredFileName = state.offeredFileName,
+                offeredFileSize = state.offeredFileSize,
+                onAddFolder = onAddFolder,
+                onToggle = onToggleGrant,
+                onForget = onForgetGrant,
+                onPickFile = onPickFile,
+                onBack = { grantsOpen = false },
+            )
         } else if (settingsOpen) {
             SettingsScreen(
                 state = state,
@@ -114,7 +130,7 @@ fun DepotApp(
                         onToggleListening()
                     }
                 },
-                onPickFile = onPickFile,
+                onOpenGrants = { grantsOpen = true },
                 onOpenSettings = { settingsOpen = true },
                 onDeviceClick = { selectedDeviceId = it.clientIdentityPub },
                 onLinkDevice = { scanning = true },

@@ -4,6 +4,8 @@ import android.content.Context
 import com.depot.app.pairing.DepotReconnectCallbacks
 import com.depot.app.pairing.DepotReconnectListener
 import com.depot.app.pairing.runDepotReconnectListener
+import com.depot.app.storage.Settings
+import com.depot.app.transport.AndroidDepotSource
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.OfferedFile
 import kotlinx.coroutines.CoroutineScope
@@ -31,8 +33,8 @@ data class SessionState(
     val progressTotal: Int = 0,
     val bytesSent: Long = 0,
     val bytesTotal: Long = 0,
-    /** Everything this session has put on the wire, across transfers. */
-    val moved: Long = 0,
+    /** Bytes this Depot has put on the wire today, across sessions. */
+    val movedToday: Long = 0,
     val offeredFileName: String? = null,
     val offeredFileSize: Int = 0,
     val log: List<String> = emptyList(),
@@ -61,7 +63,9 @@ object DepotSession {
 
     /** Last progress figure seen per Client, for the running total below. */
     private val lastProgress = HashMap<String, Long>()
-    private var movedTotal = 0L
+    private var movedToday = 0L
+    private var movedDay = ""
+    private var appContext: Context? = null
 
     val isListening: Boolean get() = listener != null
 
@@ -82,21 +86,45 @@ object DepotSession {
 
     /**
      * Progress is reported as a running count within one transfer, so the
-     * session total is the sum of the increments. A figure lower than the
+     * day's total is the sum of the increments. A figure lower than the
      * last one means a new transfer started; the earlier one's bytes are
      * already counted, and the new count starts again from its own zero.
      */
     @Synchronized
     private fun accumulate(clientId: String, bytesSent: Long): Long {
+        val today = Settings.today()
+        if (today != movedDay) {
+            movedDay = today
+            movedToday = appContext?.let { Settings.movedOn(it, today) } ?: 0L
+            lastProgress.clear()
+        }
         val previous = lastProgress[clientId] ?: 0L
-        movedTotal += if (bytesSent >= previous) bytesSent - previous else bytesSent
+        movedToday += if (bytesSent >= previous) bytesSent - previous else bytesSent
         lastProgress[clientId] = bytesSent
-        return movedTotal
+        return movedToday
+    }
+
+    /**
+     * Written when a transfer finishes and when the terminal stops, rather
+     * than on every progress callback — a 600 MB file reports progress
+     * thousands of times, and none of those writes would survive a crash
+     * any better than the last one does.
+     */
+    @Synchronized
+    private fun persistMoved() {
+        val context = appContext ?: return
+        if (movedDay.isNotEmpty()) Settings.setMovedOn(context, movedDay, movedToday)
     }
 
     fun start(context: Context, signalUrl: String) {
         if (listener != null) return
         val app = context.applicationContext
+        synchronized(this) {
+            appContext = app
+            movedDay = Settings.today()
+            movedToday = Settings.movedOn(app, movedDay)
+        }
+        _state.update { it.copy(movedToday = movedToday) }
         scope.launch {
             try {
                 listener = runDepotReconnectListener(
@@ -104,7 +132,7 @@ object DepotSession {
                     scope = scope,
                     signalUrl = signalUrl,
                     turn = null,
-                    getFile = { offered },
+                    source = AndroidDepotSource(app) { offered },
                     cb = object : DepotReconnectCallbacks {
                         override fun onStatus(status: String) {
                             _state.update { it.copy(log = it.log + status) }
@@ -150,13 +178,14 @@ object DepotSession {
                             bytesTotal: Long,
                         ) {
                             val moved = accumulate(clientId, bytesSent)
+                            if (index + 1 >= total) persistMoved()
                             _state.update {
                                 it.copy(
                                     progressIndex = index + 1,
                                     progressTotal = total,
                                     bytesSent = bytesSent,
                                     bytesTotal = bytesTotal,
-                                    moved = moved,
+                                    movedToday = moved,
                                 )
                             }
                         }
@@ -175,12 +204,10 @@ object DepotSession {
     fun stop() {
         listener?.stop()
         listener = null
-        // UPTIME and MOVED both describe the run that is ending, so they
-        // reset together rather than one carrying over into the next.
-        synchronized(this) {
-            lastProgress.clear()
-            movedTotal = 0L
-        }
+        // MOVED TODAY outlives the run, so it is flushed rather than
+        // cleared; only the per-transfer bookkeeping resets.
+        persistMoved()
+        synchronized(this) { lastProgress.clear() }
         _state.update {
             it.copy(
                 listeningAs = null,
@@ -189,7 +216,6 @@ object DepotSession {
                 connected = emptyMap(),
                 progressIndex = 0,
                 progressTotal = 0,
-                moved = 0,
                 log = it.log + "stopped listening",
             )
         }

@@ -52,6 +52,7 @@ fun AppBar(
     sub: String,
     modifier: Modifier = Modifier,
     subColor: Color = DepotColors.Ink3,
+    leading: (@Composable () -> Unit)? = null,
     action: (@Composable () -> Unit)? = null,
 ) {
     Row(
@@ -60,6 +61,10 @@ fun AppBar(
             .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (leading != null) {
+            leading()
+            Spacer(Modifier.width(12.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(title, style = DepotType.Title, color = DepotColors.Ink)
             Text(
