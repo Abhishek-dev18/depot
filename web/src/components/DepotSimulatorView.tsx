@@ -77,6 +77,8 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
     offeredFileRef.current = { name: file.name, bytes }
     setOfferedFile({ name: file.name, size: bytes.length })
     push(`offering ${file.name} (${bytes.length.toLocaleString()} bytes)`)
+    // §5.9: anyone already connected is now looking at a stale listing.
+    listenerRef.current?.notifySharedChanged()
   }
 
   const startListening = async () => {

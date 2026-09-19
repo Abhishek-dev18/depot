@@ -280,6 +280,15 @@ class FileSender(
         }
     }
 
+    /**
+     * protocol.md §5.9 — this Client is looking at a listing that is no
+     * longer true. Best effort: one that misses the notice is stale, not
+     * broken, and re-listing at any point puts it right.
+     */
+    fun notifySharedChanged() {
+        runCatching { ctl.send(JSONObject().put("type", "SHARED_CHANGED")) }
+    }
+
     fun stop() {
         sampler?.cancel()
         sampler = null

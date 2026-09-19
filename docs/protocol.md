@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.4 (draft)
+**Version:** 0.5 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -477,8 +477,9 @@ answerer. This is an arbitrary but fixed convention — nothing in §5 depends
 on which side offers.
 
 **`ctl` channel messages.** `CAPS` (§5.4), `LIST` and `LIST_OK` (§5.9),
-`REQUEST_FILE` (Client → Depot, naming a handle from §5.9 or, with no
-handle, whatever file the Depot is currently offering), `MANIFEST` (Depot →
+`SHARED_CHANGED` (§5.9), `REQUEST_FILE` (Client → Depot, naming a handle
+from §5.9 or, with no handle, whatever file the Depot is currently
+offering), `MANIFEST` (Depot →
 Client, carries `transferId`, `size`, and each chunk's
 `offset`/`length`/`hash` since chunks are content-defined and therefore
 variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
@@ -555,6 +556,24 @@ property to preserve.
 A Depot may refuse `LIST` for a handle that is a file rather than a
 directory, and must refuse `REQUEST_FILE` for a handle that is a directory;
 both are `ERROR`.
+
+A Depot whose shared set changes while a Client is connected — a folder
+granted or withdrawn, a file offered — sends:
+
+```json
+{ "type": "SHARED_CHANGED" }
+```
+
+It carries nothing. It means only "what you were told is now out of date",
+and the Client re-issues `LIST` for whatever it is showing. Sending the new
+listing unasked would be worse: the Depot does not know which directory the
+Client is looking at, and a Client that has navigated elsewhere would have
+to discard it.
+
+This is advisory. A Client that never sees it — because the message was
+lost, or because it predates this section — is stale rather than broken,
+and re-listing at any point puts it right. A Depot must therefore never
+treat having sent it as proof the Client knows.
 
 Listing carries no file contents, but it does carry names, sizes and
 timestamps, which §1.2 promises Signal cannot see. Both messages are
@@ -670,6 +689,7 @@ whoever builds the Android app against this spec.
 
 | Version | Date | Change |
 |---|---|---|
+| 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |

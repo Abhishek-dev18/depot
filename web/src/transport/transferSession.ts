@@ -49,6 +49,11 @@ interface ListOkMessage {
   entries: DirEntry[]
 }
 
+/** protocol.md §5.9 — "what you were told is out of date; ask again". */
+interface SharedChangedMessage {
+  type: 'SHARED_CHANGED'
+}
+
 interface ManifestMessage {
   type: 'MANIFEST'
   manifest: Manifest
@@ -70,6 +75,7 @@ type CtlMessage =
   | RequestFileMessage
   | ListMessage
   | ListOkMessage
+  | SharedChangedMessage
   | ManifestMessage
   | NeedMessage
   | ErrorMessage
@@ -235,12 +241,19 @@ export function singleFileSource(getFile: () => OfferedFile | null): DepotSource
  * whatever chunks NEED asks for. Runs until stop() is called, so it can
  * serve repeated NEED rounds (resumption after a dropped connection).
  */
+/** What a running sender exposes to the listener that owns it. */
+export interface RunningSender {
+  /** §5.9 — tell this Client its listing is stale. */
+  notifyChanged: () => void
+  stop: () => void
+}
+
 export async function runFileSender(
   channels: DataChannels,
   keys: SessionKeys,
   source: DepotSource,
   onEvent: (e: SenderEvent) => void,
-): Promise<() => void> {
+): Promise<RunningSender> {
   const ctl = createCtlCodec(channels, keys, 'depot')
   const chunkSizer = new AdaptiveChunkSize()
 
@@ -333,10 +346,17 @@ export async function runFileSender(
     }
   }
 
-  return () => {
-    clearInterval(statsTimer)
-    unsubscribe()
-    ctl.close()
+  return {
+    notifyChanged: () => {
+      // Best effort: a Client that misses this is stale, not broken, and
+      // §5.9 says re-listing at any point puts it right.
+      void ctl.send({ type: 'SHARED_CHANGED' }).catch(() => {})
+    },
+    stop: () => {
+      clearInterval(statsTimer)
+      unsubscribe()
+      ctl.close()
+    },
   }
 }
 
@@ -372,6 +392,19 @@ export interface ReceivedFile {
 export interface ClientSession {
   list: (handle: string) => Promise<DirEntry[]>
   fetch: (handle: string | undefined, onEvent?: (e: ReceiverEvent) => void) => Promise<ReceivedFile>
+
+  /** The Depot says its shared set changed (§5.9). Returns an unsubscribe. */
+  onChanged: (handler: () => void) => () => void
+
+  /**
+   * The transport is gone — the Depot stopped, the network dropped, the
+   * phone went to sleep. Returns an unsubscribe.
+   *
+   * Without this a Client shows a working file browser attached to a dead
+   * connection, and the first thing anyone learns about it is a click that
+   * does nothing.
+   */
+  onClosed: (handler: () => void) => () => void
   close: () => void
 }
 
@@ -402,9 +435,60 @@ export async function openClientSession(
     return receiveFile(channels, keys, ctl, handle, onEvent)
   }
 
+  function onChanged(handler: () => void): () => void {
+    return ctl.onMessage((m) => {
+      if (m.type === 'SHARED_CHANGED') handler()
+    })
+  }
+
+  /**
+   * `failed` and `closed` are final. `disconnected` is not — ICE can
+   * recover from a brief network change — so it is given a few seconds
+   * before the session is called gone, which stops a moment of bad Wi-Fi
+   * from throwing the user back to the waiting screen.
+   */
+  function onClosed(handler: () => void): () => void {
+    let fired = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+
+    const fire = () => {
+      if (fired) return
+      fired = true
+      clearTimeout(grace)
+      handler()
+    }
+
+    const onState = () => {
+      const state = channels.pc.connectionState
+      if (state === 'failed' || state === 'closed') fire()
+      else if (state === 'disconnected') {
+        clearTimeout(grace)
+        grace = setTimeout(() => {
+          if (channels.pc.connectionState !== 'connected') fire()
+        }, 6000)
+      } else if (state === 'connected') {
+        clearTimeout(grace)
+      }
+    }
+
+    channels.pc.addEventListener('connectionstatechange', onState)
+    channels.ctl.addEventListener('close', fire)
+    channels.data.addEventListener('close', fire)
+    onState()
+
+    return () => {
+      clearTimeout(grace)
+      channels.pc.removeEventListener('connectionstatechange', onState)
+      channels.ctl.removeEventListener('close', fire)
+      channels.data.removeEventListener('close', fire)
+    }
+  }
+
   return {
     list,
     fetch,
+    onChanged,
+    onClosed,
     close: () => {
       ctl.close()
     },

@@ -79,6 +79,16 @@ object DepotSession {
                 log = it.log + "offering ${file.name} (${file.bytes.size} bytes)",
             )
         }
+        notifySharedChanged()
+    }
+
+    /**
+     * protocol.md §5.9 — anyone connected is now looking at a listing
+     * that is out of date. Called when a file is offered or a grant
+     * changes; a Client that misses it is stale rather than broken.
+     */
+    fun notifySharedChanged() {
+        listener?.notifySharedChanged()
     }
 
     /**

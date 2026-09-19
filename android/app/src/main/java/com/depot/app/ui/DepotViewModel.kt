@@ -182,6 +182,7 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
                         addedAt = System.currentTimeMillis(),
                     ),
                 )
+                DepotSession.notifySharedChanged()
                 refreshGrants()
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: e.toString()) }
@@ -199,6 +200,7 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
     fun onToggleGrant(view: GrantView, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             GrantStore.setEnabled(getApplication(), view.grant.treeUri, enabled)
+            DepotSession.notifySharedChanged()
             refreshGrants()
         }
     }
@@ -215,6 +217,7 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
             }
+            DepotSession.notifySharedChanged()
             refreshGrants()
         }
     }

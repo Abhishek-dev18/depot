@@ -75,6 +75,11 @@ survives a reboot. `AndroidDepotSource` turns those into the listings a Client
 browses, via `DocumentsContract` rather than the `documentfile` library — the
 framework APIs do the job with no extra dependency.
 
+When a grant changes or a file is offered, every connected Client is told its
+listing is stale (`SHARED_CHANGED`, §5.9) and re-lists. Without that a browser
+shows what was true at the moment it connected, and a newly shared file only
+appears if someone reloads the page.
+
 Handles are random, minted per listening session, and resolved only through an
 in-memory table. That is the whole of the access control, and deliberately
 *not* a path check: a Client never names a location, it can only echo back

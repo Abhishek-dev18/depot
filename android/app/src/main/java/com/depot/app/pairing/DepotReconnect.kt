@@ -23,6 +23,7 @@ import com.depot.app.storage.IdentityStore
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.FileSender
 import com.depot.app.transport.DepotSource
+import com.depot.app.transport.FileSender
 import com.depot.app.transport.SessionKeys
 import com.depot.app.transport.TransferCallbacks
 import com.depot.app.transport.TurnConfig
@@ -65,13 +66,26 @@ class DepotReconnectListener(
     val depotId: String,
     private val signal: SignalClient,
     private val connections: ConcurrentHashMap<String, () -> Unit>,
+    private val senders: ConcurrentHashMap<String, FileSender>,
 ) {
+
+    /**
+     * protocol.md §5.9 — tell every connected Client that what it was
+     * shown is out of date.
+     *
+     * This is the difference between a browser that updates when you
+     * share something and one that has to be reloaded by hand.
+     */
+    fun notifySharedChanged() {
+        for (sender in senders.values) sender.notifySharedChanged()
+    }
     fun stop() {
         // Closing only the WebSocket would leave every PeerConnection from
         // this session alive, still holding ICE sockets and running
         // keepalives, and the next session would negotiate alongside them.
         for (close in connections.values) runCatching { close() }
         connections.clear()
+        senders.clear()
         signal.close()
     }
 
@@ -108,6 +122,7 @@ suspend fun runDepotReconnectListener(
     cb.onRegistered(depotId)
 
     val connections = ConcurrentHashMap<String, () -> Unit>()
+    val senders = ConcurrentHashMap<String, FileSender>()
 
     signal.onMessage { e ->
         val clientId = e.clientId
@@ -115,12 +130,13 @@ suspend fun runDepotReconnectListener(
             e.type == TYPE_INCOMING && clientId != null -> scope.launch {
                 handleIncoming(
                     context, scope, signal, depotIdentity.privateKey, depotId,
-                    e, turn, source, connections, cb,
+                    e, turn, source, connections, senders, cb,
                 )
             }
             // A Client that goes away releases its transport immediately
             // rather than at the next stop().
             e.type == TYPE_PEER_LEFT && clientId != null -> {
+                senders.remove(clientId)
                 connections.remove(clientId)?.let {
                     runCatching { it() }
                     cb.onClientDisconnected(clientId)
@@ -129,7 +145,7 @@ suspend fun runDepotReconnectListener(
         }
     }
 
-    return DepotReconnectListener(depotId, signal, connections)
+    return DepotReconnectListener(depotId, signal, connections, senders)
 }
 
 private suspend fun handleIncoming(
@@ -142,6 +158,7 @@ private suspend fun handleIncoming(
     turn: TurnConfig?,
     source: DepotSource,
     connections: ConcurrentHashMap<String, () -> Unit>,
+    senders: ConcurrentHashMap<String, FileSender>,
     cb: DepotReconnectCallbacks,
 ) {
     val clientId = incoming.clientId ?: return
@@ -255,7 +272,9 @@ private suspend fun handleIncoming(
         // handed to the scope rather than handled inline.
         sender.start { msg -> scope.launch { sender.handle(msg) } }
 
+        senders[clientId] = sender
         connections[clientId] = {
+            senders.remove(clientId)
             sender.stop()
             channels.close()
         }

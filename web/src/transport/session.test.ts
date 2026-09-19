@@ -86,13 +86,13 @@ async function connect(source: DepotSource) {
   const { client, depot } = linkedChannels()
   const k = keys()
   const sent: number[] = []
-  const [stop, session] = await Promise.all([
+  const [sender, session] = await Promise.all([
     runFileSender(depot, k, source, (e) => {
       if (e.type === 'chunk-sent' && e.index !== undefined) sent.push(e.index)
     }),
     openClientSession(client, k),
   ])
-  return { session, stop, sent }
+  return { session, sender, stop: () => sender.stop(), sent }
 }
 
 describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
@@ -233,6 +233,29 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
     session.close()
     stop()
   }, 20_000)
+
+  it('tells a connected Client when the shared set changes', async () => {
+    // The reported symptom: share a file on the phone while a browser is
+    // already connected, and the browser showed nothing until reloaded.
+    let offered: OfferedFile | null = null
+    const { session, sender, stop } = await connect(singleFileSource(() => offered))
+
+    expect(await session.list('')).toEqual([])
+
+    const announced = new Promise<void>((resolve) => {
+      session.onChanged(resolve)
+    })
+    offered = fileOf('late.bin', 2_000, 31)
+    sender.notifyChanged()
+    await announced
+
+    const entries = await session.list('')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].name).toBe('late.bin')
+
+    session.close()
+    stop()
+  })
 
   it('reports an empty Depot rather than failing', async () => {
     const { session, stop } = await connect(singleFileSource(() => null))

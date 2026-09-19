@@ -68,9 +68,7 @@ const failed = await client.locator('.failwrap').count()
 log(`depot not started yet -> waiting=${waiting} failed=${failed}`,
   waiting === 1 && failed === 0 ? '✓ waits' : '✗ WRONG STATE')
 
-// --- depot offers a file and listens --------------------------------
-await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
-await depot.waitForTimeout(700)
+// --- depot listens, sharing nothing yet -----------------------------
 await depot.getByRole('button', { name: /Start listening/i }).click()
 log('depot listening — client should notice on its own, with no clicks')
 
@@ -78,22 +76,37 @@ log('depot listening — client should notice on its own, with no clicks')
 await client.waitForSelector('.ftable', { timeout: 45000 })
 log('client reconnected unaided')
 
-await client.waitForSelector('.ftable', { timeout: 30000 })
-log('FILES screen reached')
-await client.waitForTimeout(1200)
+const emptyRows = await client.locator('.fr:not(.fr-note)').count()
+log(`listing before anything is shared: ${emptyRows} row(s)`, emptyRows === 0 ? '✓' : '✗ EXPECTED EMPTY')
+
+// --- share a file at a Client that is already connected -------------
+// The reported bug: this only appeared after reloading the browser.
+await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
+await client.waitForSelector('.fr:not(.fr-note)', { timeout: 20000 })
+const rows = await client.locator('.fr:not(.fr-note)').allInnerTexts()
+log('listing updated with no reload:', JSON.stringify(rows))
+
+await client.waitForTimeout(600)
 await client.screenshot({ path: '/tmp/client-files.png' })
 
-const rows = await client.locator('.fr:not(.fr-note)').allInnerTexts()
-log('listing rows:', JSON.stringify(rows))
-
 // --- download it -----------------------------------------------------
-if (rows.length > 0) {
-  await client.locator('.fr:not(.fr-note)').first().click()
-  await client.waitForSelector('.received-row', { timeout: 40000 })
-  const got = await client.locator('.received-row').first().innerText()
-  log('received:', got.replace(/\s+/g, ' '))
-  await client.screenshot({ path: '/tmp/client-received.png' })
-}
+await client.locator('.fr:not(.fr-note)').first().click()
+await client.waitForSelector('.received-row', { timeout: 40000 })
+log('received:', (await client.locator('.received-row').first().innerText()).replace(/\s+/g, ' '))
+await client.screenshot({ path: '/tmp/client-received.png' })
+
+// --- the Depot goes away, then comes back ---------------------------
+// The other reported bug: turning the phone's terminal off and on again
+// left the browser showing a dead connection until it was reloaded.
+await depot.getByRole('button', { name: /Stop listening/i }).click()
+log('depot stopped')
+await client.waitForSelector('.waitwrap', { timeout: 30000 })
+log('client noticed the Depot went away ✓')
+
+await depot.getByRole('button', { name: /Start listening/i }).click()
+log('depot listening again')
+await client.waitForSelector('.ftable', { timeout: 45000 })
+log('client came back unaided ✓')
 
 const box = await client.evaluate(() => {
   const r = (s) => {

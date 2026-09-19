@@ -37,6 +37,13 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const [received, setReceived] = useState<ReceivedFile[]>([])
   const [pending, setPending] = useState<string | null>(null)
 
+  // The refresh callbacks fire from outside React and must not capture a
+  // stale trail, so the current one is kept in a ref alongside the state.
+  const trailRef = useRef<DirEntry[]>([])
+  useEffect(() => {
+    trailRef.current = trail
+  }, [trail])
+
   const urlsRef = useRef<string[]>([])
   useEffect(
     () => () => {
@@ -85,6 +92,42 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
       cancelled = true
     }
   }, [session, onError])
+
+  /**
+   * Re-reads whatever is on screen, without the spinner.
+   *
+   * Used for the Depot saying its shared set changed and for coming back
+   * to the tab — both cases where the listing is quietly stale, and
+   * showing "Listing…" over content that is about to be almost identical
+   * would be a worse lie than the staleness.
+   */
+  const refresh = useCallback(async () => {
+    const handle = trailRef.current.length === 0 ? '' : trailRef.current[trailRef.current.length - 1].handle
+    try {
+      const listed = await session.list(handle)
+      setEntries(listed)
+      if (trailRef.current.length === 0) setRoots(listed)
+    } catch {
+      // A failed refresh leaves what is already shown; the connection
+      // watcher is what notices if the session itself is gone.
+    }
+  }, [session])
+
+  // The Depot pushes §5.9's SHARED_CHANGED when a grant or the offered
+  // file changes. Without this the browser shows what was true at the
+  // moment it connected, which is what made a newly shared file appear
+  // only after a reload.
+  useEffect(() => session.onChanged(() => void refresh()), [session, refresh])
+
+  // A tab that was in the background may have missed one. §5.9 is
+  // explicit that the notice is advisory, so this is the safety net.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [refresh])
 
   const download = async (entry: DirEntry) => {
     if (pending) return

@@ -130,6 +130,22 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     return () => clearTimeout(timer)
   }, [offline, session, attempts, pairings, connect])
 
+  /**
+   * The transport died — the phone stopped listening, slept, or changed
+   * network. Drop back to waiting, which already polls, so turning the
+   * Depot on again brings the page back without anyone reloading it.
+   */
+  useEffect(() => {
+    if (!session) return
+    return session.onClosed(() => {
+      push('connection closed by the Depot')
+      sessionRef.current = null
+      setSession(null)
+      setOffline(true)
+      setAttempts((n) => n + 1)
+    })
+  }, [session, push])
+
   const disconnect = () => {
     sessionRef.current?.close()
     sessionRef.current = null
