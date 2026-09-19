@@ -45,6 +45,21 @@ node scripts/e2e.mjs                      # terminal 3
 It prints both SAS codes so you can see them match, lists what came back over
 `LIST`, and leaves screenshots in `/tmp`.
 
+## The mark
+
+The Depot crate exists in five places — this app's favicon, two CSS
+pseudo-element constructions, and the Android launcher and notification
+vectors. `public/favicon.svg` is the reference; the rest are built to match it.
+
+```bash
+node scripts/check-mark.mjs
+```
+
+renders each one, measures where its seam and corner block actually land as
+fractions of its own box, and exits non-zero if any has drifted more than 0.03
+from the favicon. They had previously drifted into four visibly different
+shapes, and side-by-side eyeballing is not sensitive enough to catch it.
+
 The Depot simulator stays at `?role=depot`. It stands in for the phone so the
 protocol can be exercised in two tabs — it is a development tool, the interface spec
 does not cover it, and the real Depot is the Android app.

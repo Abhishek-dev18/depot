@@ -78,7 +78,7 @@ class DepotService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Depot is listening")
             .setContentText("Paired devices can reach this phone")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())

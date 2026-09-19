@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The same crate at notification size. Separate from the launcher
+  foreground because a status-bar icon is masked to its alpha and tinted
+  by the system: it needs to be a flat silhouette at 24dp, not a 108dp
+  layer with a launcher's safe-zone padding around it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:pathData="M4.5,1.5 H19.5 A3,3 0 0 1 22.5,4.5 V19.5 A3,3 0 0 1 19.5,22.5 H4.5 A3,3 0 0 1 1.5,19.5 V4.5 A3,3 0 0 1 4.5,1.5 Z" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:pathData="M4.875,8.25 H19.125" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M15.75,15 H20.25 V19.5 H15.75 Z" />
+</vector>

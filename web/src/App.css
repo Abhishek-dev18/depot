@@ -51,17 +51,19 @@ header {
 .brand-mark::before {
   content: '';
   position: absolute;
-  inset: 5px;
+  top: 7.6px;
+  left: 4px;
+  right: 4.2px;
   border-top: 2px solid var(--amber);
 }
 
 .brand-mark::after {
   content: '';
   position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 6px;
-  height: 6px;
+  right: 2.4px;
+  bottom: 3.5px;
+  width: 6.4px;
+  height: 6.3px;
   background: var(--amber);
   border-radius: 1px;
 }
@@ -843,18 +845,35 @@ code {
   padding: 0 22px;
 }
 
+/*
+ * The Depot crate, in the proportions of public/favicon.svg — which is
+ * the reference for every copy of this mark. An outline, a seam across
+ * the top, and a block resting in the corner.
+ */
 .wmark {
   width: 26px;
   height: 26px;
-  border: 1.5px solid var(--amber);
+  border: 2px solid var(--amber);
   border-radius: 3px;
   position: relative;
   flex: 0 0 26px;
 }
+/* The same figures at 26px: everything scaled by 26/32. */
+.wmark::before {
+  content: '';
+  position: absolute;
+  top: 5.6px;
+  left: 2.9px;
+  right: 3px;
+  border-top: 2px solid var(--amber);
+}
 .wmark::after {
   content: '';
   position: absolute;
-  inset: 6px;
+  right: 1.6px;
+  bottom: 2.5px;
+  width: 5.2px;
+  height: 5.1px;
   background: var(--amber);
   border-radius: 1px;
 }

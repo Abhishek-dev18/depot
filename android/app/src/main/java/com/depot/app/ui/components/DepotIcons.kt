@@ -49,34 +49,35 @@ private fun Glyph(
 }
 
 /**
- * The Depot mark: a crate seen head-on, which is also the `.mark` rule in
- * the artifact's stylesheet — an amber square, a seam across the top, and
- * a solid block at its centre.
+ * The Depot crate: an outline, a seam across the top, and a block resting
+ * in the corner.
+ *
+ * These are the proportions of `web/public/favicon.svg`, which is the
+ * reference for every copy of this mark — the favicon, the web nav, the
+ * launcher icon and this one. They had drifted into four different
+ * shapes, which is three too many for a product with one name.
  */
 @Composable
 fun BrandMark(size: Dp = 34.dp, tint: Color = DepotColors.Amber, modifier: Modifier = Modifier) =
-    Glyph(size, modifier, weight = 0.06f) { u, stroke ->
+    Glyph(size, modifier, weight = 0.078f) { u, stroke ->
         drawRoundRect(
             color = tint,
-            topLeft = Offset(u * 0.06f, u * 0.06f),
-            size = Size(u * 0.88f, u * 0.88f),
-            cornerRadius = CornerRadius(u * 0.08f),
+            topLeft = Offset(u * 0.0625f, u * 0.0625f),
+            size = Size(u * 0.875f, u * 0.875f),
+            cornerRadius = CornerRadius(u * 0.125f),
             style = stroke,
         )
-        // the ::before seam
         drawLine(
             tint,
-            Offset(u * 0.21f, u * 0.21f),
-            Offset(u * 0.79f, u * 0.21f),
+            Offset(u * 0.203f, u * 0.344f),
+            Offset(u * 0.797f, u * 0.344f),
             stroke.width,
             StrokeCap.Butt,
         )
-        // the ::after block
-        drawRoundRect(
+        drawRect(
             color = tint,
-            topLeft = Offset(u * 0.40f, u * 0.40f),
-            size = Size(u * 0.20f, u * 0.20f),
-            cornerRadius = CornerRadius(u * 0.03f),
+            topLeft = Offset(u * 0.656f, u * 0.625f),
+            size = Size(u * 0.1875f, u * 0.1875f),
         )
     }
 
