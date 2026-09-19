@@ -67,6 +67,19 @@ honestly draw what it shows:
   then offering no way to say so makes §3.4 theatre, so `onSas` now carries a
   `reject` alongside `approve`.
 
+## Staying registered
+
+`DepotSession` supervises its Signal connection rather than making it once.
+A WebSocket does not survive a phone sleeping, changing network, or sitting
+idle behind a NAT that gives up on it — and when one dies the Depot stops
+being registered, so every Client asking for it is told it is offline while
+the phone goes on claiming to listen. Nothing noticed this, and the only
+cure was toggling the terminal off and on by hand.
+
+`SignalClient` now reports the socket ending, and the session registers
+again with exponential backoff up to 30s, clearing `listeningAs` in between
+so the UI stops claiming to be online while it is not.
+
 ## Sharing (§5.9)
 
 `GrantStore` holds the folders the user picked with

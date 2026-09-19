@@ -88,6 +88,11 @@ export async function runClientReconnect(
     )
     if (challenge.type === SignalError) {
       if (challenge.reason === ReasonDepotOffline) {
+        // Closed here rather than left to a `finally`, because the
+        // success path deliberately keeps this socket open for the life
+        // of the session. Returning without closing leaked one WebSocket
+        // per poll, and the Client polls every few seconds while it waits.
+        client.close()
         cb.onDepotOffline()
         return
       }
@@ -111,6 +116,7 @@ export async function runClientReconnect(
     )
     if (ok.type === SignalError) {
       if (ok.reason === ReasonDepotOffline) {
+        client.close()
         cb.onDepotOffline()
         return
       }

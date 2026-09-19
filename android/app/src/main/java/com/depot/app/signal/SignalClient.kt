@@ -26,8 +26,12 @@ class SignalException(message: String) : Exception(message)
 class SignalClient(private val url: String) {
 
     private val listeners = CopyOnWriteArraySet<(Envelope) -> Unit>()
+    private val disconnectListeners = CopyOnWriteArraySet<(String) -> Unit>()
     private val opened = CompletableDeferred<Unit>()
     private var webSocket: WebSocket? = null
+
+    /** Fires once, whichever way the socket ends. */
+    private val announced = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val http = OkHttpClient.Builder()
         // The server pings every 25s and drops a peer silent for 60s, so
@@ -55,13 +59,33 @@ class SignalClient(private val url: String) {
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     opened.completeExceptionally(SignalException("could not connect to signal at $url: ${t.message}"))
+                    announce(t.message ?: "connection failed")
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     opened.completeExceptionally(SignalException("signal connection closed: $reason"))
+                    announce(reason.ifBlank { "closed ($code)" })
                 }
             },
         )
+    }
+
+    /**
+     * Called when this socket ends for any reason.
+     *
+     * A Depot whose socket drops is no longer registered with Signal, and
+     * every Client asking for it is told it is offline — while the phone
+     * goes on saying it is listening. Something has to notice, or the only
+     * cure is the user toggling it off and on again.
+     */
+    fun onDisconnected(fn: (String) -> Unit) {
+        disconnectListeners.add(fn)
+    }
+
+    private fun announce(reason: String) {
+        if (announced.compareAndSet(false, true)) {
+            for (listener in disconnectListeners) runCatching { listener(reason) }
+        }
     }
 
     /** Suspends until the socket is open, or throws if it failed to connect. */
@@ -98,6 +122,9 @@ class SignalClient(private val url: String) {
     }
 
     fun close() {
+        // Deliberate closes are not disconnections to recover from, so the
+        // announcement is suppressed before tearing the socket down.
+        announced.set(true)
         webSocket?.close(1000, null)
         webSocket = null
     }

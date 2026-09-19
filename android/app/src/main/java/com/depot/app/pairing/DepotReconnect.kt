@@ -57,6 +57,12 @@ interface DepotReconnectCallbacks {
      * device, and without this it could only ever light up.
      */
     fun onClientDisconnected(clientId: String)
+
+    /**
+     * This Depot's own connection to Signal has gone. It is no longer
+     * registered, so nothing can reach it until it registers again.
+     */
+    fun onDisconnected(reason: String)
     fun onProgress(clientId: String, index: Int, total: Int, bytesSent: Long, bytesTotal: Long)
     fun onClientRejected(clientId: String, reason: String)
 }
@@ -119,6 +125,8 @@ suspend fun runDepotReconnectListener(
     signal.register(depotId)
     cb.onStatus("registered, listening for reconnections")
     cb.onRegistered(depotId)
+
+    signal.onDisconnected { reason -> cb.onDisconnected(reason) }
 
     val connections = ConcurrentHashMap<String, () -> Unit>()
     val senders = ConcurrentHashMap<String, FileSender>()
