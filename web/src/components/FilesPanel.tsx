@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DepotConnection } from '../pairing/clientReconnect'
 import type { DirEntry } from '../transport/transferSession'
 import { formatBytes, formatDay, nowMs } from '../format'
-import { ConnectionBadge } from './ConnectionBadge'
 import { TransferCard, type TransferState } from './TransferCard'
 
 interface ReceivedFile {
@@ -14,10 +13,11 @@ interface ReceivedFile {
 interface Props {
   session: DepotConnection
   depotLabel: string
-  onDisconnect: () => void
   onSettings: () => void
   onError: (message: string) => void
   log: (line: string) => void
+  /** Reported upward so the nav above can show live throughput. */
+  onRate: (bytesPerSecond: number | undefined) => void
 }
 
 /**
@@ -28,7 +28,7 @@ interface Props {
  * browser composed. There is nothing to sanitise because there is nothing
  * to construct.
  */
-export function FilesPanel({ session, depotLabel, onDisconnect, onSettings, onError, log }: Props) {
+export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRate }: Props) {
   const [roots, setRoots] = useState<DirEntry[]>([])
   const [trail, setTrail] = useState<DirEntry[]>([])
   const [entries, setEntries] = useState<DirEntry[]>([])
@@ -125,18 +125,12 @@ export function FilesPanel({ session, depotLabel, onDisconnect, onSettings, onEr
       ? (transfer.bytesReceived * 1000) / (transfer.updatedAt - transfer.startedAt)
       : undefined
 
-  return (
-    <div className="wclient">
-      <div className="wnav">
-        <div className="wmark" aria-hidden="true" />
-        <div className="wname">Depot</div>
-        <ConnectionBadge type={session.connectionType} rate={rate} />
-        <button className="wnav-action" onClick={onDisconnect}>
-          Disconnect
-        </button>
-      </div>
+  useEffect(() => {
+    onRate(rate)
+  }, [rate, onRate])
 
-      <div className="wbody">
+  return (
+    <div className="wbody">
         <nav className="side">
           <div className="sl" title={session.depotId}>
             {depotLabel.toUpperCase()}
@@ -234,8 +228,7 @@ export function FilesPanel({ session, depotLabel, onDisconnect, onSettings, onEr
           )}
         </div>
 
-        {transfer && <TransferCard transfer={transfer} />}
-      </div>
+      {transfer && <TransferCard transfer={transfer} />}
     </div>
   )
 }

@@ -25,10 +25,22 @@ export function ConnectionBadge({ type, rate }: { type: ConnectionType; rate?: n
   )
 }
 
-/** The same badge shape for a connection that does not exist. */
-export function NoRouteBadge({ label = 'NO ROUTE' }: { label?: string }) {
+/**
+ * The same badge shape for a connection that does not exist.
+ *
+ * Red only when something actually failed. A browser that has simply not
+ * been paired yet is in its normal first state, and colouring that as an
+ * alarm would teach people to ignore the colour that matters.
+ */
+export function NoRouteBadge({
+  label = 'NO ROUTE',
+  tone = 'error',
+}: {
+  label?: string
+  tone?: 'error' | 'idle'
+}) {
   return (
-    <span className="conn conn-none">
+    <span className={tone === 'error' ? 'conn conn-none' : 'conn conn-idle'}>
       <i />
       {label}
     </span>

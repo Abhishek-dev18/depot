@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLog } from '../hooks/useLog'
 import { runClientPairing } from '../pairing/clientPairing'
 import { runClientReconnect, type DepotConnection } from '../pairing/clientReconnect'
@@ -6,6 +6,8 @@ import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
 import type { TurnConfig } from '../transport/webrtc'
 import { depotLabelFor } from '../format'
+import { ClientNav } from './ClientNav'
+import { ConnectionBadge, NoRouteBadge } from './ConnectionBadge'
 import { FilesPanel } from './FilesPanel'
 import { Log } from './Log'
 import { NoRoutePanel } from './NoRoutePanel'
@@ -15,6 +17,8 @@ interface Props {
   signalUrl: string
   turnConfig?: TurnConfig
   onOpenSettings: () => void
+  /** Rendered under the nav when open; owned by App, which holds the values. */
+  settingsPanel?: ReactNode
 }
 
 /**
@@ -26,7 +30,7 @@ interface Props {
  * out" state because there is no account to log out of; what this browser
  * holds is a credential, and losing it means pairing again.
  */
-export function ClientView({ signalUrl, turnConfig, onOpenSettings }: Props) {
+export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPanel }: Props) {
   const { lines, push, clear } = useLog()
   const [pairings, setPairings] = useState<Pairing[]>([])
   const [session, setSession] = useState<DepotConnection | null>(null)
@@ -37,6 +41,7 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings }: Props) {
   const [sas, setSas] = useState<string | null>(null)
   const [issuedAt, setIssuedAt] = useState<number | null>(null)
   const [pairingBusy, setPairingBusy] = useState(false)
+  const [rate, setRate] = useState<number | undefined>(undefined)
 
   const sessionRef = useRef<DepotConnection | null>(null)
   const autoConnected = useRef(false)
@@ -141,17 +146,41 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings }: Props) {
 
   return (
     <div className="client-shell">
+      <ClientNav
+        onSettings={onOpenSettings}
+        badge={
+          session ? (
+            <ConnectionBadge type={session.connectionType} rate={rate} />
+          ) : failure ? (
+            <NoRouteBadge />
+          ) : connecting ? (
+            <NoRouteBadge label="CONNECTING" tone="idle" />
+          ) : (
+            <NoRouteBadge label="NOT LINKED" tone="idle" />
+          )
+        }
+        actions={
+          session ? (
+            <button className="wnav-action" onClick={disconnect}>
+              Disconnect
+            </button>
+          ) : undefined
+        }
+      />
+
+      {settingsPanel}
+
       {session ? (
         <FilesPanel
           session={session}
           depotLabel={depotLabelFor(session.depotId, pairing?.depotLabel)}
-          onDisconnect={disconnect}
           onSettings={onOpenSettings}
           onError={(message) => {
             push(`error: ${message}`)
             setFailure(message)
           }}
           log={push}
+          onRate={setRate}
         />
       ) : failure ? (
         <NoRoutePanel message={failure} onRetry={retry} onSettings={onOpenSettings} />

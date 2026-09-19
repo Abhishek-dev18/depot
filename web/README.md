@@ -23,6 +23,28 @@ states, which are that spec's three browser frames:
 There is no fourth "logged out" state, because there is no account to log out of.
 What this browser holds is a credential; losing it means pairing again.
 
+The Client fills the window; the simulator keeps the narrow column it was built
+in, because it is a form and a form as wide as a desktop is harder to use, not
+easier.
+
+## End-to-end check
+
+`npm test` exercises the transport over a fake DataChannel pair, which is fast
+and precise and cannot tell you that WebRTC negotiated, that the relay routed,
+or that the screen showed what happened. `scripts/e2e.mjs` drives two real
+browser tabs through pairing, the SAS comparison, reconnection, browsing and a
+verified transfer:
+
+```bash
+npm i -D playwright                       # once
+cd ../signal && go run .                  # terminal 1
+npm run build && npx vite preview --port 4173   # terminal 2
+node scripts/e2e.mjs                      # terminal 3
+```
+
+It prints both SAS codes so you can see them match, lists what came back over
+`LIST`, and leaves screenshots in `/tmp`.
+
 The Depot simulator stays at `?role=depot`. It stands in for the phone so the
 protocol can be exercised in two tabs — it is a development tool, the interface spec
 does not cover it, and the real Depot is the Android app.
