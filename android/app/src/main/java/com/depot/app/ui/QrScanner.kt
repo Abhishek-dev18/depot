@@ -11,17 +11,22 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -32,15 +37,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.depot.app.ui.components.AppBar
+import com.depot.app.ui.components.FailState
+import com.depot.app.ui.components.IconClose
+import com.depot.app.ui.components.IcoButton
+import com.depot.app.ui.components.SheetButton
 import com.depot.app.ui.theme.DepotColors
-import com.depot.app.ui.theme.MonoStyle
+import com.depot.app.ui.theme.DepotType
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -49,17 +62,20 @@ import java.util.concurrent.Executors
 private const val TAG = "QrScanner"
 
 /**
- * Reads the Client's pairing QR (protocol.md §3.1).
+ * SCAN · READ QR, as the interface artifact draws it: a full-bleed
+ * viewfinder, corner brackets rather than a box, and a sweeping amber
+ * line. Nothing else competes with it.
  *
- * This is the security anchor of the whole protocol: the Client's ephemeral
- * public key reaches the Depot through the camera precisely because Signal
- * cannot touch it there. Scanning is therefore not a convenience over
- * pasting — pasting is the fallback, and the camera is the intended path.
+ * This is also the security anchor of the whole protocol (§3.1). The
+ * Client's ephemeral public key reaches the Depot through the camera
+ * precisely because Signal cannot touch it there, which is why scanning
+ * gets the whole screen and pasting is tucked underneath as a fallback.
  */
 @Composable
 fun QrScannerScreen(
     onScanned: (String) -> Unit,
     onCancel: () -> Unit,
+    onPaste: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -77,58 +93,121 @@ fun QrScannerScreen(
         if (!granted) requestCamera.launch(Manifest.permission.CAMERA)
     }
 
-    Box(modifier.fillMaxSize().background(DepotColors.Bg)) {
-        if (granted) {
-            CameraPreview(onScanned = onScanned)
-        } else {
-            Column(
-                Modifier.fillMaxSize().padding(32.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
+    Column(modifier.fillMaxSize().background(DepotColors.ScanBg).statusBarsPadding()) {
+        AppBar(
+            title = "Link device",
+            sub = "STEP 1 OF 2",
+            action = {
+                IcoButton(onClick = onCancel) { IconClose(DepotColors.Ink2, 16.dp) }
+            },
+        )
+
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (granted) {
+                CameraPreview(onScanned = onScanned)
+                ScanTexture(Modifier.fillMaxSize())
+                Reticle(Modifier.align(Alignment.Center))
                 Text(
-                    "Camera access is needed to read the Client's QR code.",
+                    "POINT AT THE CODE ON YOUR SCREEN",
+                    style = DepotType.Pulse,
                     color = DepotColors.Ink2,
                     textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 34.dp),
                 )
-                Text(
-                    "You can paste the payload instead if you would rather not grant it.",
-                    color = DepotColors.Ink3,
-                    style = MonoStyle.copy(fontSize = 12.sp),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 8.dp),
+            } else {
+                FailState(
+                    title = "Camera access is off",
+                    body = "Depot reads the Client's code through the camera because that is the " +
+                        "one channel the Signal server cannot reach. Without it, the payload has " +
+                        "to be pasted across by hand.",
+                    accent = DepotColors.Amber,
+                    modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
                 )
             }
         }
 
-        // A viewfinder that says where to aim, over the live preview.
-        Box(
-            Modifier
-                .align(Alignment.Center)
-                .size(240.dp)
-                .border(2.dp, DepotColors.Amber, RoundedCornerShape(16.dp)),
-        )
-
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
         ) {
-            Text(
-                "POINT AT THE CLIENT'S QR CODE",
-                color = DepotColors.Ink2,
-                style = MonoStyle.copy(fontSize = 11.sp, letterSpacing = 1.sp),
+            SheetButton(
+                text = if (granted) "Paste the payload instead" else "Paste the payload",
+                primary = !granted,
+                onClick = onPaste,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Button(
-                onClick = onCancel,
-                modifier = Modifier.padding(top = 12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = DepotColors.Surface2,
-                    contentColor = DepotColors.Ink,
-                ),
-                shape = RoundedCornerShape(9.dp),
-            ) {
-                Text("Cancel")
-            }
+        }
+    }
+}
+
+/** `.reticle` — four corner brackets and a sweeping line, not a frame. */
+@Composable
+private fun Reticle(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "scan")
+    val sweep by transition.animateFloat(
+        initialValue = 0.06f,
+        targetValue = 0.94f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "sweep",
+    )
+
+    Canvas(modifier.size(248.dp)) {
+        val s = size.minDimension
+        val w = 3.dp.toPx()
+        val arm = s * 0.18f
+        val a = w / 2f
+        val b = s - w / 2f
+        val amber = DepotColors.Amber
+
+        // top-left
+        drawLine(amber, Offset(a, a + arm), Offset(a, a), w, StrokeCap.Square)
+        drawLine(amber, Offset(a, a), Offset(a + arm, a), w, StrokeCap.Square)
+        // top-right
+        drawLine(amber, Offset(b - arm, a), Offset(b, a), w, StrokeCap.Square)
+        drawLine(amber, Offset(b, a), Offset(b, a + arm), w, StrokeCap.Square)
+        // bottom-right
+        drawLine(amber, Offset(b, b - arm), Offset(b, b), w, StrokeCap.Square)
+        drawLine(amber, Offset(b, b), Offset(b - arm, b), w, StrokeCap.Square)
+        // bottom-left
+        drawLine(amber, Offset(a + arm, b), Offset(a, b), w, StrokeCap.Square)
+        drawLine(amber, Offset(a, b), Offset(a, b - arm), w, StrokeCap.Square)
+
+        val y = s * sweep
+        drawLine(
+            brush = Brush.horizontalGradient(
+                listOf(Color.Transparent, amber, Color.Transparent),
+            ),
+            start = Offset(s * 0.04f, y),
+            end = Offset(s * 0.96f, y),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Butt,
+        )
+    }
+}
+
+/** `.scanbg` — faint scan lines over the preview, so it reads as an instrument. */
+@Composable
+private fun ScanTexture(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val gap = 4.dp.toPx()
+        var y = 0f
+        while (y < size.height) {
+            drawLine(
+                Color.White.copy(alpha = 0.014f),
+                Offset(0f, y),
+                Offset(size.width, y),
+                1f,
+                StrokeCap.Butt,
+            )
+            y += gap
         }
     }
 }

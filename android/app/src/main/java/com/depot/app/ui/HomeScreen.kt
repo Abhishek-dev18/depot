@@ -1,0 +1,398 @@
+package com.depot.app.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.depot.app.storage.DeviceRecord
+import com.depot.app.transport.ConnectionType
+import com.depot.app.ui.components.AppBar
+import com.depot.app.ui.components.ConnectionBadge
+import com.depot.app.ui.components.Cta
+import com.depot.app.ui.components.GrantSwitch
+import com.depot.app.ui.components.HeroStat
+import com.depot.app.ui.components.IconBlock
+import com.depot.app.ui.components.IconGrant
+import com.depot.app.ui.components.IconSettings
+import com.depot.app.ui.components.IcoButton
+import com.depot.app.ui.components.ListRow
+import com.depot.app.ui.components.PulseRow
+import com.depot.app.ui.components.RowTile
+import com.depot.app.ui.components.SectionLabel
+import com.depot.app.ui.components.StateDot
+import com.depot.app.ui.components.StatusHero
+import com.depot.app.ui.components.formatBytes
+import com.depot.app.ui.components.formatDuration
+import com.depot.app.ui.components.formatEta
+import com.depot.app.ui.components.formatLastSeen
+import com.depot.app.ui.components.formatRate
+import com.depot.app.ui.theme.DepotColors
+import com.depot.app.ui.theme.DepotType
+import kotlinx.coroutines.delay
+
+/**
+ * HOME · DEPOT STATUS, as the interface artifact draws it: a status hero
+ * with an accent bar carrying the live state, a strip of machine facts
+ * under it, the grants, the linked devices, and one amber commitment
+ * pinned to the bottom.
+ */
+@Composable
+fun HomeScreen(
+    state: DepotUiState,
+    onToggleListening: () -> Unit,
+    onPickFile: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onDeviceClick: (DeviceRecord) -> Unit,
+    onLinkDevice: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val listening = state.listeningAs != null
+
+    Column(modifier.fillMaxSize().background(DepotColors.Bg).statusBarsPadding()) {
+        AppBar(
+            title = "Depot",
+            sub = if (listening) "TERMINAL ONLINE" else "TERMINAL OFFLINE",
+            subColor = if (listening) DepotColors.Green else DepotColors.Ink3,
+            action = {
+                IcoButton(onClick = onOpenSettings) {
+                    IconSettings(DepotColors.Ink2, 18.dp)
+                }
+            },
+        )
+
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+        ) {
+            StatusHeroCard(state = state, onClick = onToggleListening)
+
+            if (state.progressTotal > 0) {
+                Spacer(Modifier.height(12.dp))
+                TransferCard(state)
+            }
+
+            SectionLabel("SHARED FILE")
+            SharedFileRow(state = state, onPickFile = onPickFile)
+            Text(
+                // The artifact frames Android's per-item consent as the
+                // feature rather than apologising for it, so the screen
+                // states plainly what is *not* reachable.
+                "Everything else on this phone stays invisible. A Client can only " +
+                    "ever ask for what you have put here.",
+                style = DepotType.Body.copy(fontSize = 13.sp),
+                color = DepotColors.Ink3,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+
+            SectionLabel("LINKED DEVICES")
+            if (state.devices.isEmpty()) {
+                EmptyDevices()
+            } else {
+                for (device in state.devices) {
+                    LinkedDeviceRow(
+                        device = device,
+                        connection = state.connected[device.clientIdentityPub],
+                        onClick = { onDeviceClick(device) },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+        }
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Cta(text = "Link a device", onClick = onLinkDevice)
+        }
+    }
+}
+
+@Composable
+private fun StatusHeroCard(state: DepotUiState, onClick: () -> Unit) {
+    val listening = state.listeningAs != null
+
+    // Only ticks while there is an uptime to tick; an idle Depot should not
+    // be recomposing this screen once a second for nothing.
+    val now by produceState(System.currentTimeMillis(), state.listeningSince) {
+        if (state.listeningSince == null) return@produceState
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    StatusHero(
+        accent = if (listening) DepotColors.Green else DepotColors.Line2,
+        onClick = onClick,
+    ) {
+        PulseRow(
+            text = if (listening) "ACCEPTING CONNECTIONS" else "OFFLINE · TAP TO START",
+            color = if (listening) DepotColors.Green else DepotColors.Ink3,
+            glow = if (listening) DepotColors.GreenGlow else Color.Transparent,
+        )
+
+        Row(
+            Modifier.padding(top = 12.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Text("${state.devices.size}", style = DepotType.BigNum, color = DepotColors.Ink)
+            Text(
+                if (state.devices.size == 1) " device linked" else " devices linked",
+                style = DepotType.Body.copy(fontSize = 16.sp),
+                color = DepotColors.Ink3,
+                modifier = Modifier.padding(bottom = 5.dp),
+            )
+        }
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp)
+                .height(1.dp)
+                .background(DepotColors.Line),
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(top = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            HeroStat(
+                label = "SHARED",
+                value = if (state.offeredFileName == null) "—" else formatBytes(state.offeredFileSize.toLong()),
+                modifier = Modifier.weight(1f),
+            )
+            HeroStat(
+                label = "MOVED",
+                value = if (state.moved == 0L) "—" else formatBytes(state.moved),
+                modifier = Modifier.weight(1f),
+            )
+            HeroStat(
+                label = "UPTIME",
+                value = state.listeningSince?.let { formatDuration(now - it) } ?: "—",
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/**
+ * `.xfer` — the artifact's transfer readout, with the connection badge
+ * sitting in it. Throughput and route are shown together deliberately: a
+ * slow transfer over a relay is a different fact from a slow transfer
+ * direct, and the user can only tell them apart if both are on screen.
+ */
+@Composable
+private fun TransferCard(state: DepotUiState) {
+    // The clock advances with each progress report rather than on a timer:
+    // progress is the only thing that changes the numbers anyway.
+    val startedAt = remember(state.bytesTotal, state.offeredFileName) { System.currentTimeMillis() }
+    val now = remember(state.bytesSent) { System.currentTimeMillis() }
+    val elapsed = (now - startedAt).coerceAtLeast(1L)
+    val rate = state.bytesSent * 1000.0 / elapsed
+    val fraction =
+        if (state.bytesTotal > 0) (state.bytesSent.toFloat() / state.bytesTotal).coerceIn(0f, 1f) else 0f
+
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(DepotColors.Surface)
+            .border(1.dp, DepotColors.Line2, shape)
+            .padding(16.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                state.offeredFileName ?: "Transferring",
+                style = DepotType.RowName.copy(fontSize = 15.sp),
+                color = DepotColors.Ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "${(fraction * 100).toInt()}%",
+                style = DepotType.Fact,
+                color = DepotColors.Amber,
+                modifier = Modifier.padding(start = 10.dp),
+            )
+        }
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 13.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(DepotColors.Line),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(DepotColors.Amber),
+            )
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Metric(formatRate(rate), "")
+            Spacer(Modifier.width(16.dp))
+            Metric(formatBytes(state.bytesTotal - state.bytesSent), "left")
+            Spacer(Modifier.width(16.dp))
+            Metric(formatEta(state.bytesTotal - state.bytesSent, rate), "eta")
+            Spacer(Modifier.weight(1f))
+            state.connectionType?.let { RouteBadge(it) }
+        }
+    }
+}
+
+@Composable
+private fun Metric(value: String, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(value, style = DepotType.FactSmall, color = DepotColors.Ink2)
+        if (label.isNotEmpty()) {
+            Text(
+                " $label",
+                style = DepotType.FactSmall,
+                color = DepotColors.Ink3,
+            )
+        }
+    }
+}
+
+/**
+ * DIRECT or RELAYED. Amber for relayed is not decoration — it is the one
+ * case where bytes cross a machine that is not one of the two endpoints,
+ * and the artifact insists that fact is never hidden.
+ */
+@Composable
+fun RouteBadge(type: ConnectionType, modifier: Modifier = Modifier) {
+    val relayed = type == ConnectionType.RELAYED
+    ConnectionBadge(
+        label = if (relayed) "RELAYED" else "DIRECT",
+        color = if (relayed) DepotColors.Amber else DepotColors.Green,
+        borderColor = if (relayed) DepotColors.AmberDim else DepotColors.GreenLine,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun SharedFileRow(state: DepotUiState, onPickFile: () -> Unit) {
+    val name = state.offeredFileName
+    ListRow(
+        name = name ?: "Choose a file to share",
+        meta = if (name == null) {
+            "NOTHING SHARED YET"
+        } else {
+            "${formatBytes(state.offeredFileSize.toLong())} · READY TO SEND"
+        },
+        nameColor = if (name == null) DepotColors.Ink2 else DepotColors.Ink,
+        onClick = onPickFile,
+        leading = {
+            RowTile { IconGrant(if (name == null) DepotColors.Ink3 else DepotColors.Amber, 18.dp) }
+        },
+        trailing = { GrantSwitch(on = name != null) },
+    )
+}
+
+@Composable
+private fun LinkedDeviceRow(
+    device: DeviceRecord,
+    connection: ConnectionType?,
+    onClick: () -> Unit,
+) {
+    val meta = when {
+        device.revoked -> "REVOKED"
+        connection == ConnectionType.RELAYED -> "RELAYED · ACTIVE NOW"
+        connection != null -> "DIRECT · ACTIVE NOW"
+        else -> "IDLE · ${formatLastSeen(device.lastSeenAt)}"
+    }
+    ListRow(
+        name = device.label,
+        meta = meta,
+        nameColor = if (device.revoked) DepotColors.Ink3 else DepotColors.Ink,
+        metaColor = if (device.revoked) DepotColors.Red else DepotColors.Ink3,
+        onClick = onClick,
+        leading = {
+            RowTile {
+                IconBlock(
+                    when {
+                        device.revoked -> DepotColors.Ink3
+                        connection != null -> DepotColors.Green
+                        else -> DepotColors.Ink2
+                    },
+                    18.dp,
+                )
+            }
+        },
+        trailing = {
+            StateDot(
+                when {
+                    device.revoked -> DepotColors.Red
+                    connection != null -> DepotColors.Green
+                    else -> DepotColors.Line2
+                },
+            )
+        },
+    )
+}
+
+@Composable
+private fun EmptyDevices() {
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .border(1.dp, DepotColors.Line, shape)
+            .padding(horizontal = 16.dp, vertical = 22.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            "NO DEVICES LINKED",
+            style = DepotType.Label,
+            color = DepotColors.Ink3,
+        )
+        Text(
+            "Open the Depot page in a browser and scan its code to link it.",
+            style = DepotType.Body.copy(fontSize = 13.sp),
+            color = DepotColors.Ink3,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}

@@ -17,11 +17,22 @@ import kotlinx.coroutines.launch
 
 data class SessionState(
     val listeningAs: String? = null,
+    /** When registration succeeded, for the hero's UPTIME cell. */
+    val listeningSince: Long? = null,
     val connectionType: ConnectionType? = null,
+    /**
+     * Identity key -> how that Client is currently reaching us. The
+     * artifact is explicit that connection state is never hidden, and a
+     * per-device map is what lets each row say DIRECT, RELAYED or idle
+     * rather than the screen showing one global guess.
+     */
+    val connected: Map<String, ConnectionType> = emptyMap(),
     val progressIndex: Int = 0,
     val progressTotal: Int = 0,
     val bytesSent: Long = 0,
     val bytesTotal: Long = 0,
+    /** Everything this session has put on the wire, across transfers. */
+    val moved: Long = 0,
     val offeredFileName: String? = null,
     val offeredFileSize: Int = 0,
     val log: List<String> = emptyList(),
@@ -48,6 +59,10 @@ object DepotSession {
     private var listener: DepotReconnectListener? = null
     private var offered: OfferedFile? = null
 
+    /** Last progress figure seen per Client, for the running total below. */
+    private val lastProgress = HashMap<String, Long>()
+    private var movedTotal = 0L
+
     val isListening: Boolean get() = listener != null
 
     fun setOfferedFile(file: OfferedFile) {
@@ -64,6 +79,20 @@ object DepotSession {
     fun reportError(message: String) = _state.update { it.copy(error = message) }
 
     fun dismissError() = _state.update { it.copy(error = null) }
+
+    /**
+     * Progress is reported as a running count within one transfer, so the
+     * session total is the sum of the increments. A figure lower than the
+     * last one means a new transfer started; the earlier one's bytes are
+     * already counted, and the new count starts again from its own zero.
+     */
+    @Synchronized
+    private fun accumulate(clientId: String, bytesSent: Long): Long {
+        val previous = lastProgress[clientId] ?: 0L
+        movedTotal += if (bytesSent >= previous) bytesSent - previous else bytesSent
+        lastProgress[clientId] = bytesSent
+        return movedTotal
+    }
 
     fun start(context: Context, signalUrl: String) {
         if (listener != null) return
@@ -82,7 +111,9 @@ object DepotSession {
                         }
 
                         override fun onRegistered(depotId: String) {
-                            _state.update { it.copy(listeningAs = depotId) }
+                            _state.update {
+                                it.copy(listeningAs = depotId, listeningSince = System.currentTimeMillis())
+                            }
                         }
 
                         override fun onClientAuthenticated(clientId: String) {
@@ -93,7 +124,20 @@ object DepotSession {
                             _state.update {
                                 it.copy(
                                     connectionType = connectionType,
+                                    connected = it.connected + (clientId to connectionType),
                                     log = it.log + "data channel open ($connectionType)",
+                                )
+                            }
+                        }
+
+                        override fun onClientDisconnected(clientId: String) {
+                            _state.update {
+                                val remaining = it.connected - clientId
+                                it.copy(
+                                    connected = remaining,
+                                    // The global badge follows whatever is
+                                    // still connected, if anything is.
+                                    connectionType = remaining.values.firstOrNull(),
                                 )
                             }
                         }
@@ -105,12 +149,14 @@ object DepotSession {
                             bytesSent: Long,
                             bytesTotal: Long,
                         ) {
+                            val moved = accumulate(clientId, bytesSent)
                             _state.update {
                                 it.copy(
                                     progressIndex = index + 1,
                                     progressTotal = total,
                                     bytesSent = bytesSent,
                                     bytesTotal = bytesTotal,
+                                    moved = moved,
                                 )
                             }
                         }
@@ -129,12 +175,21 @@ object DepotSession {
     fun stop() {
         listener?.stop()
         listener = null
+        // UPTIME and MOVED both describe the run that is ending, so they
+        // reset together rather than one carrying over into the next.
+        synchronized(this) {
+            lastProgress.clear()
+            movedTotal = 0L
+        }
         _state.update {
             it.copy(
                 listeningAs = null,
+                listeningSince = null,
                 connectionType = null,
+                connected = emptyMap(),
                 progressIndex = 0,
                 progressTotal = 0,
+                moved = 0,
                 log = it.log + "stopped listening",
             )
         }

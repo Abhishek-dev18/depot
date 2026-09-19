@@ -12,6 +12,7 @@ import com.depot.app.service.DepotService
 import com.depot.app.service.DepotSession
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
+import com.depot.app.storage.Settings
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.OfferedFile
 import kotlinx.coroutines.Dispatchers
@@ -21,35 +22,54 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class PairingUiState(
+/** Everything the interface draws, in one place. */
+data class DepotUiState(
+    // The link flow.
     val payload: String = "",
-    val busy: Boolean = false,
+    val linking: Boolean = false,
     val sas: String? = null,
-    val error: String? = null,
     val justPaired: DeviceRecord? = null,
-    val log: List<String> = emptyList(),
+    val linkStatus: String? = null,
+    val error: String? = null,
+
+    // What is linked.
     val devices: List<DeviceRecord> = emptyList(),
+
+    // The terminal.
     val signalUrl: String = "",
     val listeningAs: String? = null,
-    val offeredFileName: String? = null,
-    val offeredFileSize: Int = 0,
+    val listeningSince: Long? = null,
+    val connected: Map<String, ConnectionType> = emptyMap(),
     val connectionType: ConnectionType? = null,
     val progressIndex: Int = 0,
     val progressTotal: Int = 0,
     val bytesSent: Long = 0,
     val bytesTotal: Long = 0,
+    val moved: Long = 0,
+    val offeredFileName: String? = null,
+    val offeredFileSize: Int = 0,
+    val log: List<String> = emptyList(),
 )
 
-class PairingViewModel(app: Application) : AndroidViewModel(app) {
+class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val _state = MutableStateFlow(PairingUiState())
-    val state: StateFlow<PairingUiState> = _state.asStateFlow()
+    private val _state = MutableStateFlow(DepotUiState(signalUrl = Settings.signalUrl(app)))
+    val state: StateFlow<DepotUiState> = _state.asStateFlow()
 
-    /** Set while the SAS is on screen; invoking it releases the pairing flow. */
+    /** Set while the SAS is on screen; one of these releases the flow. */
     private var approve: (() -> Unit)? = null
+    private var reject: (() -> Unit)? = null
 
-    /** Pairing writes its own log; the listening session owns the rest. */
-    private var pairingLog: List<String> = emptyList()
+    /**
+     * Bumped whenever a link attempt is abandoned. A pairing coroutine
+     * that finishes after the user walked away belongs to an older
+     * generation, and its callbacks are dropped rather than reopening a
+     * sheet on a screen that has moved on.
+     */
+    private var linkGeneration = 0
+
+    /** The link flow writes its own log; the listening session owns the rest. */
+    private var linkLog: List<String> = emptyList()
 
     init {
         refreshDevices()
@@ -67,14 +87,17 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         listeningAs = session.listeningAs,
+                        listeningSince = session.listeningSince,
+                        connected = session.connected,
                         connectionType = session.connectionType,
                         progressIndex = session.progressIndex,
                         progressTotal = session.progressTotal,
                         bytesSent = session.bytesSent,
                         bytesTotal = session.bytesTotal,
+                        moved = session.moved,
                         offeredFileName = session.offeredFileName,
                         offeredFileSize = session.offeredFileSize,
-                        log = pairingLog + session.log,
+                        log = linkLog + session.log,
                         error = it.error ?: session.error,
                     )
                 }
@@ -93,16 +116,19 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
     fun onPayloadChange(value: String) = _state.update { it.copy(payload = value) }
 
     /**
-     * A scan goes straight into pairing. Dropping the payload into the
-     * text field and waiting for a second tap would just be an extra step
-     * on the path §3.1 actually intends people to use.
+     * A scan goes straight into linking. Dropping the payload into a text
+     * field and waiting for a second tap would just be an extra step on
+     * the path §3.1 actually intends people to use.
      */
     fun onQrScanned(payload: String) {
         _state.update { it.copy(payload = payload) }
-        join()
+        link()
     }
 
-    fun onSignalUrlChange(value: String) = _state.update { it.copy(signalUrl = value) }
+    fun onSignalUrlChange(value: String) {
+        _state.update { it.copy(signalUrl = value) }
+        Settings.setSignalUrl(getApplication(), value)
+    }
 
     fun onFileSelected(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -133,7 +159,7 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val url = _state.value.signalUrl.ifBlank { null } ?: run {
-            _state.update { it.copy(error = "set the signal URL first") }
+            _state.update { it.copy(error = "set the Signal server address first") }
             return
         }
         DepotService.start(app, url)
@@ -141,8 +167,41 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onApprove() {
         approve?.invoke()
+        clearSasHandlers()
+    }
+
+    /**
+     * The user says the digits do not match. Nothing is written and no
+     * credential is issued; the Client stays exactly as unknown as it was.
+     */
+    fun onReject() {
+        reject?.invoke()
+        clearSasHandlers()
+    }
+
+    private fun clearSasHandlers() {
         approve = null
+        reject = null
         _state.update { it.copy(sas = null) }
+    }
+
+    /** Walk away from a link attempt that has not settled. */
+    fun cancelLink() {
+        linkGeneration++
+        reject?.invoke()
+        approve = null
+        reject = null
+        linkLog = emptyList()
+        _state.update {
+            it.copy(linking = false, sas = null, payload = "", linkStatus = null, error = null)
+        }
+    }
+
+    fun onRename(device: DeviceRecord, label: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            DeviceStore.rename(getApplication(), device.clientIdentityPub, label)
+            refreshDevices()
+        }
     }
 
     fun onRevoke(device: DeviceRecord) {
@@ -154,47 +213,62 @@ class PairingViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissResult() {
         DepotSession.dismissError()
-        _state.update { it.copy(justPaired = null, error = null) }
+        _state.update { it.copy(justPaired = null, error = null, linkStatus = null) }
     }
 
-    fun join() {
-        if (_state.value.busy) return
-        pairingLog = emptyList()
+    fun link() {
+        if (_state.value.linking) return
+        val generation = ++linkGeneration
+        linkLog = emptyList()
         _state.update {
-            it.copy(busy = true, error = null, sas = null, justPaired = null, log = emptyList())
+            it.copy(linking = true, error = null, sas = null, justPaired = null, linkStatus = null)
         }
 
-        // The QR already names the Signal server, so listening later does
-        // not need it typed in by hand.
+        // The QR names the Signal server, so listening later does not need
+        // it typed in by hand.
         runCatching { QrPayload.parse(_state.value.payload) }
-            .onSuccess { qr -> _state.update { it.copy(signalUrl = qr.signalUrl) } }
+            .onSuccess { qr -> onSignalUrlChange(qr.signalUrl) }
 
         viewModelScope.launch(Dispatchers.IO) {
             runDepotPairing(
                 context = getApplication(),
                 qrPayloadRaw = _state.value.payload,
                 cb = object : DepotPairingCallbacks {
+                    private fun current() = generation == linkGeneration
+
                     override fun onStatus(status: String) {
-                        pairingLog = pairingLog + status
-                        _state.update { it.copy(log = pairingLog + DepotSession.state.value.log) }
+                        linkLog = linkLog + status
+                        _state.update {
+                            it.copy(
+                                linkStatus = if (current()) status else it.linkStatus,
+                                log = linkLog + DepotSession.state.value.log,
+                            )
+                        }
                     }
 
-                    override fun onSas(sas: String, approve: () -> Unit) {
-                        this@PairingViewModel.approve = approve
+                    override fun onSas(sas: String, approve: () -> Unit, reject: () -> Unit) {
+                        if (!current()) {
+                            reject()
+                            return
+                        }
+                        this@DepotViewModel.approve = approve
+                        this@DepotViewModel.reject = reject
                         _state.update { it.copy(sas = sas) }
                     }
 
                     override fun onPaired(device: DeviceRecord) {
+                        refreshDevices()
+                        if (!current()) return
                         // The payload is single-use; leaving it on screen
                         // only invites a retry that fails as expired.
                         _state.update {
-                            it.copy(busy = false, sas = null, justPaired = device, payload = "")
+                            it.copy(linking = false, sas = null, justPaired = device, payload = "")
                         }
-                        refreshDevices()
                     }
 
                     override fun onError(message: String) {
-                        _state.update { it.copy(busy = false, sas = null, error = message) }
+                        if (!current()) return
+                        _state.update { it.copy(linking = false, sas = null, error = message) }
                     }
                 },
             )

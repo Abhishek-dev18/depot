@@ -10,26 +10,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import com.depot.app.ui.PairingScreen
-import com.depot.app.ui.QrScannerScreen
-import com.depot.app.ui.PairingViewModel
+import com.depot.app.ui.DepotApp
+import com.depot.app.ui.DepotViewModel
 import com.depot.app.ui.theme.DepotColors
 import com.depot.app.ui.theme.DepotTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: PairingViewModel by viewModels()
+    private val viewModel: DepotViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,35 +58,21 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenDocument(),
                 ) { uri -> uri?.let(viewModel::onFileSelected) }
 
-                var scanning by remember { mutableStateOf(false) }
-
-                if (scanning) {
-                    QrScannerScreen(
-                        onScanned = { payload ->
-                            scanning = false
-                            viewModel.onQrScanned(payload)
-                        },
-                        onCancel = { scanning = false },
-                    )
-                    return@DepotTheme
-                }
-
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = DepotColors.Bg,
-                ) { innerPadding ->
-                    PairingScreen(
+                Box(Modifier.fillMaxSize().background(DepotColors.Bg)) {
+                    DepotApp(
                         state = state,
-                        onPayloadChange = viewModel::onPayloadChange,
-                        onJoin = viewModel::join,
-                        onApprove = viewModel::onApprove,
-                        onRevoke = viewModel::onRevoke,
-                        onDismissResult = viewModel::dismissResult,
-                        onSignalUrlChange = viewModel::onSignalUrlChange,
                         onToggleListening = viewModel::toggleListening,
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
-                        onScanQr = { scanning = true },
-                        modifier = Modifier.padding(innerPadding),
+                        onSignalUrlChange = viewModel::onSignalUrlChange,
+                        onPayloadChange = viewModel::onPayloadChange,
+                        onLink = viewModel::link,
+                        onQrScanned = viewModel::onQrScanned,
+                        onApprove = viewModel::onApprove,
+                        onReject = viewModel::onReject,
+                        onCancelLink = viewModel::cancelLink,
+                        onDismissResult = viewModel::dismissResult,
+                        onRename = viewModel::onRename,
+                        onRevoke = viewModel::onRevoke,
                     )
                 }
             }

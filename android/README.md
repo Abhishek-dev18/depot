@@ -18,6 +18,53 @@ Compose, libsodium via lazysodium.
 | Reconnection §4 (challenge-response, renewal, revoke) | ✅ implemented |
 | WebRTC transport (§5) | ✅ implemented (sender side) |
 | Foreground service | ✅ implemented |
+| Interface, per the design spec | ✅ implemented |
+
+## Interface
+
+The screens follow the project's interface spec — the [Depot — Interface
+Design](https://claude.ai/artifact/CMxsYXcZNY8XTzkoSGYwPn) artifact — rather
+than Material defaults, and share their tokens with `web/src/index.css` so the
+phone and the browser read as one product.
+
+`ui/components/` holds the spec's CSS classes translated one for one into
+Compose (`.status-hero`, `.dev`, `.lbl`, `.cta`, `.sheet`, `.conn`), which is
+what stops the design drifting screen by screen. The screens themselves are the
+artifact's phone frames:
+
+| Frame | Where |
+|---|---|
+| HOME · DEPOT STATUS | `ui/HomeScreen.kt` |
+| SCAN · READ QR | `ui/QrScanner.kt` |
+| APPROVE · SAS CHECK | `ui/LinkFlow.kt` |
+| ACCESS · grants | the SHARED FILE section of `ui/HomeScreen.kt` |
+
+There is no tab bar because the spec has none: a Depot has one home screen, and
+scanning, approving, a device and the settings all arrive over it and then go
+away, which keeps the terminal's own state continuously in view.
+
+Four deliberate departures from the artifact, all because the app cannot yet
+honestly draw what it shows:
+
+- **The SAS is six digits, not four.** protocol.md §3.3 is the authority; the
+  treatment is the spec's.
+- **Folder grants are one file.** The transport offers a single file picked
+  through the Storage Access Framework, so a screen of folder toggles would be
+  a mock. The spec's row styling and its "everything else stays invisible"
+  framing are kept, inline on the home screen.
+- **The approval sheet does not name a city or a browser.** The artifact shows
+  "Chrome on Windows · DELHI, INDIA". At that moment the Depot genuinely knows
+  neither, and a Client could assert anything about itself. It shows the Signal
+  server the request arrived through instead, and asks for a name *after*
+  pairing — which is also why `DeviceStore.rename` exists.
+- **Reject is a real button.** Telling someone the digits might not match and
+  then offering no way to say so makes §3.4 theatre, so `onSas` now carries a
+  `reject` alongside `approve`.
+
+Space Grotesk and IBM Plex Mono are bundled in `app/src/main/res/font` rather
+than fetched, so the type is right on a device with no network and no Play
+Services — the same reason QR scanning uses bundled ML Kit. See
+[FONTS.md](FONTS.md).
 
 ## Build
 
@@ -47,6 +94,13 @@ device or emulator:
 
 ```bash
 ./gradlew connectedDebugAndroidTest
+```
+
+The formatting the interface spec calls for ("41.2 GB", "612 MB", "6h 12m",
+"0:09") is pure JVM logic and is checked without a device:
+
+```bash
+./gradlew testDebugUnitTest
 ```
 
 If they fail, fix the implementation. Only regenerate the vectors when the wire

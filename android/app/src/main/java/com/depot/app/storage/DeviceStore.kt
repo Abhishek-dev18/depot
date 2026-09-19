@@ -66,6 +66,17 @@ object DeviceStore {
         save(context, device.copy(revoked = true))
     }
 
+    /**
+     * The Client never tells the Depot what it is called. That is
+     * deliberate — a self-reported name is worth nothing, since a Client
+     * could claim to be anything — so the name is whatever the person
+     * holding the phone decides to write down.
+     */
+    fun rename(context: Context, clientIdentityPub: String, label: String) {
+        val device = get(context, clientIdentityPub) ?: return
+        save(context, device.copy(label = label.trim().ifBlank { device.label }))
+    }
+
     fun touch(context: Context, clientIdentityPub: String) {
         val device = get(context, clientIdentityPub) ?: return
         save(context, device.copy(lastSeenAt = System.currentTimeMillis()))

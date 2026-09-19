@@ -51,6 +51,12 @@ interface DepotReconnectCallbacks {
     fun onRegistered(depotId: String)
     fun onClientAuthenticated(clientId: String)
     fun onClientConnected(clientId: String, connectionType: ConnectionType)
+
+    /**
+     * The Client's transport is gone. The UI shows a live/idle dot per
+     * device, and without this it could only ever light up.
+     */
+    fun onClientDisconnected(clientId: String)
     fun onProgress(clientId: String, index: Int, total: Int, bytesSent: Long, bytesTotal: Long)
     fun onClientRejected(clientId: String, reason: String)
 }
@@ -115,7 +121,10 @@ suspend fun runDepotReconnectListener(
             // A Client that goes away releases its transport immediately
             // rather than at the next stop().
             e.type == TYPE_PEER_LEFT && clientId != null -> {
-                connections.remove(clientId)?.let { runCatching { it() } }
+                connections.remove(clientId)?.let {
+                    runCatching { it() }
+                    cb.onClientDisconnected(clientId)
+                }
             }
         }
     }
@@ -257,6 +266,9 @@ private suspend fun handleIncoming(
         runCatching {
             signal.relay(TYPE_REJECTED, JSONObject().put("reason", reason), clientId)
         }
+        // A failure part-way through leaves nothing connected, so clear any
+        // live mark this Client had from an earlier attempt.
+        cb.onClientDisconnected(clientId)
         cb.onClientRejected(clientId, reason)
     }
 }
