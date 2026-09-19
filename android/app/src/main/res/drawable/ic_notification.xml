@@ -5,11 +5,9 @@
   by the system: it needs to be a flat silhouette at 24dp, not a 108dp
   layer with a launcher's safe-zone padding around it.
 
-  Inset well within the 24dp canvas rather than filling it. Android does
-  not formally mask these, but several systems — OneUI among them — draw
-  notification icons inside a circular badge, and a mark that reaches the
-  edges loses its corners there. 14dp across puts the corners at a radius
-  of 9.9, inside a 20dp circle.
+  12dp across the 24dp canvas — corners at a radius of 8.5. Android does
+  not formally mask these, but several systems draw them inside a circular
+  badge, and the status bar shrinks them further still.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -21,16 +19,16 @@
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.2"
-        android:pathData="M7.45,5.6 H16.55 A1.85,1.85 0 0 1 18.4,7.45 V16.55 A1.85,1.85 0 0 1 16.55,18.4 H7.45 A1.85,1.85 0 0 1 5.6,16.55 V7.45 A1.85,1.85 0 0 1 7.45,5.6 Z" />
+        android:strokeWidth="1.0"
+        android:pathData="M8.07,6.5 H15.93 A1.57,1.57 0 0 1 17.5,8.07 V15.93 A1.57,1.57 0 0 1 15.93,17.5 H8.07 A1.57,1.57 0 0 1 6.5,15.93 V8.07 A1.57,1.57 0 0 1 8.07,6.5 Z" />
 
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.2"
-        android:pathData="M7.65,9.7 H16.35" />
+        android:strokeWidth="1.0"
+        android:pathData="M8.26,10.03 H15.74" />
 
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M14.3,13.85 H17.05 V16.6 H14.3 Z" />
+        android:pathData="M13.97,13.57 H16.33 V15.94 H13.97 Z" />
 </vector>
