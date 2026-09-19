@@ -5,9 +5,13 @@
   by the system: it needs to be a flat silhouette at 24dp, not a 108dp
   layer with a launcher's safe-zone padding around it.
 
-  12dp across the 24dp canvas — corners at a radius of 8.5. Android does
-  not formally mask these, but several systems draw them inside a circular
-  badge, and the status bar shrinks them further still.
+  9dp across the 24dp canvas, corners at a radius of 6.4.
+
+  That ratio is not from a specification — it is the one the launcher icon
+  was found to survive at on a real phone, 40dp of 108, applied here.
+  Everything larger was tried and clipped: 23dp of 24, then 14, then 12.
+  Whatever draws these crops well inside anything Android documents, so
+  the measured ratio is better evidence than the documented one.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -19,16 +23,16 @@
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.0"
-        android:pathData="M8.07,6.5 H15.93 A1.57,1.57 0 0 1 17.5,8.07 V15.93 A1.57,1.57 0 0 1 15.93,17.5 H8.07 A1.57,1.57 0 0 1 6.5,15.93 V8.07 A1.57,1.57 0 0 1 8.07,6.5 Z" />
+        android:strokeWidth="0.75"
+        android:pathData="M9.055,7.875 H14.945 A1.18,1.18 0 0 1 16.125,9.055 V14.945 A1.18,1.18 0 0 1 14.945,16.125 H9.055 A1.18,1.18 0 0 1 7.875,14.945 V9.055 A1.18,1.18 0 0 1 9.055,7.875 Z" />
 
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.0"
-        android:pathData="M8.26,10.03 H15.74" />
+        android:strokeWidth="0.75"
+        android:pathData="M9.2,10.52 H14.8" />
 
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M13.97,13.57 H16.33 V15.94 H13.97 Z" />
+        android:pathData="M13.48,13.18 H15.25 V14.95 H13.48 Z" />
 </vector>

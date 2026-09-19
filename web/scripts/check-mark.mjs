@@ -69,7 +69,12 @@ const cells = {
  */
 const SAFE = {
   launcher: { canvas: 108, safeDiameter: 66 },
-  notification: { canvas: 24, safeDiameter: 20 },
+  // Not Android's number. Whatever draws notification icons on a real
+  // handset crops far inside anything documented — 23dp of 24 clipped,
+  // then 14, then 12. This is the launcher's proven ratio (40 of 108)
+  // applied to a 24dp canvas, which is measured evidence rather than a
+  // specification's promise.
+  notification: { canvas: 24, safeDiameter: 14 },
 }
 
 const html = `<!doctype html><meta charset="utf-8"><style>
