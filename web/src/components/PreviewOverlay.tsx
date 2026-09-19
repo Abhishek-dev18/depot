@@ -88,6 +88,11 @@ export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
             {file.name}
           </span>
           <span className="pv-size">{formatBytes(file.size)}</span>
+          {!file.persisted && (
+            <span className="pv-note" title="Too large to keep — it will need fetching again after a reload">
+              NOT KEPT
+            </span>
+          )}
           <a className="pv-act" href={file.url} download={file.name}>
             SAVE
           </a>

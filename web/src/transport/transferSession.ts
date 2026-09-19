@@ -184,9 +184,20 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
   return { send, onMessage, waitFor, close }
 }
 
+/**
+ * Everywhere below, the wait is armed before the request goes out.
+ *
+ * Sending first and subscribing afterwards reads as equivalent and is
+ * not. `await send()` hands control back to the event loop, and an
+ * answer that arrives before the next line runs has nothing listening
+ * for it — the codec drops it, and the caller waits out its full timeout
+ * for a reply that already came and went. It is rare on a slow link and
+ * ordinary on a fast one, which is the worst way for a bug to behave.
+ */
 async function exchangeCaps(ctl: CtlCodec): Promise<CapsMessage> {
+  const reply = ctl.waitFor((m): m is CapsMessage => m.type === 'CAPS', 10_000)
   await ctl.send(OUR_CAPS)
-  return ctl.waitFor((m): m is CapsMessage => m.type === 'CAPS', 10_000)
+  return reply
 }
 
 export interface SenderEvent {
@@ -435,14 +446,15 @@ export async function openClientSession(
   await exchangeCaps(ctl)
 
   async function list(handle: string): Promise<DirEntry[]> {
-    await ctl.send({ type: 'LIST', handle })
-    const reply = await ctl.waitFor(
+    const pending = ctl.waitFor(
       // Matched on the echoed handle, so a listing cannot be mistaken for
       // the answer to a different one.
       (m): m is ListOkMessage | ErrorMessage =>
         (m.type === 'LIST_OK' && m.handle === handle) || m.type === 'ERROR',
       20_000,
     )
+    await ctl.send({ type: 'LIST', handle })
+    const reply = await pending
     if (reply.type === 'ERROR') throw new Error(reply.message)
     return reply.entries
   }
@@ -522,11 +534,17 @@ async function receiveFile(
   handle: string | undefined,
   onEvent: (e: ReceiverEvent) => void,
 ): Promise<ReceivedFile> {
-  await ctl.send({ type: 'REQUEST_FILE', handle })
-  const reply = await ctl.waitFor(
+  const pending = ctl.waitFor(
     (m): m is ManifestMessage | ErrorMessage => m.type === 'MANIFEST' || m.type === 'ERROR',
     20_000,
   )
+  await ctl.send({ type: 'REQUEST_FILE', handle })
+  const reply = await pending.catch(() => {
+    // Naming the step matters here: "timed out waiting for a control
+    // message" tells the user nothing, and this is the wait that a Depot
+    // which died mid-request leaves hanging.
+    throw new Error('the Depot did not answer the request for this file')
+  })
   if (reply.type === 'ERROR') throw new Error(reply.message)
   const manifest = reply.manifest
   onEvent({ type: 'manifest', total: manifest.chunkCount })
@@ -553,8 +571,6 @@ async function receiveFile(
   }
 
   if (needed.length > 0) {
-    await ctl.send({ type: 'NEED', transferId: manifest.transferId, indices: needed })
-
     const outstanding = new Set(needed)
     // Written in batches rather than one transaction per chunk: a
     // 600 MB file is thousands of chunks, and a transaction each would
@@ -617,6 +633,15 @@ async function receiveFile(
       }
 
       channels.data.addEventListener('message', onMessage)
+
+      // Asked for only once something is listening for the answer.
+      void ctl
+        .send({ type: 'NEED', transferId: manifest.transferId, indices: needed })
+        .catch((err: unknown) => {
+          clearTimeout(timer)
+          channels.data.removeEventListener('message', onMessage)
+          reject(err instanceof Error ? err : new Error(String(err)))
+        })
     })
   }
 

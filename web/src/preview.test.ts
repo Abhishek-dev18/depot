@@ -1,16 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isStale, type HeldFile } from './heldFiles'
 import { describePreview, retype } from './preview'
-
-const held = (over: Partial<HeldFile> = {}): HeldFile => ({
-  handle: 'h1',
-  name: 'notes.txt',
-  size: 100,
-  modifiedAt: 1000,
-  blob: new Blob(['hello']),
-  url: 'blob:x',
-  ...over,
-})
+import { keyFor } from './storage/fileCache'
 
 describe('describePreview', () => {
   it('shows images in an image element', () => {
@@ -74,34 +64,33 @@ describe('retype', () => {
   })
 })
 
-describe('isStale', () => {
-  const entry = (over: Record<string, unknown> = {}) =>
-    ({ handle: 'h1', name: 'notes.txt', kind: 'file' as const, size: 100, modifiedAt: 1000, ...over })
+describe('keyFor — what counts as the same file across sessions', () => {
+  const file = (over: Record<string, unknown> = {}) =>
+    ({ name: 'notes.txt', size: 100, modifiedAt: 1000, ...over })
 
-  it('holds on to a file the listing still agrees with', () => {
-    expect(isStale(held(), entry())).toBe(false)
+  it('matches a listing that still agrees', () => {
+    expect(keyFor(file())).toBe(keyFor(file()))
   })
 
-  it('re-fetches when the file changed underneath', () => {
-    expect(isStale(held(), entry({ size: 101 }))).toBe(true)
-    expect(isStale(held(), entry({ modifiedAt: 2000 }))).toBe(true)
+  it('does not match once the file has changed underneath', () => {
+    expect(keyFor(file({ size: 101 }))).not.toBe(keyFor(file()))
+    expect(keyFor(file({ modifiedAt: 2000 }))).not.toBe(keyFor(file()))
+    expect(keyFor(file({ name: 'other.txt' }))).not.toBe(keyFor(file()))
   })
 
-  it('keeps the held copy when the Depot says nothing to compare', () => {
-    // No size and no timestamp is not evidence of a change, and
-    // treating it as one would re-download on every single click.
-    expect(isStale(held(), entry({ size: undefined, modifiedAt: undefined }))).toBe(false)
-  })
-
-  it('uses whichever figure the Depot did report', () => {
-    expect(isStale(held(), entry({ size: undefined, modifiedAt: 2000 }))).toBe(true)
-    expect(isStale(held(), entry({ size: 99, modifiedAt: undefined }))).toBe(true)
+  it('still identifies a file the Depot says nothing about', () => {
+    // No size and no timestamp is not evidence of a change. Treating it
+    // as one would re-download on every single click, so the key holds
+    // and the preview's "fetch again" is the way out.
+    const vague = { name: 'notes.txt' }
+    expect(keyFor(vague)).toBe(keyFor({ name: 'notes.txt' }))
+    expect(keyFor(vague)).not.toBe(keyFor(file()))
   })
 
   it('does not mistake a zero for a missing figure', () => {
-    // An empty file has size 0, and `entry.size || ...` would read that
-    // as "not reported" and quietly keep the wrong bytes.
-    expect(isStale(held({ size: 100 }), entry({ size: 0 }))).toBe(true)
-    expect(isStale(held({ size: 0 }), entry({ size: 0 }))).toBe(false)
+    // An empty file has size 0, and `size || '?'` would write that as
+    // "not reported" — making every empty file look like every other.
+    expect(keyFor({ name: 'a', size: 0, modifiedAt: 5 })).not.toBe(keyFor({ name: 'a', modifiedAt: 5 }))
+    expect(keyFor({ name: 'a', size: 0, modifiedAt: 5 })).toBe(keyFor({ name: 'a', size: 0, modifiedAt: 5 }))
   })
 })

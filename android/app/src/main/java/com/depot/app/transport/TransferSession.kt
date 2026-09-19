@@ -8,6 +8,7 @@ import com.depot.app.crypto.encodeCtlFrame
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -53,11 +54,21 @@ class CtlCodec(
 
     private val sendCounter = AtomicLong(0)
     private val seen = mutableSetOf<Long>()
+    private val sendLock = Any()
 
     fun send(msg: JSONObject) {
         val plaintext = msg.toString().toByteArray(Charsets.UTF_8)
-        val frame = encodeCtlFrame(sendKey, sendDirection, sendCounter.getAndIncrement(), plaintext)
-        channel.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))
+        // Claiming the counter and writing the frame are one step.
+        // Atomic on its own only stops two senders taking the same
+        // number; it does not stop the one that took the later number
+        // finishing its encryption first and reaching the channel ahead
+        // of the earlier one. ctl is written from the coroutines that
+        // answer requests and from whichever thread picks a file, so
+        // that overtaking is not hypothetical.
+        synchronized(sendLock) {
+            val frame = encodeCtlFrame(sendKey, sendDirection, sendCounter.getAndIncrement(), plaintext)
+            channel.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))
+        }
     }
 
     /** Returns null for anything undecryptable, malformed, forged or replayed. */
@@ -97,14 +108,13 @@ class FileSender(
     private val cb: TransferCallbacks,
 ) {
     private val ctl = CtlCodec(channels.ctl, keys, isDepot = true)
-    private val transfers = mutableMapOf<Int, Pair<Manifest, ServableFile>>()
-    private var nextTransferId = 1
+    // Every ctl message is handled in its own coroutine, so everything
+    // here is touched concurrently.
+    private val transfers = java.util.concurrent.ConcurrentHashMap<Int, Pair<Manifest, ServableFile>>()
+    private val nextTransferId = java.util.concurrent.atomic.AtomicInteger(1)
     private val peerCaps = CompletableDeferred<JSONObject>()
     private val chunkSizer = AdaptiveChunkSize()
     private var sampler: Job? = null
-
-    /** Reused by skipTo when a stream declines to skip. */
-    private val scratch = ByteArray(8 * 1024)
 
     /** Installs the ctl observer and sends our CAPS. */
     fun start(onCtl: (JSONObject) -> Unit) {
@@ -129,12 +139,38 @@ class FileSender(
         }
     }
 
+    /**
+     * Nothing in here is allowed to fail quietly.
+     *
+     * Each message runs in its own coroutine, and only `source.open` was
+     * guarded — so a stream that would not open, a document the provider
+     * had stopped sharing, or anything else thrown while building a
+     * manifest or reading a chunk escaped, killed the coroutine, and sent
+     * the Client nothing at all. What the Client saw was a transfer card
+     * that never moved: it had asked for a file and no MANIFEST, no
+     * chunk and no ERROR ever came back. Reloading the page appeared to
+     * fix it because that built a whole new session.
+     *
+     * Now every path ends in either an answer or an ERROR, and the
+     * session survives to serve the next request.
+     */
     suspend fun handle(msg: JSONObject) {
-        when (msg.optString("type")) {
-            "CAPS" -> if (!peerCaps.isCompleted) peerCaps.complete(msg)
-            "LIST" -> handleList(msg)
-            "REQUEST_FILE" -> handleRequestFile(msg)
-            "NEED" -> handleNeed(msg)
+        val type = msg.optString("type")
+        try {
+            when (type) {
+                "CAPS" -> if (!peerCaps.isCompleted) peerCaps.complete(msg)
+                "LIST" -> handleList(msg)
+                "REQUEST_FILE" -> handleRequestFile(msg)
+                "NEED" -> handleNeed(msg)
+            }
+        } catch (e: CancellationException) {
+            throw e // the session is shutting down; not this Client's problem
+        } catch (e: Exception) {
+            val reason = e.message ?: e.toString()
+            runCatching {
+                ctl.send(JSONObject().put("type", "ERROR").put("message", reason))
+            }
+            cb.onError("$type failed: $reason")
         }
     }
 
@@ -160,12 +196,9 @@ class FileSender(
         // offering" — not the empty string, which is a handle the Client
         // could have sent deliberately.
         val handle = if (msg.has("handle")) msg.optString("handle") else null
-        val file = try {
-            source.open(handle)
-        } catch (e: Exception) {
-            ctl.send(JSONObject().put("type", "ERROR").put("message", e.message ?: "could not read that file"))
-            return
-        }
+        // A throw here is caught by handle(), which answers with ERROR
+        // and names the reason rather than a generic stand-in.
+        val file = source.open(handle)
         if (file == null) {
             // Deliberately the same answer for "nothing is offered" and
             // "that is not a handle I issued": a Client should not be able
@@ -173,7 +206,7 @@ class FileSender(
             ctl.send(JSONObject().put("type", "ERROR").put("message", "no such file"))
             return
         }
-        val transferId = nextTransferId++
+        val transferId = nextTransferId.getAndIncrement()
         // CAPS is exchanged before any REQUEST_FILE, but awaiting rather
         // than assuming means a reordered peer stalls instead of crashing.
         val maxChunkSize = minOf(
@@ -249,6 +282,10 @@ class FileSender(
      * the wrong place, which would corrupt every chunk after it.
      */
     private fun skipTo(stream: InputStream, from: Long, target: Long) {
+        // Allocated per call rather than shared across the class: two
+        // transfers run in two coroutines, and one buffer between them
+        // would have each reading the other's bytes.
+        val scratch = ByteArray(8 * 1024)
         var position = from
         while (position < target) {
             val remaining = target - position

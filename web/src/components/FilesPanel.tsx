@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DepotConnection } from '../pairing/clientReconnect'
 import type { DirEntry } from '../transport/transferSession'
 import { formatBytes, formatDay, nowMs } from '../format'
-import { isStale, type HeldFile } from '../heldFiles'
+import { heldFor, keyFor, type HeldFile } from '../heldFiles'
 import { describePreview } from '../preview'
+import { listCachedFiles, putCachedFile } from '../storage/fileCache'
 import { PreviewOverlay } from './PreviewOverlay'
 import { TransferCard, type TransferState } from './TransferCard'
 
@@ -49,6 +50,34 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     },
     [],
   )
+
+  // What previous visits left behind. Without this a reload throws away
+  // files that are sitting in the browser's own storage, and the user
+  // pays the phone's data to fetch them a second time.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const cached = await listCachedFiles()
+      if (cancelled || cached.length === 0) return
+      const restored = cached.map((file) => {
+        const url = URL.createObjectURL(file.blob)
+        urlsRef.current.push(url)
+        return {
+          key: file.key,
+          name: file.name,
+          size: file.size,
+          modifiedAt: file.modifiedAt,
+          blob: file.blob,
+          url,
+          persisted: true,
+        }
+      })
+      setReceived((prev) => [...restored.filter((r) => !prev.some((p) => p.key === r.key)), ...prev])
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const open = useCallback(
     async (next: DirEntry[]) => {
@@ -129,11 +158,6 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [refresh])
 
-  const heldFor = useCallback(
-    (handle: string) => received.find((file) => file.handle === handle),
-    [received],
-  )
-
   const fetchFile = useCallback(
     async (entry: DirEntry) => {
       setPending(entry.handle)
@@ -158,26 +182,40 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         })
         const url = URL.createObjectURL(file.blob)
         urlsRef.current.push(url)
+        const key = keyFor({ name: file.name, size: entry.size ?? file.size, modifiedAt: entry.modifiedAt })
+        const persisted = await putCachedFile({
+          key,
+          name: file.name,
+          size: file.size,
+          modifiedAt: entry.modifiedAt,
+          blob: file.blob,
+          receivedAt: nowMs(),
+        })
         const held: HeldFile = {
-          handle: entry.handle,
+          key,
           name: file.name,
           size: file.size,
           modifiedAt: entry.modifiedAt,
           blob: file.blob,
           url,
+          persisted,
         }
         // A re-fetch replaces the copy it supersedes rather than sitting
         // beside it: two rows with one name and different bytes is a
         // question nobody can answer from the outside.
         setReceived((prev) => {
-          const previous = prev.find((f) => f.handle === entry.handle)
+          const previous = prev.find((f) => f.key === key)
           if (previous) {
             URL.revokeObjectURL(previous.url)
             urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
           }
-          return [held, ...prev.filter((f) => f.handle !== entry.handle)]
+          return [held, ...prev.filter((f) => f.key !== key)]
         })
-        log(`${file.name} verified against the manifest and whole-file hash`)
+        log(
+          persisted
+            ? `${file.name} verified against the manifest and whole-file hash, and kept`
+            : `${file.name} verified — too large to keep, so a reload will need it again`,
+        )
       } catch (err) {
         onError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -198,30 +236,36 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
    */
   const activate = async (entry: DirEntry) => {
     if (pending) return
-    const held = heldFor(entry.handle)
-    if (held && !isStale(held, entry)) {
-      setPreviewing(held.handle)
+    const held = heldFor(received, entry)
+    if (held) {
+      setPreviewing(held.key)
       return
     }
-    if (held) log(`${entry.name} changed on the Depot since it was received — fetching again`)
     await fetchFile(entry)
   }
 
-  const refetch = async (handle: string) => {
+  /**
+   * Ask for it again anyway.
+   *
+   * The only escape from a Depot that reports neither a size nor a
+   * modification time: with nothing to compare, a changed file keeps the
+   * same key and the held copy would otherwise stand forever.
+   */
+  const refetch = async (key: string) => {
     if (pending) return
-    const held = heldFor(handle)
     setPreviewing(null)
-    // Re-read the listing first, so the copy that comes back records the
-    // Depot's current figures. Fetching against a remembered row would
-    // store the old timestamp alongside the new bytes, and the next
-    // click would find them disagreeing and fetch a third time.
-    const entry = (await refresh())?.find((e) => e.handle === handle)
-    // If the row is gone — the user navigated away, or the Depot stopped
-    // offering it — the handle alone is still enough to ask with, and
-    // what is already known about the file is the best record available.
-    await fetchFile(
-      entry ?? { handle, name: held?.name ?? '', kind: 'file', size: held?.size, modifiedAt: held?.modifiedAt },
-    )
+    // Re-read the listing first, so the copy that comes back is recorded
+    // under the Depot's current figures rather than remembered ones.
+    const listed = await refresh()
+    const entry = listed?.find((e) => e.kind === 'file' && keyFor(e) === key)
+    if (!entry) {
+      onError('that file is no longer in this listing')
+      return
+    }
+    // Dropped first, so the fetch is not short-circuited by the very copy
+    // it is meant to replace.
+    setReceived((prev) => prev.filter((f) => f.key !== key))
+    await fetchFile(entry)
   }
 
   const rate =
@@ -233,7 +277,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     onRate(rate)
   }, [rate, onRate])
 
-  const previewFile = previewing === null ? undefined : received.find((f) => f.handle === previewing)
+  const previewFile = previewing === null ? undefined : received.find((f) => f.key === previewing)
 
   return (
     <div className="wbody">
@@ -304,8 +348,8 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
             )}
             {!loading &&
               entries.map((entry) => {
-                const held = entry.kind === 'file' ? heldFor(entry.handle) : undefined
-                const current = held !== undefined && !isStale(held, entry)
+                const held = heldFor(received, entry)
+                const current = held !== undefined
                 return (
                   <button
                     key={entry.handle}
@@ -332,8 +376,8 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
             <div className="received">
               <div className="sl">RECEIVED · VERIFIED</div>
               {received.map((file) => (
-                <div key={file.handle} className="received-row">
-                  <button className="received-open" onClick={() => setPreviewing(file.handle)}>
+                <div key={file.key} className="received-row">
+                  <button className="received-open" onClick={() => setPreviewing(file.key)}>
                     <span className="received-name">{file.name}</span>
                     <span className="received-size">{formatBytes(file.size)}</span>
                     <span className="received-view">
@@ -353,7 +397,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         <PreviewOverlay
           file={previewFile}
           onClose={() => setPreviewing(null)}
-          onRefetch={() => void refetch(previewFile.handle)}
+          onRefetch={() => void refetch(previewFile.key)}
         />
       )}
       {transfer && <TransferCard transfer={transfer} />}

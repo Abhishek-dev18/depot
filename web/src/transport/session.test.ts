@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { putChunks, resetChunkCacheForTests } from '../storage/chunkCache'
+import { Direction, encodeChunkFrame, encodeCtlFrame } from './frame'
 import { buildManifest } from './manifest'
 import { cdcParamsForAvg } from './chunkSize'
 import {
@@ -264,4 +265,82 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
     session.close()
     stop()
   })
+})
+
+/**
+ * A Depot whose answers are already on the wire.
+ *
+ * The fake channel above delivers in a microtask and runs a real Depot,
+ * so every reply takes several turns to come back — which is the timing
+ * that hides this. Here each reply is encrypted up front and dispatched
+ * in the same turn as the request that triggers it, which is what a fast
+ * link does in practice.
+ *
+ * It matters most for chunks. The ctl codec decodes asynchronously, so a
+ * ctl reply still finds its subscriber by the time it is parsed; the
+ * chunk listener is attached straight to the data channel, so anything
+ * that arrives before that line runs is simply gone, `outstanding` never
+ * empties, and the transfer sits there until its two-minute timeout.
+ */
+describe('a reply that arrives in the same turn as the request', () => {
+  it('does not lose chunks written the instant NEED goes out', async () => {
+    const k = keys()
+    const file = fileOf('a.bin', 6000, 5)
+    const manifest = await buildManifest(1, file.name, file.bytes, cdcParamsForAvg(1024))
+
+    const ctl = new FakeChannel()
+    const data = new FakeChannel()
+    const channels: DataChannels = {
+      pc: { getStats: () => Promise.resolve(new Map()) } as unknown as RTCPeerConnection,
+      ctl: ctl as unknown as RTCDataChannel,
+      data: data as unknown as RTCDataChannel,
+      connectionType: 'direct',
+      close: () => {},
+    }
+
+    const ctlFrame = async (counter: number, msg: unknown) =>
+      encodeCtlFrame(
+        k.kD2C,
+        Direction.DepotToClient,
+        counter,
+        // Re-wrapped: libsodium rejects the view TextEncoder returns.
+        new Uint8Array(new TextEncoder().encode(JSON.stringify(msg))),
+      )
+
+    const caps = await ctlFrame(0, {
+      type: 'CAPS',
+      version: 1,
+      maxChunkSize: 1 << 20,
+      compression: ['deflate-raw'],
+    })
+    const manifestFrame = await ctlFrame(1, { type: 'MANIFEST', manifest })
+
+    const chunkFrames: Uint8Array[] = []
+    for (const info of manifest.chunks) {
+      chunkFrames.push(
+        await encodeChunkFrame(k.kD2C, Direction.DepotToClient, {
+          transferId: manifest.transferId,
+          chunkIndex: info.index,
+          plaintext: file.bytes.subarray(info.offset, info.offset + info.length),
+          compressed: false,
+        }),
+      )
+    }
+
+    const deliver = (channel: FakeChannel, frame: Uint8Array) =>
+      channel.dispatchEvent(new MessageEvent('message', { data: frame.slice().buffer }))
+
+    let writes = 0
+    ctl.send = () => {
+      writes++
+      if (writes === 1) deliver(ctl, caps) // answering our CAPS
+      else if (writes === 2) deliver(ctl, manifestFrame) // answering REQUEST_FILE
+      else if (writes === 3) for (const frame of chunkFrames) deliver(data, frame) // answering NEED
+    }
+
+    const session = await openClientSession(channels, k)
+    const received = await session.fetch('h1')
+    expect(received.name).toBe('a.bin')
+    expect(await bytesOf(received)).toEqual(Array.from(file.bytes))
+  }, 8000)
 })

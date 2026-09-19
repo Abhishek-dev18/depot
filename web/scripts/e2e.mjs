@@ -186,6 +186,47 @@ log('image preview:', JSON.stringify(decoded),
 await client.screenshot({ path: '/tmp/client-preview-image.png' })
 await client.keyboard.press('Escape')
 
+// --- a reload must not throw away what already arrived ---------------
+// The report: everything under RECEIVED vanished on refresh, and the
+// same bytes had to come over the phone's data a second time.
+const fetchesBeforeReload = await fetches()
+await client.reload({ waitUntil: 'networkidle' })
+await client.waitForSelector('.received-row', { timeout: 45000 })
+const survived = await client.locator('.received-row').allInnerTexts()
+log('after reload, RECEIVED holds:', JSON.stringify(survived.map((t) => t.split('\n')[0])))
+await client.waitForSelector('.ftable', { timeout: 45000 })
+await client.waitForSelector('.fr .held', { timeout: 20000 })
+log('the row is still marked HELD after a reload ✓')
+
+// And clicking it must open, not re-fetch.
+await client.locator('.fr:not(.fr-note)').first().click()
+await client.waitForSelector('.pv', { timeout: 10000 })
+const fetchesAfterReload = await fetches()
+log(
+  `clicked after reload: fetches this page = ${fetchesAfterReload}`,
+  fetchesAfterReload === 0
+    ? '✓ opened from the cache, nothing re-downloaded'
+    : '✗ WENT BACK OVER THE WIRE',
+)
+log(`(before the reload this page had done ${fetchesBeforeReload})`)
+await client.keyboard.press('Escape')
+
+// --- what the browser admits to holding ------------------------------
+await client.getByRole('button', { name: 'Settings' }).click()
+await client.waitForFunction(
+  () => {
+    const el = document.querySelector('.cache-usage')
+    return !!el && !el.textContent.includes('Reading')
+  },
+  null,
+  { timeout: 10000 },
+)
+const usage = await client.locator('.cache-usage').innerText()
+log('settings reports held files:', JSON.stringify(usage))
+await client.screenshot({ path: '/tmp/client-settings.png' })
+await client.getByRole('button', { name: 'Close' }).click()
+await client.waitForSelector('.ftable', { timeout: 10000 })
+
 // --- a pdf, the one kind that needs a frame --------------------------
 // Worth its own step: the frame carries no sandbox (see preview.ts), and
 // that decision is only defensible if it is the one that renders.
