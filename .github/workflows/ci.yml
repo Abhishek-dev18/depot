@@ -180,8 +180,45 @@ jobs:
           working-directory: android
           script: ./gradlew --no-daemon connectedDebugAndroidTest
 
+      # connectedAndroidTest reports BUILD SUCCESSFUL when it runs no
+      # tests at all, and prints nothing either way when they pass. A
+      # green tick that cannot distinguish "the vectors match" from "the
+      # vectors were never checked" is worse than no job, because it is
+      # believed. So the count is read back and has to be plausible.
+      - name: Prove the tests actually ran
+        if: always()
+        run: |
+          # Searched rather than assumed: AGP has moved this path before,
+          # and a hardcoded one that misses would read as "nothing ran".
+          mapfile -t reports < <(find android/app/build/outputs -name '*.xml' \
+            -path '*androidTest-results*' 2>/dev/null)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "::error::no instrumented test reports anywhere under android/app/build/outputs"
+            find android/app/build/outputs -maxdepth 3 -type d 2>/dev/null || true
+            exit 1
+          fi
+          printf 'report: %s\n' "${reports[@]}"
+          count() { grep -ho "$1=\"[0-9]*\"" "${reports[@]}" | grep -o '[0-9]*' | paste -sd+ | bc; }
+          total=$(count tests)
+          failures=$(count failures)
+          errors=$(count errors)
+          echo "instrumented tests: ${total:-0} run, ${failures:-0} failed, ${errors:-0} errored"
+          # The suite has five classes in it. One is a floor low enough to
+          # never be wrong about, and high enough to catch an empty run.
+          if [ "${total:-0}" -lt 1 ]; then
+            echo "::error::the emulator ran zero tests — this job proves nothing"
+            exit 1
+          fi
+          if [ "${failures:-0}" -ne 0 ] || [ "${errors:-0}" -ne 0 ]; then
+            echo "::error::instrumented tests failed"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: instrumented-test-results
-          path: android/app/build/reports/androidTests/
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+          if-no-files-found: warn
