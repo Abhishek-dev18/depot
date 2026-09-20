@@ -202,11 +202,18 @@ jobs:
           total=$(count tests)
           failures=$(count failures)
           errors=$(count errors)
-          echo "instrumented tests: ${total:-0} run, ${failures:-0} failed, ${errors:-0} errored"
-          # The suite has five classes in it. One is a floor low enough to
-          # never be wrong about, and high enough to catch an empty run.
-          if [ "${total:-0}" -lt 1 ]; then
-            echo "::error::the emulator ran zero tests — this job proves nothing"
+          # The floor is the number of @Test methods in the source, so it
+          # cannot drift: adding a test raises it, and a run that quietly
+          # executes fewer than were written fails rather than passing on
+          # a subset. A bare "more than zero" would have been satisfied by
+          # one test out of thirty-three.
+          expected=$(grep -rho '@Test' android/app/src/androidTest --include='*.kt' | wc -l)
+          summary="instrumented tests: ${total:-0} run of $expected written, ${failures:-0} failed, ${errors:-0} errored"
+          echo "$summary"
+          echo "::notice::$summary"
+          echo "- $summary" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${total:-0}" -lt "$expected" ]; then
+            echo "::error::only ${total:-0} of $expected written tests ran — something was skipped"
             exit 1
           fi
           if [ "${failures:-0}" -ne 0 ] || [ "${errors:-0}" -ne 0 ]; then
