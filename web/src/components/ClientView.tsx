@@ -127,7 +127,7 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     const timer = setTimeout(() => {
       void connect(depotId)
     }, 4000)
-    return () => clearTimeout(timer)
+      return () => clearTimeout(timer)
   }, [offline, session, attempts, pairings, connect])
 
   /**
@@ -201,6 +201,22 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
 
   const pairing = pairings[0]
 
+  /*
+   * Memoised because FilesPanel lists it as an effect dependency, and
+   * that effect resets the breadcrumb to the root. An inline arrow here
+   * is a new function every render, so a progress tick or a log line
+   * would throw whoever was browsing back out of the folder they were
+   * in. Stable identity is part of this component's contract, not a
+   * micro-optimisation.
+   */
+  const reportFileError = useCallback(
+    (message: string) => {
+      push(`error: ${message}`)
+      setFailure(message)
+    },
+    [push],
+  )
+
   return (
     <div className="client-shell">
       <ClientNav
@@ -234,10 +250,7 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
           session={session}
           depotLabel={depotLabelFor(session.depotId, pairing?.depotLabel)}
           onSettings={onOpenSettings}
-          onError={(message) => {
-            push(`error: ${message}`)
-            setFailure(message)
-          }}
+          onError={reportFileError}
           log={push}
           onRate={setRate}
         />

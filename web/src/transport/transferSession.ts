@@ -4,7 +4,8 @@ import { cachedChunks, dropChunks, getChunk, putChunks } from '../storage/chunkC
 import { AdaptiveChunkSize, cdcParamsForAvg, sampleNetwork } from './chunkSize'
 import { compress, decompress, shouldCompress } from './compression'
 import { Direction, decodeChunkFrame, decodeCtlFrame, encodeChunkFrame, encodeCtlFrame } from './frame'
-import { buildManifest, hashBytes, type Manifest } from './manifest'
+import { buildManifest, hashBytes, type ChunkInfo, type Manifest } from './manifest'
+import { validateManifest, validateUploadName } from './validate'
 import type { DataChannels } from './webrtc'
 
 export interface SessionKeys {
@@ -45,6 +46,13 @@ export interface DirEntry {
    * Client reading only extensions calls those files unpreviewable.
    */
   mime?: string
+  /**
+   * §5.10 — directories only, and absent means no. It tells a Client
+   * where an upload will be accepted so it can offer that and nothing
+   * else. Not an authorisation: the Depot checks the grant again when
+   * the PUT arrives.
+   */
+  writable?: boolean
 }
 
 interface ListMessage {
@@ -61,6 +69,33 @@ interface ListOkMessage {
 /** protocol.md §5.9 — "what you were told is out of date; ask again". */
 interface SharedChangedMessage {
   type: 'SHARED_CHANGED'
+}
+
+/** protocol.md §5.10 — the Client offers a file for a writable directory. */
+interface PutMessage {
+  type: 'PUT'
+  /** A directory handle the Depot minted. The Client still names no location. */
+  handle: string
+  name: string
+  size: number
+  chunkCount: number
+  chunks: ChunkInfo[]
+  fileHash: string
+  mime?: string
+}
+
+/** The Depot accepts, and says which chunks it still wants. */
+interface PutOkMessage {
+  type: 'PUT_OK'
+  uploadId: number
+  need: number[]
+}
+
+/** Written and verified. `name` is what it ended up called. */
+interface PutDoneMessage {
+  type: 'PUT_DONE'
+  uploadId: number
+  name: string
 }
 
 interface ManifestMessage {
@@ -87,6 +122,9 @@ type CtlMessage =
   | SharedChangedMessage
   | ManifestMessage
   | NeedMessage
+  | PutMessage
+  | PutOkMessage
+  | PutDoneMessage
   | ErrorMessage
 
 const OUR_CAPS: CapsMessage = {
@@ -94,7 +132,7 @@ const OUR_CAPS: CapsMessage = {
   protocolVersion: 1,
   compression: ['deflate', 'none'],
   maxChunkSize: 1024 * 1024,
-  features: ['cdc', 'browse'],
+  features: ['cdc', 'browse', 'upload'],
 }
 
 // The ASCII-only utf8() in crypto/transcript.ts cannot carry a file name.
@@ -232,6 +270,39 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
  * for a reply that already came and went. It is rare on a slow link and
  * ordinary on a fast one, which is the worst way for a bug to behave.
  */
+/**
+ * Waiting for the channel to drink what it has been given.
+ *
+ * SCTP will buffer without complaint until the browser gives up and
+ * closes the connection, which is what sending a large file as fast as
+ * the loop can encrypt it produces. The `bufferedamountlow` event is the
+ * cheap way to wait; the timeout behind it is there because a channel
+ * that dies mid-send never fires it.
+ */
+const BUFFER_HIGH_WATER = 4 * 1024 * 1024
+const BUFFER_LOW_WATER = 1 * 1024 * 1024
+
+async function waitForDrain(data: RTCDataChannel): Promise<void> {
+  // A channel that does not report buffering is not buffering. Reading
+  // `undefined < high` as "keep waiting" makes every send wait out the
+  // timeout below, which turns a transfer into a stall — and the fake
+  // channel the tests run on is exactly such a channel.
+  const buffered = typeof data.bufferedAmount === 'number' ? data.bufferedAmount : 0
+  if (buffered < BUFFER_HIGH_WATER) return
+  data.bufferedAmountLowThreshold = BUFFER_LOW_WATER
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      data.removeEventListener('bufferedamountlow', done)
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(done, 5_000)
+    data.addEventListener('bufferedamountlow', done)
+    // It may already have drained between the check and the listener.
+    if ((data.bufferedAmount ?? 0) <= BUFFER_LOW_WATER) done()
+  })
+}
+
 async function exchangeCaps(ctl: CtlCodec): Promise<CapsMessage> {
   const reply = ctl.waitFor((m): m is CapsMessage => m.type === 'CAPS', 10_000)
   await ctl.send(OUR_CAPS)
@@ -239,13 +310,24 @@ async function exchangeCaps(ctl: CtlCodec): Promise<CapsMessage> {
 }
 
 export interface SenderEvent {
-  type: 'manifest-sent' | 'chunk-sent' | 'error'
+  type:
+    | 'manifest-sent'
+    | 'chunk-sent'
+    | 'error'
+    // §5.10, the direction that writes.
+    | 'upload-started'
+    | 'upload-chunk'
+    | 'upload-stored'
   transferId?: number
+  uploadId?: number
   index?: number
   total?: number
   bytesSent?: number
   bytesTotal?: number
+  bytesReceived?: number
   message?: string
+  /** On 'upload-stored': what it was actually called. */
+  name?: string
 }
 
 export interface OfferedFile {
@@ -264,9 +346,23 @@ export interface OfferedFile {
  * anything they did not mint, which is the whole of the access control:
  * the Client never names a location, so there is no path to traverse.
  */
+/** Where an upload is allowed to land (protocol.md §5.10). */
+export interface WritableTarget {
+  /** A name that is free, which is how "never overwrite" is enforced. */
+  reserve: (name: string) => Promise<string> | string
+  /** Called once the whole file has been verified, never before. */
+  store: (name: string, bytes: Uint8Array, mime?: string) => Promise<void> | void
+}
+
 export interface DepotSource {
   list: (handle: string) => Promise<DirEntry[]> | DirEntry[]
   open: (handle: string | undefined) => Promise<OfferedFile | null> | OfferedFile | null
+  /**
+   * §5.10 — null means this handle is not a directory the user marked
+   * writable, which is the default and the answer for every Depot that
+   * does not accept uploads at all.
+   */
+  writable?: (handle: string) => Promise<WritableTarget | null> | WritableTarget | null
 }
 
 /**
@@ -274,7 +370,48 @@ export interface DepotSource {
  * simulator has: one root listing with one row in it. The real Depot is
  * the Android app, and it lists granted folders.
  */
-export function singleFileSource(getFile: () => OfferedFile | null): DepotSource {
+/**
+ * An in-memory folder the simulator will accept uploads into.
+ *
+ * The real Depot writes through SAF into a folder the user granted and
+ * marked writable; this is the same shape with a Map behind it, so §5.10
+ * is exercisable in two browser tabs rather than only on a handset.
+ */
+export function memoryInbox(
+  /** Handed the contents, so a caller need not reach back for them. */
+  onChange: (files: Map<string, { bytes: Uint8Array; at: number }>) => void = () => {},
+) {
+  const files = new Map<string, { bytes: Uint8Array; at: number }>()
+  const target: WritableTarget = {
+    reserve(name) {
+      if (!files.has(name)) return name
+      const dot = name.lastIndexOf('.')
+      const stem = dot <= 0 ? name : name.slice(0, dot)
+      const ext = dot <= 0 ? '' : name.slice(dot)
+      for (let n = 1; ; n++) {
+        const candidate = `${stem} (${n})${ext}`
+        if (!files.has(candidate)) return candidate
+      }
+    },
+    store(name, bytes) {
+      files.set(name, { bytes, at: Date.now() })
+      onChange(files)
+    },
+  }
+  return { files, target }
+}
+
+const INBOX_HANDLE = 'inbox'
+
+export function singleFileSource(
+  getFile: () => OfferedFile | null,
+  /**
+   * Absent means this Depot accepts nothing, which is the default the
+   * protocol asks for: granting a folder to read from is not consent to
+   * have things put in it.
+   */
+  inbox: ReturnType<typeof memoryInbox> | null = null,
+): DepotSource {
   /*
    * The handle names the file, not the slot it sits in.
    *
@@ -292,14 +429,47 @@ export function singleFileSource(getFile: () => OfferedFile | null): DepotSource
   const handleFor = (file: OfferedFile) => `offered:${file.bytes.length}:${file.name}`
   return {
     list: (handle) => {
+      if (handle === INBOX_HANDLE && inbox) {
+        return [...inbox.files.entries()].map(([name, entry]) => ({
+          handle: `inbox:${entry.bytes.length}:${name}`,
+          name,
+          kind: 'file' as const,
+          size: entry.bytes.length,
+          modifiedAt: entry.at,
+        }))
+      }
       if (handle !== '') return []
+      const rows: DirEntry[] = []
+      if (inbox) {
+        rows.push({
+          handle: INBOX_HANDLE,
+          name: 'Inbox',
+          kind: 'dir',
+          count: inbox.files.size,
+          writable: true,
+        })
+      }
       const file = getFile()
-      if (!file) return []
-      return [
-        { handle: handleFor(file), name: file.name, kind: 'file', size: file.bytes.length, mime: file.mime },
-      ]
+      if (file) {
+        rows.push({
+          handle: handleFor(file),
+          name: file.name,
+          kind: 'file',
+          size: file.bytes.length,
+          mime: file.mime,
+        })
+      }
+      return rows
     },
+    writable: (handle) => (handle === INBOX_HANDLE ? (inbox?.target ?? null) : null),
     open: (handle) => {
+      // Anything that landed in the inbox can be fetched back out of it,
+      // which is what makes the round trip checkable end to end.
+      if (inbox && handle?.startsWith('inbox:')) {
+        const name = handle.slice(handle.indexOf(':', 'inbox:'.length) + 1)
+        const entry = inbox.files.get(name)
+        return entry ? { name, bytes: entry.bytes } : null
+      }
       const file = getFile()
       if (!file) return null
       // undefined is §5.9's "whatever you are currently offering".
@@ -353,6 +523,194 @@ export async function runFileSender(
   const peerCaps = await exchangeCaps(ctl)
   maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize)
 
+  /** In-flight uploads, by the id this Depot issued. */
+  const uploads = new Map<
+    number,
+    {
+      manifest: Manifest
+      target: WritableTarget
+      reserved: string
+      have: Map<number, Uint8Array>
+      outstanding: Set<number>
+      /** Reset by each chunk that lands; firing abandons the upload. */
+      stall: ReturnType<typeof setTimeout>
+    }
+  >()
+  let nextUploadId = 1
+
+  /**
+   * How long an upload may go without progress before it is abandoned.
+   *
+   * A chunk that fails its hash is dropped, which is right — but if
+   * every chunk fails, dropping them silently leaves the Client holding
+   * a progress bar until its own timeout, with nothing said. That is the
+   * same silence this protocol has been bitten by before, so the Depot
+   * says what happened instead of waiting to be asked.
+   */
+  const UPLOAD_STALL_MS = Number(
+    // Overridable so the test for it does not wait half a minute.
+    (globalThis as { DEPOT_UPLOAD_STALL_MS?: number }).DEPOT_UPLOAD_STALL_MS ?? 30_000,
+  )
+
+  function abandonUpload(uploadId: number, why: string): void {
+    const entry = uploads.get(uploadId)
+    if (!entry) return
+    clearTimeout(entry.stall)
+    uploads.delete(uploadId)
+    void ctl.send({ type: 'ERROR', message: why }).catch(() => {})
+    onEvent({ type: 'error', uploadId, message: why })
+  }
+
+  function touchUpload(uploadId: number): void {
+    const entry = uploads.get(uploadId)
+    if (!entry) return
+    clearTimeout(entry.stall)
+    entry.stall = setTimeout(() => {
+      const still = uploads.get(uploadId)
+      const missing = still ? still.outstanding.size : 0
+      abandonUpload(
+        uploadId,
+        `the upload stopped making progress with ${missing} chunk(s) still missing — ` +
+          'chunks that fail their hash are dropped, so this usually means the file changed while it was being sent',
+      )
+    }, UPLOAD_STALL_MS)
+  }
+
+  /**
+   * protocol.md §5.10. Every refusal here is one of the numbered rules,
+   * and the order matters: consent is checked before anything is read
+   * from the message, so a Client cannot learn whether a name is taken
+   * in a directory it was never allowed to write to.
+   */
+  async function handlePut(msg: PutMessage): Promise<void> {
+    const target = (await source.writable?.(msg.handle)) ?? null
+    if (!target) {
+      // Rules 1 and 2 give the same answer deliberately: "not a handle"
+      // and "not writable" must not be distinguishable.
+      await ctl.send({ type: 'ERROR', message: 'that is not somewhere this Depot accepts files' })
+      return
+    }
+
+    let manifest: Manifest
+    let name: string
+    try {
+      name = validateUploadName(msg.name)
+      manifest = validateManifest(
+        {
+          transferId: 0,
+          name,
+          size: msg.size,
+          chunkCount: msg.chunkCount,
+          chunks: msg.chunks,
+          fileHash: msg.fileHash,
+        },
+        maxChunkSize,
+      )
+    } catch (err) {
+      await ctl.send({ type: 'ERROR', message: err instanceof Error ? err.message : String(err) })
+      return
+    }
+
+    // Reserved before a byte arrives, so two uploads racing for one name
+    // cannot both believe they have it.
+    const reserved = await target.reserve(name)
+    const uploadId = nextUploadId++
+    const outstanding = new Set(manifest.chunks.map((c) => c.index))
+
+    uploads.set(uploadId, {
+      manifest,
+      target,
+      reserved,
+      have: new Map<number, Uint8Array>(),
+      outstanding,
+      stall: setTimeout(() => {}, 0),
+    })
+    touchUpload(uploadId)
+
+    await ctl.send({ type: 'PUT_OK', uploadId, need: [...outstanding] })
+    onEvent({ type: 'upload-started', uploadId, total: manifest.chunkCount })
+
+    if (outstanding.size === 0) await finishUpload(uploadId)
+  }
+
+  /** Verified whole before it is published — never a plausible partial. */
+  async function finishUpload(uploadId: number): Promise<void> {
+    const entry = uploads.get(uploadId)
+    if (!entry) return
+    clearTimeout(entry.stall)
+    uploads.delete(uploadId)
+
+    const parts: Uint8Array[] = []
+    let total = 0
+    for (const info of entry.manifest.chunks) {
+      const chunk = entry.have.get(info.index)
+      if (!chunk) {
+        await ctl.send({ type: 'ERROR', message: `chunk ${info.index} never arrived` })
+        return
+      }
+      parts.push(chunk)
+      total += chunk.length
+    }
+
+    const joined = new Uint8Array(total)
+    let at = 0
+    for (const part of parts) {
+      joined.set(part, at)
+      at += part.length
+    }
+
+    if ((await hashBytes(joined)) !== entry.manifest.fileHash) {
+      await ctl.send({ type: 'ERROR', message: 'the whole-file hash did not match; nothing was written' })
+      return
+    }
+
+    await entry.target.store(entry.reserved, joined)
+    await ctl.send({ type: 'PUT_DONE', uploadId, name: entry.reserved })
+    onEvent({ type: 'upload-stored', uploadId, name: entry.reserved })
+  }
+
+  /**
+   * Uploaded chunks, on the same channel served ones go out on.
+   *
+   * One standing listener rather than one per upload: the channel is the
+   * session's, and a listener installed per transfer is how the receive
+   * path once lost chunks that arrived before it was ready.
+   */
+  const onUploadChunk = (ev: MessageEvent) => {
+    void (async () => {
+      try {
+        const raw = new Uint8Array(ev.data as ArrayBuffer)
+        const decoded = await decodeChunkFrame(keys.kC2D, Direction.ClientToDepot, raw)
+        const entry = uploads.get(decoded.transferId)
+        if (!entry || !entry.outstanding.has(decoded.chunkIndex)) return
+
+        const info = entry.manifest.chunks[decoded.chunkIndex]
+        if (!info) return
+        const plaintext = decoded.compressed ? await decompress(decoded.plaintext) : decoded.plaintext
+        // Checked as it arrives, so a corrupt chunk is dropped rather
+        // than written and discovered at the end.
+        if ((await hashBytes(plaintext)) !== info.hash) return
+
+        entry.outstanding.delete(decoded.chunkIndex)
+        entry.have.set(decoded.chunkIndex, plaintext)
+        touchUpload(decoded.transferId)
+        onEvent({
+          type: 'upload-chunk',
+          uploadId: decoded.transferId,
+          index: decoded.chunkIndex,
+          total: entry.manifest.chunkCount,
+          bytesReceived: [...entry.have.values()].reduce((n, c) => n + c.length, 0),
+          bytesTotal: entry.manifest.size,
+        })
+        if (entry.outstanding.size === 0) await finishUpload(decoded.transferId)
+      } catch {
+        // Undecryptable or malformed: there is no legitimate sender for
+        // such a frame, and the upload simply does not complete.
+      }
+    })()
+  }
+  channels.data.addEventListener('message', onUploadChunk)
+
   async function handleCtl(msg: CtlMessage): Promise<void> {
     if (msg.type === 'LIST') {
       try {
@@ -390,6 +748,11 @@ export async function runFileSender(
       return
     }
 
+    if (msg.type === 'PUT') {
+      await handlePut(msg)
+      return
+    }
+
     if (msg.type === 'NEED') {
       const entry = transfers.get(msg.transferId)
       if (!entry) return
@@ -415,6 +778,7 @@ export async function runFileSender(
           plaintext: payload,
           compressed,
         })
+        await waitForDrain(channels.data)
         channels.data.send(new Uint8Array(frame)) // fresh ArrayBuffer-backed copy — RTCDataChannel.send()'s stricter typed-array generic wants it
         bytesSent += info.length
         onEvent({
@@ -438,6 +802,11 @@ export async function runFileSender(
     stop: () => {
       clearInterval(statsTimer)
       unsubscribe()
+      channels.data.removeEventListener('message', onUploadChunk)
+      // Half-received uploads are dropped rather than written: §5.10
+      // publishes nothing that has not been verified whole.
+      for (const entry of uploads.values()) clearTimeout(entry.stall)
+      uploads.clear()
       ctl.close()
     },
   }
@@ -472,9 +841,31 @@ export interface ReceivedFile {
  * so the codec, and the CAPS exchange that configures it, now belong to
  * the session rather than to a single fetch.
  */
+/** What a Client learns while pushing a file up (§5.10). */
+export interface SendEvent {
+  type: 'manifest-built' | 'accepted' | 'chunk-sent' | 'stored'
+  index?: number
+  total?: number
+  bytesSent?: number
+  bytesTotal?: number
+  /** On 'stored': what the Depot actually called it. */
+  name?: string
+}
+
 export interface ClientSession {
   list: (handle: string) => Promise<DirEntry[]>
   fetch: (handle: string | undefined, onEvent?: (e: ReceiverEvent) => void) => Promise<ReceivedFile>
+
+  /**
+   * protocol.md §5.10 — offer a file to a directory the Depot said is
+   * writable. Resolves with the name it was stored under, which is not
+   * always the name asked for: a Depot never overwrites.
+   */
+  send: (
+    handle: string,
+    file: { name: string; bytes: Uint8Array; mime?: string },
+    onEvent?: (e: SendEvent) => void,
+  ) => Promise<string>
 
   /** The Depot says its shared set changed (§5.9). Returns an unsubscribe. */
   onChanged: (handler: () => void) => () => void
@@ -496,7 +887,11 @@ export async function openClientSession(
   keys: SessionKeys,
 ): Promise<ClientSession> {
   const ctl = createCtlCodec(channels, keys, 'client')
-  await exchangeCaps(ctl)
+  const peerCaps = await exchangeCaps(ctl)
+  // §5.4: the smaller of the two, and the figure a manifest is checked
+  // against. A Depot is free to send smaller chunks; one larger than
+  // this is a disagreement about a number both sides just settled.
+  const negotiatedChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize || OUR_CAPS.maxChunkSize)
 
   async function list(handle: string): Promise<DirEntry[]> {
     const pending = ctl.waitFor(
@@ -516,7 +911,7 @@ export async function openClientSession(
     handle: string | undefined,
     onEvent: (e: ReceiverEvent) => void = () => {},
   ): Promise<ReceivedFile> {
-    return receiveFile(channels, keys, ctl, handle, onEvent)
+    return receiveFile(channels, keys, ctl, handle, onEvent, negotiatedChunkSize)
   }
 
   function onChanged(handler: () => void): () => void {
@@ -568,9 +963,92 @@ export async function openClientSession(
     }
   }
 
+  /**
+   * §5.10, and deliberately the mirror of receiveFile: the Client builds
+   * the manifest, the Depot says which chunks it wants, and only chunks
+   * it asked for are sent. A Depot that already holds some of them — a
+   * retried upload — asks for fewer, and the transfer resumes.
+   */
+  async function send(
+    handle: string,
+    file: { name: string; bytes: Uint8Array; mime?: string },
+    onEvent: (e: SendEvent) => void = () => {},
+  ): Promise<string> {
+    const name = validateUploadName(file.name)
+    const manifest = await buildManifest(0, name, file.bytes, cdcParamsForAvg(negotiatedChunkSize))
+    onEvent({ type: 'manifest-built', total: manifest.chunkCount })
+
+    const accepted = ctl.waitFor(
+      (m): m is PutOkMessage | ErrorMessage => m.type === 'PUT_OK' || m.type === 'ERROR',
+      30_000,
+    )
+    await ctl.send({
+      type: 'PUT',
+      handle,
+      name,
+      size: file.bytes.length,
+      chunkCount: manifest.chunkCount,
+      chunks: manifest.chunks,
+      fileHash: manifest.fileHash,
+      mime: file.mime,
+    })
+    const reply = await accepted
+    if (reply.type === 'ERROR') throw new Error(reply.message)
+    onEvent({ type: 'accepted', total: reply.need.length })
+
+    // Armed before the last chunk goes out, for the reason the receive
+    // path documents: an answer that beats the subscribe is lost.
+    const stored = ctl.waitFor(
+      (m): m is PutDoneMessage | ErrorMessage =>
+        (m.type === 'PUT_DONE' && m.uploadId === reply.uploadId) || m.type === 'ERROR',
+      120_000,
+    )
+
+    let bytesSent = 0
+    for (const index of reply.need) {
+      const info = manifest.chunks[index]
+      if (!info) continue
+      const plaintext = file.bytes.subarray(info.offset, info.offset + info.length)
+
+      let payload = plaintext
+      let compressed = false
+      if (shouldCompress(plaintext)) {
+        const packed = await compress(plaintext)
+        if (packed.length < plaintext.length) {
+          payload = packed
+          compressed = true
+        }
+      }
+
+      const frame = await encodeChunkFrame(keys.kC2D, Direction.ClientToDepot, {
+        transferId: reply.uploadId,
+        chunkIndex: index,
+        plaintext: payload,
+        compressed,
+      })
+      await waitForDrain(channels.data)
+      channels.data.send(new Uint8Array(frame))
+
+      bytesSent += info.length
+      onEvent({
+        type: 'chunk-sent',
+        index,
+        total: manifest.chunkCount,
+        bytesSent,
+        bytesTotal: manifest.size,
+      })
+    }
+
+    const done = await stored
+    if (done.type === 'ERROR') throw new Error(done.message)
+    onEvent({ type: 'stored', name: done.name })
+    return done.name
+  }
+
   return {
     list,
     fetch,
+    send,
     onChanged,
     onClosed,
     close: () => {
@@ -586,6 +1064,7 @@ async function receiveFile(
   ctl: CtlCodec,
   handle: string | undefined,
   onEvent: (e: ReceiverEvent) => void,
+  maxChunkSize: number,
 ): Promise<ReceivedFile> {
   const pending = ctl.waitFor(
     (m): m is ManifestMessage | ErrorMessage => m.type === 'MANIFEST' || m.type === 'ERROR',
@@ -599,7 +1078,9 @@ async function receiveFile(
     throw new Error('the Depot did not answer the request for this file')
   })
   if (reply.type === 'ERROR') throw new Error(reply.message)
-  const manifest = reply.manifest
+  // Checked before anything acts on it — see validate.ts for why a bad
+  // manifest would otherwise surface as a hang rather than an error.
+  const manifest = validateManifest(reply.manifest, maxChunkSize)
   onEvent({ type: 'manifest', total: manifest.chunkCount })
 
   // §5.7 step 3, and the whole of resumption: ask only for what is

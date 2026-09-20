@@ -16,7 +16,7 @@
  * edit, which is a good way to believe you have fixed something you have
  * not.
  */
-import { chromium } from 'playwright'
+import { launchChromium } from './browser.mjs'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -98,10 +98,7 @@ ${rule('wmark')}
 const file = `${tmpdir()}/depot-mark.html`
 writeFileSync(file, html)
 
-const browser = await chromium.launch({
-  executablePath: process.env.CHROME ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-  args: ['--no-sandbox'],
-})
+const browser = await launchChromium()
 const tab = await browser.newPage({ viewport: { width: 200, height: 1200 } })
 await tab.goto('file://' + file)
 await tab.waitForTimeout(300)

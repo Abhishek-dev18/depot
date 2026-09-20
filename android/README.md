@@ -161,3 +161,61 @@ format is deliberately changing, and then update both sides together:
 ```bash
 cd ../web && REGEN_VECTORS=1 npx vitest run src/crypto/vectors.test.ts
 ```
+
+## Releasing
+
+A tag builds and publishes the APK:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` builds it, names it after the tag, writes a
+`.sha256` beside it, and opens a **draft** release — draft so the artifact can be
+checked before anyone can download it.
+
+### Signing
+
+The build reads its signing material from `keystore.properties` at the repository
+root locally, or from the environment in CI. With neither, the release build is
+simply unsigned: `assembleRelease` still works, so the shrinker and the manifest
+can be checked without anyone being handed a key.
+
+Generate a keystore once:
+
+```bash
+keytool -genkeypair -v -keystore depot-release.jks \
+  -keyalg RSA -keysize 4096 -validity 10000 -alias depot
+```
+
+Keep it somewhere you will still have it in two years. Android identifies an app
+by its signature, so **losing this key means never being able to update an
+installed app again** — every existing install becomes a dead end, and the only
+way forward is a new application id and a fresh set of users.
+
+Locally, `keystore.properties` (gitignored, and so is `*.jks`):
+
+```properties
+storeFile=/absolute/path/to/depot-release.jks
+storePassword=…
+keyAlias=depot
+keyPassword=…
+```
+
+In CI, four repository secrets:
+
+| Secret | What |
+|---|---|
+| `DEPOT_KEYSTORE_BASE64` | `base64 -w0 depot-release.jks` |
+| `DEPOT_KEYSTORE_PASSWORD` | the store password |
+| `DEPOT_KEY_ALIAS` | `depot` |
+| `DEPOT_KEY_PASSWORD` | the key password |
+
+The workflow writes the keystore to the runner's temp directory rather than the
+checkout, so no later step can archive it by accident.
+
+### Versions
+
+`versionName` comes from the tag. `versionCode` is the commit count, which is
+monotonic and derived — two builds of the same commit agree, and a later commit
+always outranks an earlier one, which is what Android requires of an update.

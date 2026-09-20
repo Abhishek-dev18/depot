@@ -37,6 +37,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const [pending, setPending] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState<string | null>(null)
   // The refusal dialog for a file too large to draw in a tab.
+  const [uploading, setUploading] = useState<TransferState | null>(null)
   const [refused, setRefused] = useState<{ title: string; body: string; action?: { label: string; onClick: () => void } } | null>(null)
 
   // The refresh callbacks fire from outside React and must not capture a
@@ -101,9 +102,20 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     [session, onError],
   )
 
-  // The first listing is deliberately not routed through open(): an
-  // effect must not set state synchronously, and it should drop its result
-  // if the component goes away mid-request.
+  /*
+   * The first listing, once per session.
+   *
+   * Deliberately not routed through open(): an effect must not set state
+   * synchronously, and it should drop its result if the component goes
+   * away mid-request.
+   *
+   * Its dependencies must all be stable, which is why ClientView hands
+   * this component memoised callbacks. They were not, and re-running
+   * this effect calls setTrail([]) — so it was silently a "go back to
+   * the root" button wired to anything that caused a render: a progress
+   * tick, a log line, an upload finishing. Invisible until there was a
+   * folder to be thrown out of.
+   */
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -316,6 +328,51 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     await fetchFile(entry)
   }
 
+  /**
+   * §5.10 — the one direction that writes.
+   *
+   * Offered only where the Depot said `writable`, which is a statement
+   * of intent and not an authorisation: the Depot checks the grant again
+   * when the PUT lands, so the worst this can do is ask and be refused.
+   */
+  const uploadHere = trail.length > 0 && trail[trail.length - 1].writable === true
+  const destination = uploadHere ? trail[trail.length - 1] : undefined
+
+  const upload = async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file || !destination || pending || uploading) return
+    const startedAt = nowMs()
+    setUploading({ name: file.name, bytesReceived: 0, bytesTotal: file.size, startedAt, updatedAt: startedAt })
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const stored = await session.send(
+        destination.handle,
+        { name: file.name, bytes, mime: file.type || undefined },
+        (e) => {
+          if (e.type === 'chunk-sent') {
+            setUploading((prev) =>
+              prev === null
+                ? prev
+                : { ...prev, bytesReceived: e.bytesSent ?? prev.bytesReceived, updatedAt: nowMs() },
+            )
+          }
+        },
+      )
+      // A Depot never overwrites, so what it stored may not be what was
+      // asked for. Saying so beats letting someone find out later.
+      log(
+        stored === file.name
+          ? `${stored} sent to ${destination.name}`
+          : `sent to ${destination.name} as ${stored} — that name was taken`,
+      )
+      await refresh()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploading(null)
+    }
+  }
+
   const rate =
     transfer && transfer.updatedAt > transfer.startedAt
       ? (transfer.bytesReceived * 1000) / (transfer.updatedAt - transfer.startedAt)
@@ -379,6 +436,24 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
               </span>
             ))}
           </div>
+
+          {uploadHere && (
+            <div className="uprow">
+              <label className={uploading ? 'upbtn busy' : 'upbtn'}>
+                <input
+                  type="file"
+                  disabled={uploading !== null || pending !== null}
+                  onChange={(e) => {
+                    void upload(e.target.files)
+                    // Cleared so the same file can be picked twice.
+                    e.target.value = ''
+                  }}
+                />
+                {uploading ? `SENDING ${uploading.name}` : `SEND A FILE TO ${destination?.name.toUpperCase()}`}
+              </label>
+              <span className="uphint">This folder accepts files. Nothing is overwritten.</span>
+            </div>
+          )}
 
           <div className="ftable">
             <div className="fh">
@@ -502,6 +577,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         />
       )}
       {transfer && <TransferCard transfer={transfer} />}
+      {uploading && <TransferCard transfer={uploading} direction="up" />}
     </div>
   )
 }

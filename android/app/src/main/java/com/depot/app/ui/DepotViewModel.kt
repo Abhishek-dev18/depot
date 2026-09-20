@@ -205,6 +205,20 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * protocol.md §5.10. A separate decision from sharing, and the one
+     * that lets a paired device write. Connected Clients are told, so a
+     * folder that just became writable starts offering the control
+     * without anyone reloading anything.
+     */
+    fun onToggleGrantWritable(view: GrantView, writable: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            GrantStore.setWritable(getApplication(), view.grant.treeUri, writable)
+            DepotSession.notifySharedChanged()
+            refreshGrants()
+        }
+    }
+
     fun onForgetGrant(view: GrantView) {
         viewModelScope.launch(Dispatchers.IO) {
             GrantStore.remove(getApplication(), view.grant.treeUri)

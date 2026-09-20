@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLog } from '../hooks/useLog'
 import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
-import { singleFileSource, type OfferedFile } from '../transport/transferSession'
+import { memoryInbox, singleFileSource, type OfferedFile } from '../transport/transferSession'
 import type { ConnectionType, TurnConfig } from '../transport/webrtc'
 import { Badge } from './Badge'
 import { Card } from './Card'
@@ -30,6 +30,18 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
   const listenerRef = useRef<DepotReconnectListener | null>(null)
   const [offeredFile, setOfferedFile] = useState<{ name: string; size: number } | null>(null)
   const offeredFileRef = useRef<OfferedFile | null>(null)
+
+  // §5.10 — a folder this simulated Depot will accept uploads into, so
+  // the direction that writes is exercisable in two browser tabs.
+  const [inboxNames, setInboxNames] = useState<string[]>([])
+  const inbox = useMemo(() => memoryInbox((files) => setInboxNames([...files.keys()])), [])
+
+  // §5.9: a file landing in the inbox changes what a connected Client
+  // would see. Driven from the state rather than from inside the store's
+  // callback, so nothing reaches for a ref while rendering.
+  useEffect(() => {
+    if (inboxNames.length > 0) listenerRef.current?.notifySharedChanged()
+  }, [inboxNames])
   const [progressByClient, setProgressByClient] = useState<Record<string, ClientProgress>>({})
   const [connectionByClient, setConnectionByClient] = useState<Record<string, ConnectionType>>({})
 
@@ -83,7 +95,11 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
 
   const startListening = async () => {
     if (listenerRef.current) return
-    const l = await runDepotReconnectListener(signalUrl, singleFileSource(() => offeredFileRef.current), turnConfig, {
+    const l = await runDepotReconnectListener(
+      signalUrl,
+      singleFileSource(() => offeredFileRef.current, inbox),
+      turnConfig,
+      {
       onStatus: push,
       onRegistered: (id) => push(`registered as ${id.slice(0, 16)}…`),
       onClientConnected: ({ clientId, connectionType }) => {
@@ -96,7 +112,8 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
       },
       onClientRejected: ({ clientId, reason }) => push(`rejected ${clientId.slice(0, 16)}…: ${reason}`),
       onError: (msg) => push(`error: ${msg}`),
-    })
+      },
+    )
     listenerRef.current = l
     setListener(l)
   }
@@ -160,6 +177,24 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
           <p className="hint">
             Offering <strong>{offeredFile.name}</strong> ({offeredFile.size.toLocaleString()} bytes)
           </p>
+        )}
+
+        {/*
+          §5.10. The real Depot writes into a folder the user granted and
+          marked writable; this is the same shape with a Map behind it.
+        */}
+        <p className="hint settings-section-label">
+          Inbox — the one folder this Depot accepts files into. A real Depot asks for this per
+          folder and the answer defaults to no.
+        </p>
+        {inboxNames.length === 0 ? (
+          <p className="hint">Nothing has been sent up yet.</p>
+        ) : (
+          <ul className="inbox-list">
+            {inboxNames.map((name) => (
+              <li key={name}>{name}</li>
+            ))}
+          </ul>
         )}
       </Card>
 

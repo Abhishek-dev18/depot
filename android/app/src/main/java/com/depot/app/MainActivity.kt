@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
                         onAddFolder = { pickFolder.launch(null) },
                         onToggleGrant = viewModel::onToggleGrant,
+                        onToggleGrantWritable = viewModel::onToggleGrantWritable,
                         onForgetGrant = viewModel::onForgetGrant,
                         onSignalUrlChange = viewModel::onSignalUrlChange,
                         onTurnChange = viewModel::onTurnChange,

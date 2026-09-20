@@ -1,0 +1,108 @@
+name: Release
+
+# Tag a commit and this builds the thing people install.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Without the signing secrets set it still runs and still publishes, but
+# the APK is unsigned and marked as such — an unsigned build is useful for
+# testing and cannot be installed as an update over a signed one.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version name, e.g. 0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            name="${{ inputs.version }}"
+          else
+            name="${GITHUB_REF_NAME#v}"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          # Monotonic and derived, so two builds of the same commit agree
+          # and a later commit always outranks an earlier one.
+          echo "code=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+        working-directory: android
+
+      - name: Restore the keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.DEPOT_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No DEPOT_KEYSTORE_BASE64 secret — publishing an unsigned APK."
+            exit 0
+          fi
+          # Written outside the workspace so it cannot be picked up by a
+          # later step that archives the checkout.
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/depot-release.jks"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: android
+        env:
+          DEPOT_VERSION_NAME: ${{ steps.version.outputs.name }}
+          DEPOT_VERSION_CODE: ${{ steps.version.outputs.code }}
+          DEPOT_KEYSTORE_FILE: ${{ runner.temp }}/depot-release.jks
+          DEPOT_KEYSTORE_PASSWORD: ${{ secrets.DEPOT_KEYSTORE_PASSWORD }}
+          DEPOT_KEY_ALIAS: ${{ secrets.DEPOT_KEY_ALIAS }}
+          DEPOT_KEY_PASSWORD: ${{ secrets.DEPOT_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Name it after its version
+        id: artifact
+        run: |
+          suffix=""
+          [ "${{ steps.keystore.outputs.signed }}" = "true" ] || suffix="-unsigned"
+          src=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          out="depot-${{ steps.version.outputs.name }}${suffix}.apk"
+          mv "$src" "$out"
+          sha256sum "$out" > "$out.sha256"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256
+          draft: true
+          generate_release_notes: true
+          body: |
+            Depot ${{ steps.version.outputs.name }} — the Android Depot app.
+
+            The browser Client is not distributed here: it is a web page, served
+            from wherever you host `web/dist`. The relay is `signal/`, which you
+            also run yourself; Depot has no servers of its own by design.
+
+            **Verify what you downloaded** before installing it:
+
+            ```
+            sha256sum -c depot-${{ steps.version.outputs.name }}.apk.sha256
+            ```
+
+            Signed: ${{ steps.keystore.outputs.signed }}

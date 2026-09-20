@@ -19,6 +19,8 @@ data class DirEntry(
     val size: Long? = null,
     val modifiedAt: Long? = null,
     val count: Int? = null,
+    /** §5.10 — directories only, and null means no. */
+    val writable: Boolean? = null,
     /**
      * What the storage layer calls this file, where it says.
      *
@@ -52,6 +54,30 @@ interface DepotSource {
 
     /** Null means "no such file", which is also the answer for a handle we never issued. */
     fun open(handle: String?): ServableFile?
+
+    /**
+     * protocol.md §5.10 — where a Client may put a file.
+     *
+     * Null is the answer for a handle this Depot never issued, for a
+     * file rather than a directory, and for a directory the user has not
+     * marked writable. Deliberately the same answer to all three: a
+     * Client must not be able to map which handles exist by trying to
+     * write to them.
+     */
+    fun writable(handle: String): WritableTarget? = null
+}
+
+/**
+ * A directory an upload is allowed to land in (protocol.md §5.10).
+ *
+ * [reserve] returns a name that is free, which is how "never overwrite"
+ * is a property of the destination rather than a rule the transfer has
+ * to remember. [store] is called once, with bytes that have already been
+ * verified whole.
+ */
+interface WritableTarget {
+    fun reserve(name: String): String
+    fun store(name: String, bytes: ByteArray)
 }
 
 /** What a handle points at. Never sent anywhere. */
@@ -116,6 +142,10 @@ class AndroidDepotSource(
         return listChildren(location.treeUri, location.documentId)
     }
 
+    /** The grant a location sits inside, or null. */
+    private fun grantFor(treeUri: Uri): com.depot.app.storage.Grant? =
+        GrantStore.enabled(context).firstOrNull { it.treeUri == treeUri.toString() }
+
     private fun listRoots(): List<DirEntry> {
         val roots = GrantStore.enabled(context).mapNotNull { grant ->
             val treeUri = runCatching { Uri.parse(grant.treeUri) }.getOrNull() ?: return@mapNotNull null
@@ -126,6 +156,7 @@ class AndroidDepotSource(
                 name = grant.label,
                 isDirectory = true,
                 count = countChildren(treeUri, documentId),
+                writable = grant.writable,
             )
         }
 
@@ -170,6 +201,7 @@ class AndroidDepotSource(
             val sizeCol = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
             val modifiedCol = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
 
+            val writableTree = grantFor(treeUri)?.writable == true
             val out = ArrayList<DirEntry>(c.count)
             while (c.moveToNext()) {
                 val childId = c.getString(idCol) ?: continue
@@ -181,6 +213,10 @@ class AndroidDepotSource(
                     size = if (isDir || c.isNull(sizeCol)) null else c.getLong(sizeCol),
                     modifiedAt = if (c.isNull(modifiedCol)) null else c.getLong(modifiedCol),
                     mime = if (isDir) null else c.getString(mimeCol),
+                    // Inherited from the grant: marking a folder writable
+                    // means the tree under it, which is what the user
+                    // sees themselves agreeing to.
+                    writable = if (isDir) writableTree else null,
                 )
             }
             // Folders first, then by name — the order a person expects,
@@ -188,6 +224,21 @@ class AndroidDepotSource(
             out.sortedWith(compareByDescending<DirEntry> { it.isDirectory }.thenBy { it.name.lowercase() })
         } ?: emptyList()
     }.getOrElse { emptyList() }
+
+    /**
+     * protocol.md §5.10. Three refusals, one answer.
+     *
+     * The consent check is the grant's writable flag; the handle check is
+     * what makes it meaningful, since a handle is a location this Depot
+     * chose to mention. Neither is a path check, because there is no path
+     * — which is the whole point of §5.9.
+     */
+    override fun writable(handle: String): WritableTarget? {
+        val location = handles[handle] ?: return null
+        if (!location.isDirectory) return null
+        if (grantFor(location.treeUri)?.writable != true) return null
+        return SafFolder(context, location)
+    }
 
     override fun open(handle: String?): ServableFile? {
         // A null handle, and the bare constant behind it, both mean
@@ -287,9 +338,86 @@ class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
         )
     }
 
+    /**
+     * protocol.md §5.10. Three refusals, one answer.
+     *
+     * The consent check is the grant's writable flag; the handle check is
+     * what makes it meaningful, since a handle is a location this Depot
+     * chose to mention. Neither is a path check, because there is no path
+     * — which is the whole point of §5.9.
+     */
+    override fun writable(handle: String): WritableTarget? {
+        val location = handles[handle] ?: return null
+        if (!location.isDirectory) return null
+        if (grantFor(location.treeUri)?.writable != true) return null
+        return SafFolder(context, location)
+    }
+
     override fun open(handle: String?): ServableFile? {
         val file = offered() ?: return null
         // null and the bare constant are §5.9's "whatever you are offering".
         return if (handle == null || handle == "offered" || handle == handleFor(file)) file.servable() else null
+    }
+}
+
+/**
+ * A granted folder, written through the Storage Access Framework.
+ *
+ * createDocument takes a display name rather than a path, so it cannot
+ * be made to write outside the tree however the name is spelled — and it
+ * renames rather than replaces when a name is taken, which is exactly
+ * §5.10's "never overwrite". Both are properties of the platform here
+ * rather than rules this code has to remember, which is the version of
+ * that rule least likely to be got wrong later.
+ */
+private class SafFolder(
+    private val context: Context,
+    private val location: Location,
+) : WritableTarget {
+
+    /** Set by [reserve], written by [store]. */
+    private var pending: Uri? = null
+    private var pendingName: String? = null
+
+    override fun reserve(name: String): String {
+        val parent = DocumentsContract.buildDocumentUriUsingTree(location.treeUri, location.documentId)
+        // The type is what the provider files it under; the name decides
+        // what it is called. A generic type keeps the extension intact
+        // rather than having the provider append one of its own.
+        val uri = DocumentsContract.createDocument(
+            context.contentResolver,
+            parent,
+            "application/octet-stream",
+            name,
+        ) ?: throw IllegalStateException("could not create a file in that folder")
+
+        pending = uri
+        // Whatever it ended up called, which is not always what was
+        // asked for — the provider appends when a name is taken.
+        val actual = context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val index = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (c.moveToFirst() && index >= 0) c.getString(index) else null
+        } ?: name
+        pendingName = actual
+        return actual
+    }
+
+    override fun store(name: String, bytes: ByteArray) {
+        val uri = pending
+        if (uri == null || pendingName != name) {
+            throw IllegalStateException("store() without a matching reserve()")
+        }
+        try {
+            context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                ?: throw IllegalStateException("could not open the new file for writing")
+        } catch (e: Exception) {
+            // A half-written file with a plausible name is worse than no
+            // file: §5.10 publishes nothing it has not verified whole.
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+            throw e
+        } finally {
+            pending = null
+            pendingName = null
+        }
     }
 }

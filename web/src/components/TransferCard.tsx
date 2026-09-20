@@ -16,7 +16,14 @@ export interface TransferState {
  * wildly enough to be unreadable, and the number people actually want is
  * "how long until this is done".
  */
-export function TransferCard({ transfer }: { transfer: TransferState }) {
+export function TransferCard({
+  transfer,
+  direction = 'down',
+}: {
+  transfer: TransferState
+  /** Up is §5.10; the readout is the same, the words are not. */
+  direction?: 'down' | 'up'
+}) {
   const { bytesReceived, bytesTotal, startedAt, updatedAt } = transfer
   const elapsed = Math.max(1, updatedAt - startedAt)
   const rate = (bytesReceived * 1000) / elapsed
@@ -25,8 +32,9 @@ export function TransferCard({ transfer }: { transfer: TransferState }) {
 
   return (
     <div className="xfer">
-      <div className="xh">
+      <div className={direction === 'up' ? 'xh xh-up' : 'xh'}>
         <div className="xt" title={transfer.name}>
+          {direction === 'up' ? '↑ ' : ''}
           {transfer.name}
         </div>
         <div className="xp">{percent}%</div>

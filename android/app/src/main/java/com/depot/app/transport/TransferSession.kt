@@ -1,6 +1,7 @@
 package com.depot.app.transport
 
 import com.depot.app.crypto.Direction
+import com.depot.app.crypto.decodeChunkFrame
 import com.depot.app.crypto.decodeCtlFrame
 import com.depot.app.crypto.encodeChunkFrame
 import com.depot.app.crypto.EncodedChunk
@@ -119,6 +120,10 @@ interface TransferCallbacks {
     fun onManifestSent(transferId: Int, chunkCount: Int)
     fun onChunkSent(index: Int, total: Int, bytesSent: Long, bytesTotal: Long)
     fun onError(message: String)
+
+    /** §5.10 — a Client is sending something up. */
+    fun onUploadStarted(name: String, chunkCount: Int) = Unit
+    fun onUploadStored(name: String) = Unit
 }
 
 /** A file this Depot is willing to serve. */
@@ -141,6 +146,21 @@ class FileSender(
     // here is touched concurrently.
     private val transfers = java.util.concurrent.ConcurrentHashMap<Int, Pair<Manifest, ServableFile>>()
     private val nextTransferId = java.util.concurrent.atomic.AtomicInteger(1)
+
+    /** §5.10 — uploads in flight, by the id this Depot issued. */
+    private class Upload(
+        val chunks: List<ChunkInfo>,
+        val fileHash: String,
+        val target: WritableTarget,
+        val reserved: String,
+        val size: Int,
+    ) {
+        val have = java.util.concurrent.ConcurrentHashMap<Int, ByteArray>()
+        val outstanding = java.util.Collections.synchronizedSet(chunks.map { it.index }.toMutableSet())
+    }
+
+    private val uploads = java.util.concurrent.ConcurrentHashMap<Int, Upload>()
+    private val nextUploadId = java.util.concurrent.atomic.AtomicInteger(1)
     private val peerCaps = CompletableDeferred<JSONObject>()
     private val chunkSizer = AdaptiveChunkSize()
     private var sampler: Job? = null
@@ -155,6 +175,18 @@ class FileSender(
                 ctl.receive(raw)?.let(onCtl)
             }
         })
+        // §5.10 — uploaded chunks arrive on the same channel served ones
+        // go out on. One standing observer rather than one per upload:
+        // the channel belongs to the session.
+        channels.data.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) = Unit
+            override fun onStateChange() = Unit
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                val raw = ByteArray(buffer.data.remaining()).also { buffer.data.get(it) }
+                onUploadChunk(raw)
+            }
+        })
+
         ctl.send(OUR_CAPS)
 
         // protocol.md §5.5. Sampling on a timer rather than once per
@@ -191,6 +223,7 @@ class FileSender(
                 "LIST" -> handleList(msg)
                 "REQUEST_FILE" -> handleRequestFile(msg)
                 "NEED" -> handleNeed(msg)
+                "PUT" -> handlePut(msg)
             }
         } catch (e: CancellationException) {
             throw e // the session is shutting down; not this Client's problem
@@ -216,6 +249,7 @@ class FileSender(
             entry.modifiedAt?.let { o.put("modifiedAt", it) }
             entry.count?.let { o.put("count", it) }
             entry.mime?.let { o.put("mime", it) }
+            entry.writable?.let { o.put("writable", it) }
             entries.put(o)
         }
         ctl.send(JSONObject().put("type", "LIST_OK").put("handle", handle).put("entries", entries))
@@ -262,6 +296,163 @@ class FileSender(
         ctl.send(JSONObject().put("type", "MANIFEST").put("manifest", manifest.toJson()))
         cb.onManifestSent(transferId, manifest.chunkCount)
     }
+
+    /**
+     * protocol.md §5.10 — a Client offering a file.
+     *
+     * Consent first, before anything is read from the message: a Client
+     * must not be able to learn whether a name is taken in a directory it
+     * was never allowed to write to.
+     */
+    private fun handlePut(msg: JSONObject) {
+        val target = source.writable(msg.optString("handle"))
+        if (target == null) {
+            // The same answer for "not a handle", "not a directory" and
+            // "not writable" — they must not be distinguishable.
+            ctl.send(err("that is not somewhere this Depot accepts files"))
+            return
+        }
+
+        val name = try {
+            validUploadName(msg.optString("name"))
+        } catch (e: Exception) {
+            ctl.send(err(e.message ?: "that name cannot be used"))
+            return
+        }
+
+        val size = msg.optLong("size", -1L)
+        val chunksJson = msg.optJSONArray("chunks")
+        val fileHash = msg.optString("fileHash")
+        if (size < 0 || chunksJson == null || fileHash.isEmpty()) {
+            ctl.send(err("the manifest is incomplete"))
+            return
+        }
+        if (size > MAX_UPLOAD_BYTES) {
+            ctl.send(err("that file is larger than this Depot will accept"))
+            return
+        }
+        if (chunksJson.length() != msg.optInt("chunkCount", -1)) {
+            ctl.send(err("the manifest's chunk count does not match its list"))
+            return
+        }
+
+        // The chunks must tile the file exactly. Anything else
+        // reassembles into something that is not the file, and only the
+        // whole-file hash would notice — after the whole transfer.
+        val wanted = ArrayList<ChunkInfo>(chunksJson.length())
+        var offset = 0L
+        for (i in 0 until chunksJson.length()) {
+            val o = chunksJson.optJSONObject(i) ?: return ctl.send(err("chunk $i is malformed"))
+            val length = o.optInt("length", -1)
+            val hash = o.optString("hash")
+            if (length <= 0 || hash.isEmpty() || o.optInt("index", -1) != i || o.optLong("offset", -1L) != offset) {
+                ctl.send(err("chunk $i does not follow the one before it"))
+                return
+            }
+            if (length > OUR_CAPS.getInt("maxChunkSize")) {
+                ctl.send(err("chunk $i is larger than CAPS agreed"))
+                return
+            }
+            wanted += ChunkInfo(i, offset, length, hash)
+            offset += length
+        }
+        if (offset != size) {
+            ctl.send(err("the chunks cover $offset bytes but the manifest claims $size"))
+            return
+        }
+
+        // Reserved before a byte arrives, so two uploads racing for one
+        // name cannot both believe they have it.
+        val reserved = try {
+            target.reserve(name)
+        } catch (e: Exception) {
+            ctl.send(err(e.message ?: "could not create that file"))
+            return
+        }
+
+        val uploadId = nextUploadId.getAndIncrement()
+        uploads[uploadId] = Upload(wanted, fileHash, target, reserved, size.toInt())
+        cb.onUploadStarted(reserved, wanted.size)
+
+        val need = org.json.JSONArray()
+        for (c in wanted) need.put(c.index)
+        ctl.send(JSONObject().put("type", "PUT_OK").put("uploadId", uploadId).put("need", need))
+        if (wanted.isEmpty()) finishUpload(uploadId)
+    }
+
+    /** Verified whole before it is published — never a plausible partial. */
+    private fun finishUpload(uploadId: Int) {
+        val upload = uploads.remove(uploadId) ?: return
+        val joined = ByteArray(upload.size)
+        var at = 0
+        for (info in upload.chunks) {
+            val part = upload.have[info.index] ?: run {
+                ctl.send(err("chunk ${info.index} never arrived"))
+                return
+            }
+            part.copyInto(joined, at)
+            at += part.size
+        }
+
+        if (hashBytes(joined) != upload.fileHash) {
+            ctl.send(err("the whole-file hash did not match; nothing was written"))
+            return
+        }
+
+        try {
+            upload.target.store(upload.reserved, joined)
+        } catch (e: Exception) {
+            ctl.send(err(e.message ?: "could not write the file"))
+            return
+        }
+        ctl.send(
+            JSONObject().put("type", "PUT_DONE").put("uploadId", uploadId).put("name", upload.reserved),
+        )
+        cb.onUploadStored(upload.reserved)
+    }
+
+    /**
+     * A chunk of an upload. Verified as it arrives, so a corrupt one is
+     * dropped rather than written and discovered at the end.
+     */
+    private fun onUploadChunk(raw: ByteArray) {
+        val decoded = try {
+            decodeChunkFrame(keys.kC2D, Direction.CLIENT_TO_DEPOT, raw)
+        } catch (_: Exception) {
+            return // no legitimate sender produces a frame we cannot open
+        }
+        val upload = uploads[decoded.transferId] ?: return
+        if (!upload.outstanding.contains(decoded.chunkIndex)) return
+        val info = upload.chunks.getOrNull(decoded.chunkIndex) ?: return
+
+        val plaintext = try {
+            if (decoded.compressed) decompress(decoded.plaintext) else decoded.plaintext
+        } catch (_: Exception) {
+            return
+        }
+        if (hashBytes(plaintext) != info.hash) return
+
+        upload.have[decoded.chunkIndex] = plaintext
+        upload.outstanding.remove(decoded.chunkIndex)
+        if (upload.outstanding.isEmpty()) finishUpload(decoded.transferId)
+    }
+
+    /**
+     * protocol.md §5.10 rule 3. Not the security boundary — the
+     * destination is a handle this Depot minted, so there is no path to
+     * escape from — but a display name carrying a separator is confusing
+     * and may be read as a path by something that is not this protocol.
+     */
+    private fun validUploadName(name: String): String {
+        require(name.isNotEmpty()) { "the name is empty" }
+        require(name.length <= 255) { "the name is longer than any filesystem will take" }
+        require(!name.contains('/') && !name.contains('\\')) { "\"$name\" looks like a path, not a name" }
+        require(!name.startsWith(".")) { "\"$name\" starts with a dot" }
+        require(name.none { it.code < 0x20 || it.code == 0x7f }) { "the name contains control characters" }
+        return name
+    }
+
+    private fun err(message: String) = JSONObject().put("type", "ERROR").put("message", message)
 
     private suspend fun handleNeed(msg: JSONObject) {
         val transferId = msg.optInt("transferId", -1)
@@ -370,6 +561,10 @@ class FileSender(
         sampler?.cancel()
         sampler = null
         transfers.clear()
+        // Half-received uploads are dropped rather than written: §5.10
+        // publishes nothing it has not verified whole.
+        uploads.clear()
+        runCatching { channels.data.unregisterObserver() }
         runCatching { channels.ctl.unregisterObserver() }
     }
 
@@ -379,5 +574,12 @@ class FileSender(
          * the current one; several in flight is already unusual.
          */
         const val MAX_LIVE_TRANSFERS = 8
+
+        /**
+         * The ceiling on a single upload. It is held whole in memory to
+         * be hashed before it is written, which is what "verify before
+         * publishing" costs on a device with this little to spare.
+         */
+        const val MAX_UPLOAD_BYTES = 256L * 1024 * 1024
     }
 }

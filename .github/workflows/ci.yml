@@ -59,11 +59,9 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
-      # assembleDebug is the point of this job. The instrumented suite —
-      # the vectors, storage and transport tests — needs a real device for
-      # libsodium's native library, so CI cannot run it; what CI *can* do
-      # is prove the app still compiles, which is the failure mode that
-      # otherwise only shows up on someone's phone.
+      # Compiling is the point of this job: it is the failure mode that
+      # otherwise only shows up on someone's phone. The instrumented
+      # suite runs separately, on an emulator — see `vectors`.
       - run: ./gradlew --no-daemon assembleDebug
       - run: ./gradlew --no-daemon testDebugUnitTest
       - uses: actions/upload-artifact@v4
@@ -71,3 +69,119 @@ jobs:
         with:
           name: android-unit-test-results
           path: android/app/build/reports/tests/
+
+  browser:
+    name: browser (Playwright)
+    runs-on: ubuntu-latest
+    # The whole protocol through two real tabs: pairing, the SAS, §5.9
+    # browsing, a verified transfer, the cache surviving a reload, and
+    # the origin-isolation check behind the PDF preview. None of it is
+    # reachable from a unit test — there is no WebRTC, no relay and no
+    # screen — and this suite has caught a broken retry loop, an ARIA
+    # mistake and a silent change in what clicking a row means.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: signal/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start the relay
+        working-directory: signal
+        run: |
+          go build -o signal-server .
+          ./signal-server &
+          # The relay answers 404 at / and that is a working server.
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://localhost:8080/ && break
+            curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -q 404 && break
+            sleep 1
+          done
+
+      - name: Serve the client
+        working-directory: web
+        run: |
+          npm run build
+          npx vite preview --port 4173 &
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:4173/ && exit 0
+            sleep 1
+          done
+          echo 'the preview server never came up' >&2
+          exit 1
+
+      - name: The protocol, in two tabs
+        working-directory: web
+        run: npm run e2e
+
+      - name: The app mark, in all five places it appears
+        working-directory: web
+        run: npm run check:mark
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-screenshots
+          path: /tmp/client-*.png
+          if-no-files-found: ignore
+
+  vectors:
+    name: vectors (Android, emulator)
+    runs-on: ubuntu-latest
+    # The suite that keeps the two implementations honest.
+    #
+    # androidTest/ needs a device because lazysodium loads a native
+    # library, so none of it had ever run anywhere. VectorsTest checks
+    # Android against docs/vectors/test-vectors.json — the same file
+    # web/src/crypto/vectors.test.ts checks itself against — and it is
+    # the only thing standing between a divergence and an unexplained SAS
+    # mismatch during pairing, in the field, with nothing pointing at the
+    # cause.
+    #
+    # It boots an emulator, so it is the slow job. It does not gate the
+    # fast ones: signal, web and android all report on their own.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
+        working-directory: android
+
+      # KVM is what makes this minutes rather than tens of minutes.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disable-animations: true
+          working-directory: android
+          script: ./gradlew --no-daemon connectedDebugAndroidTest
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: instrumented-test-results
+          path: android/app/build/reports/androidTests/

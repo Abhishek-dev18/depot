@@ -17,6 +17,14 @@ data class Grant(
     val label: String,
     val enabled: Boolean,
     val addedAt: Long,
+    /**
+     * protocol.md §5.10 — whether a Client may put files *into* this
+     * folder. Separate from [enabled] and false unless the user says
+     * otherwise, because granting a folder to read from is not consent
+     * to have things written to it. They are different questions and the
+     * app asks them separately.
+     */
+    val writable: Boolean = false,
 )
 
 /**
@@ -45,6 +53,9 @@ object GrantStore {
                 label = o.getString("label"),
                 enabled = o.optBoolean("enabled", true),
                 addedAt = o.optLong("addedAt", 0L),
+                // Absent in anything written before §5.10, and the safe
+                // reading of absent is no.
+                writable = o.optBoolean("writable", false),
             )
         }
     }
@@ -60,7 +71,8 @@ object GrantStore {
                     .put("treeUri", g.treeUri)
                     .put("label", g.label)
                     .put("enabled", g.enabled)
-                    .put("addedAt", g.addedAt),
+                    .put("addedAt", g.addedAt)
+                    .put("writable", g.writable),
             )
         }
         prefs(context).edit().putString(KEY, array.toString()).apply()
@@ -72,6 +84,10 @@ object GrantStore {
 
     fun setEnabled(context: Context, treeUri: String, enabled: Boolean) {
         write(context, list(context).map { if (it.treeUri == treeUri) it.copy(enabled = enabled) else it })
+    }
+
+    fun setWritable(context: Context, treeUri: String, writable: Boolean) {
+        write(context, list(context).map { if (it.treeUri == treeUri) it.copy(writable = writable) else it })
     }
 
     fun remove(context: Context, treeUri: String) {

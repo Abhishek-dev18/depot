@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.7 (draft)
+**Version:** 0.8 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -525,7 +525,8 @@ enough to be a file server. Browsing adds two messages on `ctl`:
   "type": "LIST_OK",
   "handle": "",
   "entries": [
-    { "handle": "k3f9…", "name": "Camera",   "kind": "dir",  "modifiedAt": 1757808000000 },
+    { "handle": "k3f9…", "name": "Camera",   "kind": "dir",  "modifiedAt": 1757808000000,
+      "writable": true },
     { "handle": "9a21…", "name": "IMG_0001.jpg", "kind": "file", "size": 4404019, "modifiedAt": 1757808000000,
       "mime": "image/jpeg" }
   ]
@@ -561,6 +562,12 @@ under the new name.
 A Depot cannot always tell two files apart without reading them — name and
 length are usually all a listing knows — so a Client MUST also offer the user
 some way to ask for a file again regardless of what it holds.
+
+`writable` is optional, directories only, and absent means no. It is how a
+Client knows where §5.10 will be accepted, so it can offer that and nothing
+else. It is a statement of intent, not an authorisation: a Depot checks the
+grant again when the `PUT` arrives, because the listing it sent may be old and
+because nothing a Client echoes back decides what the Depot will do.
 
 `mime` is optional and advisory: what the Depot's storage layer calls the
 file, where it knows. It exists because a display name is not always enough
@@ -609,6 +616,77 @@ Listing carries no file contents, but it does carry names, sizes and
 timestamps, which §1.2 promises Signal cannot see. Both messages are
 therefore ordinary encrypted `ctl` frames (§5.3) like everything else on
 that channel.
+
+### 5.10 Upload
+
+Everything above moves files off the phone. This moves one on to it, and it is
+the only place in the protocol where a Client causes the Depot to write.
+
+That asymmetry is the whole design. A Depot serves any folder the user granted;
+it accepts into **only** those the user separately marked writable, and that flag
+defaults to off. Granting a folder to read from is not consent to have things put
+in it, and the two are asked for separately because they are different questions.
+
+```json
+{
+  "type": "PUT",
+  "handle": "k3f9…",
+  "name": "scan.pdf",
+  "size": 182000,
+  "chunkCount": 2,
+  "chunks": [ { "index": 0, "offset": 0, "length": 91000, "hash": "…" }, … ],
+  "fileHash": "…",
+  "mime": "application/pdf"
+}
+```
+
+`handle` is a directory handle the Depot minted (§5.9) — the Client still names
+no location. The rest is a manifest of the same shape §5.7 uses, built by the
+Client over the file it holds.
+
+```json
+{ "type": "PUT_OK", "uploadId": 7, "need": [0, 1] }
+```
+
+The Depot answers with an upload id and the chunk indices it wants. `need` may be
+shorter than the manifest on a retry, which is how a resumed upload works: the
+same content-addressed chunks §5.7 uses mean an interrupted upload does not
+restart. The Client then sends those chunks on `data`, encrypted Client→Depot,
+framed exactly as §5.3 describes with `uploadId` in place of `transferId`.
+
+```json
+{ "type": "PUT_DONE", "uploadId": 7, "name": "scan (1).pdf" }
+```
+
+`name` is what the file was actually called once written, which is not always
+what was asked for — see collisions below.
+
+**A Depot MUST refuse a `PUT` unless all of these hold**, answering `ERROR`:
+
+1. `handle` resolves to a directory it minted this session.
+2. That directory lies inside a grant the user marked writable.
+3. `name` is a single path component: no `/`, no `\`, no `..`, no leading dot,
+   no control characters, and not empty. A Depot MUST NOT interpret it as a path.
+4. The manifest is internally consistent — chunks tile the file exactly, lengths
+   are within the negotiated `maxChunkSize`, the count matches the list.
+5. `size` is within whatever the Depot is willing to accept, and within the space
+   it has.
+
+**A Depot MUST NOT overwrite an existing file.** A name that is already taken is
+written under a fresh one, and `PUT_DONE` reports what that was. Overwriting is
+how an upload feature becomes a way to destroy things, and there is no version
+history here to recover from.
+
+**A Depot MUST verify before publishing.** Each chunk is checked against its hash
+as it arrives, and the whole file against `fileHash` before the file is put where
+the user can see it. A file that fails either is discarded, not left as a partial
+with a plausible name.
+
+Rule 3 is not the security boundary — rule 1 is, and rule 2 is what makes it
+consent. A handle already names a directory the Depot chose to mention, so there
+is no path to escape from; rule 3 exists because a display name that contains a
+separator would be confusing and might be interpreted as a path by something
+downstream that is not this protocol.
 
 ## 6. Revocation
 
@@ -722,6 +800,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.8 | 2026-09-20 | Add §5.10 upload — `PUT` / `PUT_OK` / `PUT_DONE`, the one direction in which a Client causes the Depot to write. Gated on a per-grant writable flag that defaults to off, because granting a folder to read from is not consent to have things put in it. Never overwrites; verifies before publishing. |
 | 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |
