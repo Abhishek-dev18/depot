@@ -339,19 +339,11 @@ class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
     }
 
     /**
-     * protocol.md §5.10. Three refusals, one answer.
-     *
-     * The consent check is the grant's writable flag; the handle check is
-     * what makes it meaningful, since a handle is a location this Depot
-     * chose to mention. Neither is a path check, because there is no path
-     * — which is the whole point of §5.9.
+     * SingleFileSource has no folders, so there is nowhere for an upload
+     * to go. The default from DepotSource already answers null; this
+     * says so out loud, because "accepts nothing" is the behaviour the
+     * protocol asks for by default, not an omission.
      */
-    override fun writable(handle: String): WritableTarget? {
-        val location = handles[handle] ?: return null
-        if (!location.isDirectory) return null
-        if (grantFor(location.treeUri)?.writable != true) return null
-        return SafFolder(context, location)
-    }
 
     override fun open(handle: String?): ServableFile? {
         val file = offered() ?: return null

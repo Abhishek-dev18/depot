@@ -27,7 +27,7 @@ private val OUR_CAPS = JSONObject()
     .put("protocolVersion", 1)
     .put("compression", org.json.JSONArray(listOf("deflate", "none")))
     .put("maxChunkSize", 1024 * 1024)
-    .put("features", org.json.JSONArray(listOf("cdc", "browse")))
+    .put("features", org.json.JSONArray(listOf("cdc", "browse", "upload")))
 
 /**
  * SCTP will buffer without bound if fed faster than the link drains, and a

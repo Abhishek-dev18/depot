@@ -1039,7 +1039,12 @@ export async function openClientSession(
       })
     }
 
-    const done = await stored
+    const done = await stored.catch(() => {
+      // Naming the step: a Depot that dropped every chunk without saying
+      // so leaves exactly this wait hanging, and "timed out waiting for a
+      // control message" tells nobody anything.
+      throw new Error('the Depot never confirmed it had stored the file')
+    })
     if (done.type === 'ERROR') throw new Error(done.message)
     onEvent({ type: 'stored', name: done.name })
     return done.name
