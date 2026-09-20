@@ -74,7 +74,7 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
     const file = fileList?.[0]
     if (!file) return
     const bytes = new Uint8Array(await file.arrayBuffer())
-    offeredFileRef.current = { name: file.name, bytes }
+    offeredFileRef.current = { name: file.name, bytes, mime: file.type || undefined }
     setOfferedFile({ name: file.name, size: bytes.length })
     push(`offering ${file.name} (${bytes.length.toLocaleString()} bytes)`)
     // §5.9: anyone already connected is now looking at a stale listing.

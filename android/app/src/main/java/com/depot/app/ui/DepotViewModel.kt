@@ -271,7 +271,10 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
                 val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: throw IllegalStateException("could not open the selected file")
-                DepotSession.setOfferedFile(OfferedFile(name, bytes))
+                // The provider's own type, passed on so the browser can
+                // preview a file whose display name carries no extension
+                // — which is what Photos and Drive hand back.
+                DepotSession.setOfferedFile(OfferedFile(name, bytes, resolver.getType(uri)))
             } catch (e: Exception) {
                 DepotSession.reportError(e.message ?: e.toString())
             }

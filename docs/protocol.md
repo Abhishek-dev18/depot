@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.6 (draft)
+**Version:** 0.7 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -526,7 +526,8 @@ enough to be a file server. Browsing adds two messages on `ctl`:
   "handle": "",
   "entries": [
     { "handle": "k3f9…", "name": "Camera",   "kind": "dir",  "modifiedAt": 1757808000000 },
-    { "handle": "9a21…", "name": "IMG_0001.jpg", "kind": "file", "size": 4404019, "modifiedAt": 1757808000000 }
+    { "handle": "9a21…", "name": "IMG_0001.jpg", "kind": "file", "size": 4404019, "modifiedAt": 1757808000000,
+      "mime": "image/jpeg" }
   ]
 }
 ```
@@ -560,6 +561,18 @@ under the new name.
 A Depot cannot always tell two files apart without reading them — name and
 length are usually all a listing knows — so a Client MUST also offer the user
 some way to ask for a file again regardless of what it holds.
+
+`mime` is optional and advisory: what the Depot's storage layer calls the
+file, where it knows. It exists because a display name is not always enough
+— Android content providers routinely return names with no extension, and a
+Client that reads only extensions treats those files as unidentifiable.
+
+A Client MUST NOT let `mime` widen what it is willing to do with the bytes.
+It is the Depot talking, and a Depot may be a phone someone else is holding.
+It may select among renderers the Client would already have used for a known
+extension; it must never turn a file into a document the Client would not
+otherwise have parsed. A Depot claiming `text/html` gets whatever the Client
+does with text, not an HTML parser.
 
 This is the whole of the access control, and it is deliberately not a path
 check. Validating a path means writing a correct traversal check and being
@@ -708,6 +721,7 @@ whoever builds the Android app against this spec.
 |---|---|---|
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
+| 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
 | 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |
 | 0.2 | 2026-09-15 | Encrypt the `ctl` channel with the session keys (§5.2, §5.3). DTLS alone left the `MANIFEST` — file name, size, chunk hashes — readable and forgeable by a Signal that substitutes DTLS fingerprints in the SDP it relays, contradicting §1.2. Adds the CTL frame kind, a per-direction counter with replay rejection, and a disjoint nonce space. |

@@ -54,6 +54,49 @@ describe('describePreview', () => {
   })
 })
 
+describe('describePreview with the Depot\'s own type', () => {
+  it('identifies a file whose name carries no extension', () => {
+    // Why this exists: Android providers hand back display names like
+    // "image:1000012345" with nothing to read an extension from, and a
+    // photograph then looks unpreviewable to the Client.
+    expect(describePreview('image:1000012345').kind).toBe('none')
+    expect(describePreview('image:1000012345', 'image/jpeg')).toEqual({
+      kind: 'image',
+      mime: 'image/jpeg',
+    })
+    expect(describePreview('document', 'application/pdf').kind).toBe('pdf')
+    expect(describePreview('VID_0001', 'video/mp4').kind).toBe('video')
+  })
+
+  it('ignores parameters on the type', () => {
+    expect(describePreview('x', 'text/plain; charset=utf-8').kind).toBe('text')
+    expect(describePreview('x', 'IMAGE/PNG').kind).toBe('image')
+  })
+
+  it('does not let the Depot turn a file into a document', () => {
+    // The Depot is a phone, possibly someone else's. A claimed type may
+    // choose among renderers the Client would have used anyway; it must
+    // never make the Client parse something it otherwise would not.
+    expect(describePreview('page', 'text/html')).toEqual({ kind: 'text', mime: 'text/plain' })
+    expect(describePreview('page', 'application/xhtml+xml').kind).toBe('none')
+    expect(describePreview('x', 'application/octet-stream').kind).toBe('none')
+    expect(describePreview('x', 'application/x-msdownload').kind).toBe('none')
+  })
+
+  it('lets the name overrule a type that sounds renderable', () => {
+    // image/heic is a real type and no browser draws it, so the panel
+    // should name the format rather than show an empty frame.
+    const heic = describePreview('IMG_0001.heic', 'image/heic')
+    expect(heic.kind).toBe('none')
+    expect(heic.undecodable).toBe('HEIC')
+    expect(describePreview('clip.mkv', 'video/x-matroska').undecodable).toBe('Matroska')
+  })
+
+  it('still prefers a known extension over the claimed type', () => {
+    expect(describePreview('photo.png', 'application/pdf')).toEqual({ kind: 'image', mime: 'image/png' })
+  })
+})
+
 describe('retype', () => {
   it('relabels the same bytes', async () => {
     const original = new Blob([new Uint8Array([1, 2, 3])], { type: 'application/octet-stream' })

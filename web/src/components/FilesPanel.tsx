@@ -67,6 +67,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
           name: file.name,
           size: file.size,
           modifiedAt: file.modifiedAt,
+          mime: file.mime,
           blob: file.blob,
           url,
           persisted: true,
@@ -188,6 +189,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
           name: file.name,
           size: file.size,
           modifiedAt: entry.modifiedAt,
+          mime: entry.mime,
           blob: file.blob,
           receivedAt: nowMs(),
         })
@@ -196,6 +198,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
           name: file.name,
           size: file.size,
           modifiedAt: entry.modifiedAt,
+          mime: entry.mime,
           blob: file.blob,
           url,
           persisted,
@@ -381,7 +384,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
                     <span className="received-name">{file.name}</span>
                     <span className="received-size">{formatBytes(file.size)}</span>
                     <span className="received-view">
-                      {describePreview(file.name).kind === 'none' ? 'DETAILS' : 'VIEW'}
+                      {describePreview(file.name, file.mime).kind === 'none' ? 'DETAILS' : 'VIEW'}
                     </span>
                   </button>
                   <a className="received-save" href={file.url} download={file.name}>

@@ -93,7 +93,7 @@ interface TransferCallbacks {
 }
 
 /** A file this Depot is willing to serve. */
-class OfferedFile(val name: String, val bytes: ByteArray)
+class OfferedFile(val name: String, val bytes: ByteArray, val mime: String? = null)
 
 /**
  * Depot side of §5.7: answer REQUEST_FILE with a MANIFEST, then stream
@@ -186,6 +186,7 @@ class FileSender(
             entry.size?.let { o.put("size", it) }
             entry.modifiedAt?.let { o.put("modifiedAt", it) }
             entry.count?.let { o.put("count", it) }
+            entry.mime?.let { o.put("mime", it) }
             entries.put(o)
         }
         ctl.send(JSONObject().put("type", "LIST_OK").put("handle", handle).put("entries", entries))

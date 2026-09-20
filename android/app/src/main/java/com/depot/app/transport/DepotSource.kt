@@ -19,6 +19,15 @@ data class DirEntry(
     val size: Long? = null,
     val modifiedAt: Long? = null,
     val count: Int? = null,
+    /**
+     * What the storage layer calls this file, where it says.
+     *
+     * A display name is not always enough for the Client to know what it
+     * is holding: providers hand back names with no extension at all, and
+     * a Client reading only extensions calls those unpreviewable. The
+     * provider already tells us, so passing it on costs nothing.
+     */
+    val mime: String? = null,
 )
 
 /**
@@ -129,6 +138,7 @@ class AndroidDepotSource(
             name = file.name,
             isDirectory = false,
             size = file.bytes.size.toLong(),
+            mime = file.mime,
         )
     }
 
@@ -170,6 +180,7 @@ class AndroidDepotSource(
                     isDirectory = isDir,
                     size = if (isDir || c.isNull(sizeCol)) null else c.getLong(sizeCol),
                     modifiedAt = if (c.isNull(modifiedCol)) null else c.getLong(modifiedCol),
+                    mime = if (isDir) null else c.getString(mimeCol),
                 )
             }
             // Folders first, then by name — the order a person expects,
@@ -265,7 +276,15 @@ class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
     override fun list(handle: String): List<DirEntry> {
         if (handle.isNotEmpty()) return emptyList()
         val file = offered() ?: return emptyList()
-        return listOf(DirEntry(handleFor(file), file.name, isDirectory = false, size = file.bytes.size.toLong()))
+        return listOf(
+            DirEntry(
+                handleFor(file),
+                file.name,
+                isDirectory = false,
+                size = file.bytes.size.toLong(),
+                mime = file.mime,
+            ),
+        )
     }
 
     override fun open(handle: String?): ServableFile? {

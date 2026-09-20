@@ -43,6 +43,7 @@ export interface CachedFile {
   name: string
   size: number
   modifiedAt?: number
+  mime?: string
   blob: Blob
   receivedAt: number
 }

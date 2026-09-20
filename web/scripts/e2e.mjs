@@ -35,6 +35,10 @@ writeFileSync(
   ),
 )
 writeFileSync('/tmp/sample.pdf', minimalPdf('DEPOT PDF'))
+// A name that says JPEG over bytes that are not one, to drive the
+// failure path: a media element that cannot decode renders nothing
+// at all, which is indistinguishable from a preview that never came.
+writeFileSync('/tmp/broken.jpg', 'not an image at all, just text pretending\n'.repeat(20))
 
 /** One page, one line of Helvetica. Real enough for a browser to open. */
 function minimalPdf(text) {
@@ -226,6 +230,32 @@ log('settings reports held files:', JSON.stringify(usage))
 await client.screenshot({ path: '/tmp/client-settings.png' })
 await client.getByRole('button', { name: 'Close' }).click()
 await client.waitForSelector('.ftable', { timeout: 10000 })
+
+// --- a preview that cannot decode must say so ------------------------
+await depot.locator('input[type=file]').setInputFiles('/tmp/broken.jpg')
+await client.waitForFunction(
+  () => document.querySelector('.fr:not(.fr-note) .fn')?.textContent?.endsWith('.jpg'),
+  null,
+  { timeout: 20000 },
+)
+await client.locator('.fr:not(.fr-note)').first().click()
+await client.waitForSelector('.fr .held', { timeout: 40000 })
+await client.locator('.fr:not(.fr-note)').first().click()
+await client.waitForSelector('.pv', { timeout: 10000 })
+await client.waitForTimeout(1200)
+const broken = await client.evaluate(() => {
+  const note = document.querySelector('.pv-none')
+  const img = document.querySelector('.pv img')
+  return { explained: note ? note.innerText.replace(/\s+/g, ' ').slice(0, 90) : null, stillShowingImg: !!img }
+})
+log('undecodable image:', JSON.stringify(broken))
+log(
+  broken.explained && !broken.stillShowingImg
+    ? '  ✓ says what happened instead of going blank'
+    : '  ✗ BLANK PANEL — the user is told nothing',
+)
+await client.screenshot({ path: '/tmp/client-preview-failed.png' })
+await client.keyboard.press('Escape')
 
 // --- a pdf, the one kind that needs a frame --------------------------
 // Worth its own step: the frame carries no sandbox (see preview.ts), and

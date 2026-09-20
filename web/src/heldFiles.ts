@@ -16,6 +16,8 @@ export interface HeldFile {
   name: string
   size: number
   modifiedAt?: number
+  /** The Depot's own type, carried so a preview still works after a reload. */
+  mime?: string
   blob: Blob
   /** A save URL, kept for the life of the panel so the row stays clickable. */
   url: string

@@ -36,6 +36,15 @@ export interface DirEntry {
   modifiedAt?: number
   /** Children, where the Depot can count them cheaply. Directories only. */
   count?: number
+  /**
+   * What the Depot's storage layer calls this file, where it knows.
+   *
+   * Advisory, and never trusted beyond choosing a renderer — see
+   * preview.ts. It exists because a display name is not always enough:
+   * Android content providers hand back names with no extension, and a
+   * Client reading only extensions calls those files unpreviewable.
+   */
+  mime?: string
 }
 
 interface ListMessage {
@@ -213,6 +222,8 @@ export interface SenderEvent {
 export interface OfferedFile {
   name: string
   bytes: Uint8Array
+  /** What the browser's File said it was, passed on as §5.9's advisory mime. */
+  mime?: string
 }
 
 /**
@@ -255,7 +266,9 @@ export function singleFileSource(getFile: () => OfferedFile | null): DepotSource
       if (handle !== '') return []
       const file = getFile()
       if (!file) return []
-      return [{ handle: handleFor(file), name: file.name, kind: 'file', size: file.bytes.length }]
+      return [
+        { handle: handleFor(file), name: file.name, kind: 'file', size: file.bytes.length, mime: file.mime },
+      ]
     },
     open: (handle) => {
       const file = getFile()
