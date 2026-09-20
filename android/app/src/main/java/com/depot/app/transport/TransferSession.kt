@@ -53,8 +53,20 @@ class CtlCodec(
     private val recvDirection = if (isDepot) Direction.CLIENT_TO_DEPOT else Direction.DEPOT_TO_CLIENT
 
     private val sendCounter = AtomicLong(0)
-    private val seen = mutableSetOf<Long>()
     private val sendLock = Any()
+
+    /*
+     * Replay tracking as a sliding window rather than a growing set.
+     *
+     * Remembering every counter ever accepted is correct and unbounded,
+     * and this runs on a phone for as long as a Client stays connected.
+     * Counters only increase at the sender, so anything far enough below
+     * the highest seen cannot be a legitimate reordering — it is a replay
+     * or a frame too late to be worth anything. Refusing those outright
+     * bounds the memory without weakening the check.
+     */
+    private val recent = mutableSetOf<Long>()
+    private var highestSeen = -1L
 
     fun send(msg: JSONObject) {
         val plaintext = msg.toString().toByteArray(Charsets.UTF_8)
@@ -74,15 +86,32 @@ class CtlCodec(
     /** Returns null for anything undecryptable, malformed, forged or replayed. */
     fun receive(raw: ByteArray): JSONObject? = try {
         val decoded = decodeCtlFrame(recvKey, recvDirection, raw)
-        synchronized(seen) {
-            if (!seen.add(decoded.counter)) {
-                null // replayed by the relay
+        synchronized(recent) {
+            if (!accept(decoded.counter)) {
+                null // replayed by the relay, or too old to matter
             } else {
                 JSONObject(String(decoded.plaintext, Charsets.UTF_8))
             }
         }
     } catch (_: Exception) {
         null
+    }
+
+    /** Callers hold the lock on [recent]. */
+    private fun accept(counter: Long): Boolean {
+        if (counter <= highestSeen - REPLAY_WINDOW) return false
+        if (!recent.add(counter)) return false
+        if (counter > highestSeen) {
+            highestSeen = counter
+            // Whatever just fell out of the window is refused by the
+            // first test from now on, so it need not be remembered.
+            recent.removeAll { it <= highestSeen - REPLAY_WINDOW }
+        }
+        return true
+    }
+
+    private companion object {
+        const val REPLAY_WINDOW = 1024L
     }
 }
 
@@ -219,6 +248,16 @@ class FileSender(
         // to agree about sizing — only about what was actually sent.
         val avgSize = minOf(chunkSizer.current(), maxChunkSize)
         val manifest = buildManifestStreaming(transferId, file.name, cdcParamsForAvg(avgSize), file.openStream)
+        // Bounded, because a manifest is not small: one entry per chunk,
+        // each with a hash, so a 600 MB file is hundreds of them. Held
+        // for the life of the connection they accumulate one browse at a
+        // time on a device that has the least memory to spare. The oldest
+        // is dropped instead; a Client that comes back to it gets "no
+        // such file" and re-requests, which §5.7 already handles.
+        while (transfers.size >= MAX_LIVE_TRANSFERS) {
+            val oldest = transfers.keys.minOrNull() ?: break
+            transfers.remove(oldest)
+        }
         transfers[transferId] = manifest to file
         ctl.send(JSONObject().put("type", "MANIFEST").put("manifest", manifest.toJson()))
         cb.onManifestSent(transferId, manifest.chunkCount)
@@ -330,6 +369,15 @@ class FileSender(
     fun stop() {
         sampler?.cancel()
         sampler = null
+        transfers.clear()
         runCatching { channels.ctl.unregisterObserver() }
+    }
+
+    private companion object {
+        /**
+         * How many manifests to keep answerable at once. Resumption needs
+         * the current one; several in flight is already unusual.
+         */
+        const val MAX_LIVE_TRANSFERS = 8
     }
 }

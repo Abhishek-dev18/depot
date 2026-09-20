@@ -124,7 +124,37 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
   const recvDirection = role === 'client' ? Direction.DepotToClient : Direction.ClientToDepot
 
   let sendCounter = 0
-  const seen = new Set<number>()
+
+  /*
+   * Replay tracking, as a sliding window rather than a growing set.
+   *
+   * Remembering every counter ever accepted is correct and unbounded: a
+   * session that browses a large tree sends a ctl message per directory,
+   * and nothing ever falls out. Counters only increase at the sender, so
+   * anything far enough below the highest one seen cannot be a legitimate
+   * reordering — it is either a replay or a frame so late it is useless.
+   * Rejecting those outright bounds the memory without weakening
+   * anything: a relay replaying a recent frame still fails, and one
+   * replaying an old frame fails harder.
+   */
+  const REPLAY_WINDOW = 1024
+  let highestSeen = -1
+  const recent = new Set<number>()
+
+  function acceptCounter(counter: number): boolean {
+    if (counter <= highestSeen - REPLAY_WINDOW) return false // too old to be real
+    if (recent.has(counter)) return false // already accepted
+    recent.add(counter)
+    if (counter > highestSeen) {
+      highestSeen = counter
+      // Everything that just fell out of the window is refused by the
+      // first test from now on, so it need not be remembered.
+      for (const old of recent) {
+        if (old <= highestSeen - REPLAY_WINDOW) recent.delete(old)
+      }
+    }
+    return true
+  }
 
   async function send(msg: CtlMessage): Promise<void> {
     const frame = await encodeCtlFrame(sendKey, sendDirection, sendCounter++, encodeUtf8(JSON.stringify(msg)))
@@ -134,7 +164,7 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
   // One channel listener, fanning out to every handler.
   //
   // Registering a listener per handler looks equivalent and is not: they
-  // share `seen`, so whichever listener decoded a frame first would mark
+  // share the replay window, so whichever listener decoded a frame first would mark
   // its counter as accepted and every other handler would then drop the
   // same frame as a replay. With one waiter at a time that never showed;
   // browsing runs a standing handler alongside waitFor, which would have.
@@ -145,8 +175,7 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
       try {
         const raw = new Uint8Array(ev.data as ArrayBuffer)
         const { counter, plaintext } = await decodeCtlFrame(recvKey, recvDirection, raw)
-        if (seen.has(counter)) return // replayed by the relay
-        seen.add(counter)
+        if (!acceptCounter(counter)) return // replayed, or too old to matter
         const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext))
         if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) return
         // Copied first: a handler may unsubscribe itself while we iterate.
@@ -291,6 +320,9 @@ export interface RunningSender {
   stop: () => void
 }
 
+/** How many manifests a sender keeps answerable at once. */
+const MAX_LIVE_TRANSFERS = 8
+
 export async function runFileSender(
   channels: DataChannels,
   keys: SessionKeys,
@@ -340,6 +372,14 @@ export async function runFileSender(
         // which handles exist.
         await ctl.send({ type: 'ERROR', message: 'no such file' })
         return
+      }
+      // Bounded for the same reason as the Android sender: an entry
+      // holds the file's bytes, so keeping every transfer of a session
+      // keeps every file it ever served. A Client returning to a dropped
+      // one gets "no such file" and re-requests, which §5.7 handles.
+      while (transfers.size >= MAX_LIVE_TRANSFERS) {
+        const oldest = Math.min(...transfers.keys())
+        transfers.delete(oldest)
       }
       const transferId = nextTransferId++
       const avg = Math.min(chunkSizer.current(), maxChunkSize)
