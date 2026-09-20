@@ -38,6 +38,9 @@ writeFileSync('/tmp/sample.pdf', minimalPdf('DEPOT PDF'))
 // A name that says JPEG over bytes that are not one, to drive the
 // failure path: a media element that cannot decode renders nothing
 // at all, which is indistinguishable from a preview that never came.
+writeFileSync('/tmp/fetchonly.txt', 'fetched without opening\n'.repeat(50))
+// Over MAX_PREVIEW_SIZE, so the preview must refuse before it starts.
+writeFileSync('/tmp/huge.txt', 'x'.repeat(52_000_000))
 writeFileSync('/tmp/broken.jpg', 'not an image at all, just text pretending\n'.repeat(20))
 
 /** One page, one line of Helvetica. Real enough for a browser to open. */
@@ -129,10 +132,16 @@ log('listing updated with no reload:', JSON.stringify(rows))
 await client.waitForTimeout(600)
 await client.screenshot({ path: '/tmp/client-files.png' })
 
-// --- download it -----------------------------------------------------
-await client.locator('.fr:not(.fr-note)').first().click()
+// --- click the file: fetch it and open it ----------------------------
+// Clicking the name means "bring it over and show me". FETCH, tested
+// further down, is the same transfer without the opening.
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
 await client.waitForSelector('.received-row', { timeout: 40000 })
 log('received:', (await client.locator('.received-row').first().innerText()).replace(/\s+/g, ' '))
+await client.waitForSelector('.pv', { timeout: 15000 })
+log('clicking the file opened it as well as fetching it ✓')
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
 await client.screenshot({ path: '/tmp/client-received.png' })
 
 // --- a file already in hand is not asked for twice -------------------
@@ -144,10 +153,10 @@ const before = await fetches()
 await client.waitForSelector('.fr .held', { timeout: 10000 })
 log(`row marked HELD after the transfer ✓  (fetches so far: ${before})`)
 
-await client.locator('.fr:not(.fr-note)').first().click()
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
 await client.waitForSelector('.pv', { timeout: 10000 })
 const after = await fetches()
-log(`second click -> preview open, fetches ${before} -> ${after}`,
+log(`clicked again -> preview open, fetches ${before} -> ${after}`,
   after === before ? '✓ nothing re-downloaded' : '✗ FETCHED AGAIN')
 
 const shown = await client.locator('.pv-text').innerText()
@@ -174,12 +183,14 @@ const heldOnNewFile = await client.locator('.fr .held').count()
 log(`listing swapped to the png; stale HELD marks: ${heldOnNewFile}`,
   heldOnNewFile === 0 ? '✓ not claimed as held' : '✗ CLAIMS TO HOLD THE OLD FILE')
 
-await client.locator('.fr:not(.fr-note)').first().click()
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
 await client.waitForSelector('.fr .held', { timeout: 40000 })
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 8000 })
 const afterPng = await fetches()
 log(`png fetched (${before} -> ${afterPng})`, afterPng > before ? '✓ went over the wire' : '✗ SERVED STALE BYTES')
 
-await client.locator('.fr:not(.fr-note)').first().click()
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
 await client.waitForSelector('.pv img', { timeout: 10000 })
 const decoded = await client.evaluate(() => {
   const img = document.querySelector('.pv img')
@@ -203,7 +214,7 @@ await client.waitForSelector('.fr .held', { timeout: 20000 })
 log('the row is still marked HELD after a reload ✓')
 
 // And clicking it must open, not re-fetch.
-await client.locator('.fr:not(.fr-note)').first().click()
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
 await client.waitForSelector('.pv', { timeout: 10000 })
 const fetchesAfterReload = await fetches()
 log(
@@ -231,6 +242,88 @@ await client.screenshot({ path: '/tmp/client-settings.png' })
 await client.getByRole('button', { name: 'Close' }).click()
 await client.waitForSelector('.ftable', { timeout: 10000 })
 
+// --- two ways to click a row, and two verbs on what arrived ----------
+// FETCH brings it over and says nothing more; the name brings it over
+// and opens it. Below, PREVIEW stays in the browser and DOWNLOAD is the
+// only thing that writes to the machine.
+await depot.locator('input[type=file]').setInputFiles('/tmp/fetchonly.txt')
+await client.waitForFunction(
+  () => document.querySelector('.fr:not(.fr-note) .fn')?.textContent === 'fetchonly.txt',
+  null,
+  { timeout: 20000 },
+)
+const beforeFetch = await fetches()
+await client.locator('.fr:not(.fr-note) .fr-fetch').first().click()
+await client.waitForSelector('.fr .held', { timeout: 40000 })
+const openedByFetch = await client.locator('.pv').count()
+log(
+  `FETCH: fetches ${beforeFetch} -> ${await fetches()}, preview open = ${openedByFetch}`,
+  openedByFetch === 0 ? '✓ brought it over without opening it' : '✗ OPENED A PREVIEW',
+)
+
+const row = client.locator('.received-row').filter({ hasText: 'fetchonly.txt' })
+const verbs = await row.locator('.received-act').allInnerTexts()
+log('verbs on the received row:', JSON.stringify(verbs),
+  verbs.join(',') === 'PREVIEW,DOWNLOAD' ? '✓' : '✗ WRONG ACTIONS')
+const downloadHref = await row.locator('a.received-act.download').getAttribute('download')
+log('download writes to disk as:', JSON.stringify(downloadHref),
+  downloadHref === 'fetchonly.txt' ? '✓ and only on click' : '✗')
+
+await row.locator('button.received-act').click()
+await client.waitForSelector('.pv', { timeout: 10000 })
+log('PREVIEW opened from the cache ✓  (fetches unchanged:', await fetches(), ')')
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
+
+// --- too large to draw: shadowed, and it says why --------------------
+await depot.locator('input[type=file]').setInputFiles('/tmp/huge.txt')
+await client.waitForFunction(
+  () => document.querySelector('.fr:not(.fr-note) .fn')?.textContent === 'huge.txt',
+  null,
+  { timeout: 20000 },
+)
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
+await client.waitForSelector('.dlg', { timeout: 10000 })
+const refusal = await client.evaluate(() => ({
+  title: document.querySelector('.dlg-title')?.textContent,
+  body: document.querySelector('.dlg-body')?.textContent,
+  offers: [...document.querySelectorAll('.dlg-actions button')].map((b) => b.textContent),
+}))
+log('clicking a too-large file:', JSON.stringify(refusal))
+log(
+  refusal.title === 'Too large to preview' && refusal.offers.includes('Fetch it anyway')
+    ? '  ✓ refused, explained, and still offers the thing that works'
+    : '  ✗ WRONG REFUSAL',
+)
+await client.screenshot({ path: '/tmp/client-toobig.png' })
+await client.locator('.dlg-go').click()
+await client.waitForSelector('.fr .held', { timeout: 60000 })
+
+const shadowed = await client.evaluate(() => {
+  const r = [...document.querySelectorAll('.received-row')].find((x) => x.textContent.includes('huge.txt'))
+  const b = r?.querySelector('button.received-act')
+  const style = b ? getComputedStyle(b) : null
+  return {
+    dimmed: b?.className.includes('off') && Number(style?.opacity) < 1,
+    // Not disabled in any sense a machine reads: it still takes clicks,
+    // and a screen reader is not told otherwise.
+    reallyClickable: b !== null && !b?.hasAttribute('disabled') && !b?.hasAttribute('aria-disabled'),
+    explains: (b?.getAttribute('title') ?? '').slice(0, 40),
+  }
+})
+log('its PREVIEW in the lower list:', JSON.stringify(shadowed),
+  shadowed.dimmed && shadowed.reallyClickable ? '✓ shadowed but live' : '✗ WRONG STATE')
+
+// Shadowed, not disabled: the click still lands and gets an answer.
+await client
+  .locator('.received-row')
+  .filter({ hasText: 'huge.txt' })
+  .locator('button.received-act')
+  .click()
+await client.waitForSelector('.dlg', { timeout: 10000 })
+log('clicking the shadowed PREVIEW still explains itself ✓')
+await client.keyboard.press('Escape')
+
 // --- a preview that cannot decode must say so ------------------------
 await depot.locator('input[type=file]').setInputFiles('/tmp/broken.jpg')
 await client.waitForFunction(
@@ -238,10 +331,8 @@ await client.waitForFunction(
   null,
   { timeout: 20000 },
 )
-await client.locator('.fr:not(.fr-note)').first().click()
-await client.waitForSelector('.fr .held', { timeout: 40000 })
-await client.locator('.fr:not(.fr-note)').first().click()
-await client.waitForSelector('.pv', { timeout: 10000 })
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
+await client.waitForSelector('.pv', { timeout: 40000 })
 await client.waitForTimeout(1200)
 const broken = await client.evaluate(() => {
   const note = document.querySelector('.pv-none')
@@ -269,10 +360,8 @@ await client.waitForFunction(
   null,
   { timeout: 20000 },
 )
-await client.locator('.fr:not(.fr-note)').first().click()
-await client.waitForSelector('.fr .held', { timeout: 40000 })
-await client.locator('.fr:not(.fr-note)').first().click()
-await client.waitForSelector('.pv-frame', { timeout: 10000 })
+await client.locator('.fr:not(.fr-note) .fr-open').first().click()
+await client.waitForSelector('.pv-frame', { timeout: 40000 })
 await client.waitForTimeout(3000)
 // Chromium draws a broken-file icon on a grey field when the viewer
 // refuses the document, so a white page is the thing to look for.

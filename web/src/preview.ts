@@ -100,9 +100,58 @@ const TEXT = new Set([
 
 /**
  * Past this, a preview stops being a glance and becomes a way to freeze
- * the tab. Big files still save; they just do not get painted.
+ * the tab. Text is the worst of them: every byte becomes a DOM character.
  */
-export const TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024
+export const TEXT_PREVIEW_LIMIT = 2_000_000
+
+/**
+ * The general ceiling on previewing.
+ *
+ * An image is decoded whole before anything is drawn — a 50-megapixel
+ * photograph is a 200 MB bitmap regardless of how small the JPEG is —
+ * and a PDF viewer reads the document in. Above this the tab is likely
+ * to stall or die, and a browser that dies takes the file with it.
+ *
+ * It is deliberately one number rather than a rule per kind. Video and
+ * audio actually stream from a blob URL and could go higher, so this is
+ * conservative for those; a single predictable limit is worth more than
+ * four defensible ones nobody can keep in their head.
+ */
+export const MAX_PREVIEW_SIZE = 50_000_000
+
+/**
+ * Why this file cannot be shown, or null if it can.
+ *
+ * Separate from describePreview because size is not a property of the
+ * format: the same photograph is previewable at 2 MB and not at 200 MB,
+ * and the UI needs to know before it offers the action, not after.
+ */
+export function previewBlockedReason(preview: Preview, size: number): string | null {
+  if (preview.kind === 'text' && size > TEXT_PREVIEW_LIMIT) {
+    return `This is ${formatSize(size)} of text. Anything over ${formatSize(
+      TEXT_PREVIEW_LIMIT,
+    )} is shown as a file rather than printed into the page.`
+  }
+  if (size > MAX_PREVIEW_SIZE) {
+    return `This file is ${formatSize(size)}. Previewing anything over ${formatSize(
+      MAX_PREVIEW_SIZE,
+    )} in a browser tab risks running it out of memory, so it is offered as a download instead.`
+  }
+  return null
+}
+
+/** Local so this module stays free of UI imports; matches format.ts. */
+function formatSize(bytes: number): string {
+  const units = ['KB', 'MB', 'GB']
+  if (bytes < 1000) return `${bytes} B`
+  let value = bytes / 1000
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit++
+  }
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
+}
 
 /**
  * What the Depot says a file is, where that maps onto something safe.

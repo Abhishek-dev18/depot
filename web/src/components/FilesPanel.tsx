@@ -3,8 +3,9 @@ import type { DepotConnection } from '../pairing/clientReconnect'
 import type { DirEntry } from '../transport/transferSession'
 import { formatBytes, formatDay, nowMs } from '../format'
 import { heldFor, keyFor, type HeldFile } from '../heldFiles'
-import { describePreview } from '../preview'
+import { describePreview, previewBlockedReason } from '../preview'
 import { listCachedFiles, putCachedFile } from '../storage/fileCache'
+import { Dialog } from './Dialog'
 import { PreviewOverlay } from './PreviewOverlay'
 import { TransferCard, type TransferState } from './TransferCard'
 
@@ -35,6 +36,8 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const [received, setReceived] = useState<HeldFile[]>([])
   const [pending, setPending] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState<string | null>(null)
+  // The refusal dialog for a file too large to draw in a tab.
+  const [refused, setRefused] = useState<{ title: string; body: string; action?: { label: string; onClick: () => void } } | null>(null)
 
   // The refresh callbacks fire from outside React and must not capture a
   // stale trail, so the current one is kept in a ref alongside the state.
@@ -237,14 +240,56 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
    * data to arrive at what the browser is already holding. Only a listing
    * that disagrees with the held copy sends it back over the wire.
    */
-  const activate = async (entry: DirEntry) => {
+  /** Why this file cannot be drawn, or null. Size is known from the listing. */
+  const blockedReason = (file: { name: string; size?: number; mime?: string }): string | null =>
+    previewBlockedReason(describePreview(file.name, file.mime), file.size ?? 0)
+
+  /** Bring it over and say nothing more — the FETCH action on a row. */
+  const fetchOnly = async (entry: DirEntry) => {
+    if (pending || heldFor(received, entry)) return
+    await fetchFile(entry)
+  }
+
+  /**
+   * Clicking the file itself: bring it over and open it.
+   *
+   * The two actions are one code path with different endings, which is
+   * the point — fetching is fetching, and whether a preview follows is a
+   * property of the click, not of the transfer.
+   */
+  const fetchAndPreview = async (entry: DirEntry) => {
     if (pending) return
+    const reason = blockedReason(entry)
+    if (reason !== null) {
+      const held = heldFor(received, entry)
+      setRefused({
+        title: 'Too large to preview',
+        body: reason,
+        action: held
+          ? undefined
+          : { label: 'Fetch it anyway', onClick: () => void fetchFile(entry) },
+      })
+      return
+    }
     const held = heldFor(received, entry)
     if (held) {
       setPreviewing(held.key)
       return
     }
     await fetchFile(entry)
+    // Opened by key rather than by the returned value: fetchFile owns the
+    // received list, and reading it back is what keeps one source of truth.
+    setPreviewing(keyFor(entry))
+  }
+
+  /** PREVIEW in the lower list, which never goes back to the Depot. */
+  const previewHeld = (file: HeldFile) => {
+    const reason = blockedReason(file)
+    if (reason !== null) {
+      setRefused({ title: 'Too large to preview', body: reason })
+      return
+    }
+    setPreviewing(file.key)
   }
 
   /**
@@ -352,25 +397,48 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
             {!loading &&
               entries.map((entry) => {
                 const held = heldFor(received, entry)
-                const current = held !== undefined
+                const busy = pending === entry.handle
+                // A held file opens from memory, so a transfer in flight
+                // is no reason to make it unclickable.
+                const frozen = pending !== null && held === undefined
                 return (
-                  <button
-                    key={entry.handle}
-                    className={pending === entry.handle ? 'fr fr-busy' : 'fr'}
-                    onClick={() => (entry.kind === 'dir' ? void open([...trail, entry]) : void activate(entry))}
-                    // A held file opens from memory, so a transfer in
-                    // flight is no reason to make it unclickable.
-                    disabled={pending !== null && !current}
-                    title={current ? 'Already received — opens without asking the Depot again' : undefined}
-                  >
-                    <div className="n">
-                      <i aria-hidden="true">{entry.kind === 'dir' ? '▤' : '▣'}</i>
-                      <span className="fn">{entry.name}</span>
-                      {current && <span className="held">✓ HELD</span>}
+                  <div key={entry.handle} className={busy ? 'fr fr-busy' : 'fr'}>
+                    <button
+                      className="fr-open"
+                      onClick={() =>
+                        entry.kind === 'dir' ? void open([...trail, entry]) : void fetchAndPreview(entry)
+                      }
+                      disabled={frozen}
+                      title={
+                        entry.kind === 'dir'
+                          ? undefined
+                          : held
+                            ? 'Already in this browser — opens without asking the Depot again'
+                            : 'Fetch it and open it'
+                      }
+                    >
+                      <span className="n">
+                        <i aria-hidden="true">{entry.kind === 'dir' ? '▤' : '▣'}</i>
+                        <span className="fn">{entry.name}</span>
+                      </span>
+                      <span className="sz">{entry.kind === 'dir' ? '—' : formatBytes(entry.size ?? 0)}</span>
+                      <span className="dt">{formatDay(entry.modifiedAt)}</span>
+                    </button>
+                    <div className="fr-act">
+                      {entry.kind === 'dir' ? null : held ? (
+                        <span className="held">✓ HELD</span>
+                      ) : (
+                        <button
+                          className="fr-fetch"
+                          onClick={() => void fetchOnly(entry)}
+                          disabled={frozen}
+                          title="Bring it over without opening it"
+                        >
+                          {busy ? 'FETCHING' : 'FETCH'}
+                        </button>
+                      )}
                     </div>
-                    <div className="sz">{entry.kind === 'dir' ? '—' : formatBytes(entry.size ?? 0)}</div>
-                    <div className="dt">{formatDay(entry.modifiedAt)}</div>
-                  </button>
+                  </div>
                 )
               })}
           </div>
@@ -378,24 +446,54 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
           {received.length > 0 && (
             <div className="received">
               <div className="sl">RECEIVED · VERIFIED</div>
-              {received.map((file) => (
-                <div key={file.key} className="received-row">
-                  <button className="received-open" onClick={() => setPreviewing(file.key)}>
-                    <span className="received-name">{file.name}</span>
-                    <span className="received-size">{formatBytes(file.size)}</span>
-                    <span className="received-view">
-                      {describePreview(file.name, file.mime).kind === 'none' ? 'DETAILS' : 'VIEW'}
+              {received.map((file) => {
+                const reason = blockedReason(file)
+                const kind = describePreview(file.name, file.mime).kind
+                return (
+                  <div key={file.key} className="received-row">
+                    <span className="received-name" title={file.name}>
+                      {file.name}
                     </span>
-                  </button>
-                  <a className="received-save" href={file.url} download={file.name}>
-                    SAVE
-                  </a>
-                </div>
-              ))}
+                    <span className="received-size">{formatBytes(file.size)}</span>
+                    {/*
+                      Shadowed, and deliberately not marked disabled in
+                      any sense a machine reads. A disabled control
+                      swallows its own click, so the question it provokes
+                      — why can I not press this — would have nowhere to
+                      be answered; and aria-disabled would tell a screen
+                      reader the same lie, since this button does work.
+                      It is dimmed to say "not what you want", and
+                      pressing it explains why.
+                    */}
+                    <button
+                      className={reason === null ? 'received-act' : 'received-act off'}
+                      title={reason ?? undefined}
+                      onClick={() => previewHeld(file)}
+                    >
+                      {kind === 'none' ? 'DETAILS' : 'PREVIEW'}
+                    </button>
+                    {/*
+                      The only thing here that writes to the machine.
+                      Everything above this line happens in the browser.
+                    */}
+                    <a className="received-act download" href={file.url} download={file.name}>
+                      DOWNLOAD
+                    </a>
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
 
+      {refused && (
+        <Dialog
+          title={refused.title}
+          body={refused.body}
+          action={refused.action}
+          onClose={() => setRefused(null)}
+        />
+      )}
       {previewFile && (
         <PreviewOverlay
           file={previewFile}
