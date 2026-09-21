@@ -135,6 +135,31 @@ log(
   emptyRows === 0 && inboxRows === 1 ? '✓ only the place uploads go' : '✗ UNEXPECTED LISTING',
 )
 
+// --- "check again now" must actually check ---------------------------
+// It used to clear the flags and leave an effect to notice. From this
+// screen that did nothing at all — `offline` is not one of that effect's
+// dependencies — so pressing the button was how you switched the
+// retrying off, and the page then waited for ever.
+await depot.getByRole('button', { name: /Stop listening/i }).click()
+await client.waitForSelector('.waitwrap', { timeout: 30000 })
+const tickBefore = await client.locator('.tick').innerText()
+await client.getByRole('button', { name: /Check again now/i }).click()
+// A press that tries produces an attempt; a press that only clears
+// flags produces silence, and the tick below never moves again.
+await client.waitForFunction(
+  (was) => {
+    const tick = document.querySelector('.tick')
+    return !!tick && tick.textContent !== was
+  },
+  tickBefore,
+  { timeout: 30000 },
+)
+log('pressing "check again now" started another attempt ✓')
+
+await depot.getByRole('button', { name: /Start listening/i }).click()
+await client.waitForSelector('.ftable', { timeout: 60000 })
+log('and it still reconnects on its own afterwards ✓')
+
 // --- share a file at a Client that is already connected -------------
 // The reported bug: this only appeared after reloading the browser.
 await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')

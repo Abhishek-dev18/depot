@@ -95,6 +95,9 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
         onError: (message) => {
           push(`error: ${message}`)
           setFailure(message)
+          // Counted like a refusal, because it is another thing that did
+          // not work and the page has to try again after it.
+          setAttempts((n) => n + 1)
         },
       })
       connectingRef.current = false
@@ -112,23 +115,32 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     void connect(pairings[0].depotId)
   }, [pairings, session, connecting, failure, connect])
 
-  // A Depot that is not listening yet will be, shortly. Polling for it
-  // costs one WebSocket round trip and saves the user reloading the page
-  // at the right moment, which is the behaviour this replaces.
-  //
-  // The retry calls connect() rather than nudging the effect above: that
-  // one does not list `offline` among its dependencies, so clearing the
-  // flag retriggered nothing and the page waited for ever. `attempts`
-  // changing on each refusal is what schedules the next poll.
+  /*
+   * Keep trying, whichever way it did not work.
+   *
+   * There are two: the Depot says it is not registered, and the attempt
+   * fails outright. This used to poll only for the first, so a page that
+   * had seen one error sat on the failure screen for ever — the phone
+   * could come online and nothing would notice, because nothing was
+   * looking. That is most of "it never connects until I reload": a
+   * reload is simply the only thing that starts a fresh attempt.
+   *
+   * A phone that is merely switched off is polled briskly, since the
+   * answer costs one round trip and arrives at once. A failure backs off,
+   * because whatever went wrong is unlikely to be fixed four seconds
+   * later and the attempt itself is expensive.
+   */
   useEffect(() => {
-    if (!offline || session) return
+    if (session || connecting) return
+    if (!offline && failure === null) return
     const depotId = pairings[0]?.depotId
     if (!depotId) return
+    const delay = failure === null ? 4_000 : Math.min(30_000, 4_000 * 2 ** Math.min(attempts, 3))
     const timer = setTimeout(() => {
       void connect(depotId)
-    }, 4000)
-      return () => clearTimeout(timer)
-  }, [offline, session, attempts, pairings, connect])
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [offline, failure, session, connecting, attempts, pairings, connect])
 
   /**
    * The transport died — the phone stopped listening, slept, or changed
@@ -154,10 +166,22 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     push('disconnected')
   }
 
+  /**
+   * "Try now", and it has to actually try.
+   *
+   * It used to clear the two flags and leave an effect to notice. From
+   * the failure screen that worked, because `failure` is one of that
+   * effect's dependencies. From the waiting screen it did nothing at
+   * all: `offline` is not, so clearing it re-ran only the loop above —
+   * which then saw `offline` false and stopped scheduling. Pressing the
+   * button was how you switched the retrying off.
+   */
   const retry = () => {
     setFailure(null)
     setOffline(false)
-    autoConnected.current = false
+    setAttempts(0)
+    const depotId = pairings[0]?.depotId
+    if (depotId) void connect(depotId)
   }
 
   /** Drop the stored credential and start over with a fresh code. */
@@ -255,7 +279,7 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
           onRate={setRate}
         />
       ) : failure ? (
-        <NoRoutePanel message={failure} onRetry={retry} onSettings={onOpenSettings} />
+        <NoRoutePanel message={failure} attempts={attempts} onRetry={retry} onSettings={onOpenSettings} />
       ) : offline ? (
         <WaitingPanel attempts={attempts} onRetryNow={retry} onPairAgain={pairAgain} />
       ) : connecting ? (
