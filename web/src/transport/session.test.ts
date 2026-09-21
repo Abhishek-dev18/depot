@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { putChunks, resetChunkCacheForTests } from '../storage/chunkCache'
 import { Direction, encodeChunkFrame, encodeCtlFrame } from './frame'
 import { buildManifest } from './manifest'
@@ -54,8 +54,29 @@ class LosesItsFirstMessage extends FakeChannel {
   }
 }
 
+/** A link that takes its time, without ever going quiet for long. */
+class Dawdles extends FakeChannel {
+  delayMs = 0
+  /** Each message lands a gap after the one before it, not all at once. */
+  private queued = 0
+
+  override send(data: Uint8Array): void {
+    const payload = data.slice().buffer
+    this.queued += 1
+    setTimeout(() => {
+      this.queued -= 1
+      this.peer?.dispatchEvent(new MessageEvent('message', { data: payload }))
+    }, this.delayMs * this.queued)
+  }
+}
+
+/** A link that swallows everything written to it. */
+class SaysNothing extends FakeChannel {
+  override send(): void {}
+}
+
 function linkedChannels(
-  options: { clientCtl?: () => FakeChannel } = {},
+  options: { clientCtl?: () => FakeChannel; depotData?: () => FakeChannel } = {},
 ): { client: DataChannels; depot: DataChannels } {
   const make = (a: FakeChannel = new FakeChannel()) => {
     const b = new FakeChannel()
@@ -64,7 +85,9 @@ function linkedChannels(
     return [a, b] as const
   }
   const [clientCtl, depotCtl] = make(options.clientCtl?.())
-  const [clientData, depotData] = make()
+  const [depotData, clientData] = options.depotData
+    ? make(options.depotData())
+    : (([a, b]) => [b, a] as const)(make())
 
   // sampleNetwork() only iterates the report, so an empty one is a valid
   // "nothing to learn yet" and leaves the chunk sizer at its default.
@@ -657,6 +680,67 @@ describe('a Client whose CAPS never arrives', () => {
     const entries = await session.list('')
     const got = await session.fetch(entries[0].handle)
     expect(await bytesOf(got)).toEqual(Array.from(file.bytes))
+    session.close()
+    sender.stop()
+  })
+})
+
+/**
+ * protocol.md §5.7 — giving up is about silence, not about size.
+ *
+ * The receive loop armed a single 120-second timeout when a transfer
+ * started and never touched it again, which made it a cap on how long a
+ * file is allowed to take. On a LAN nothing reaches it. Over mobile data
+ * it is about 15 MB: a video arriving perfectly steadily was cut off
+ * part-way and reported as a timeout. The upload direction already
+ * measured the gap between chunks rather than the whole; this is the
+ * same rule pointed the other way.
+ */
+describe('a download that is slow but never silent', () => {
+  const stall = (ms: number | undefined) => {
+    ;(globalThis as { DEPOT_DOWNLOAD_STALL_MS?: number }).DEPOT_DOWNLOAD_STALL_MS = ms
+  }
+  afterEach(() => stall(undefined))
+
+  it('finishes, however much longer it takes than the window', async () => {
+    // Every gap is comfortably inside the window; the transfer as a
+    // whole is several times longer than it. Only a total deadline
+    // fails this.
+    stall(300)
+    const slowLink = new Dawdles()
+    slowLink.delayMs = 60
+
+    const file = fileOf('holiday.mp4', 400_000, 12)
+    const { client, depot } = linkedChannels({ depotData: () => slowLink })
+    const k = keys()
+    const [sender, session] = await Promise.all([
+      runFileSender(depot, k, singleFileSource(() => file), () => {}),
+      openClientSession(client, k),
+    ])
+
+    const entries = await session.list('')
+    const started = Date.now()
+    const got = await session.fetch(entries[0].handle)
+    expect(await bytesOf(got)).toEqual(Array.from(file.bytes))
+    expect(Date.now() - started, 'the point is that it took longer than one window').toBeGreaterThan(300)
+
+    session.close()
+    sender.stop()
+  })
+
+  it('still gives up on a Depot that has gone quiet, and says what was left', async () => {
+    stall(200)
+    const file = fileOf('stops.bin', 200_000, 13)
+    const { client, depot } = linkedChannels({ depotData: () => new SaysNothing() })
+    const k = keys()
+    const [sender, session] = await Promise.all([
+      runFileSender(depot, k, singleFileSource(() => file), () => {}),
+      openClientSession(client, k),
+    ])
+
+    const entries = await session.list('')
+    await expect(session.fetch(entries[0].handle)).rejects.toThrow(/nothing arrived for .*chunk/s)
+
     session.close()
     sender.stop()
   })

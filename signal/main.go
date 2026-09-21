@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	addr := envOr("SIGNAL_ADDR", ":8080")
+	addr := listenAddr()
 	trustProxy := envOr("SIGNAL_TRUST_PROXY", "") != ""
 	logger := log.New(os.Stdout, "signal ", log.LstdFlags|log.Lmsgprefix)
 
@@ -168,6 +168,23 @@ func clientIP(r *http.Request, trustProxy bool) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// Where to listen, in the order a deployment is likely to say it.
+//
+// SIGNAL_ADDR is this program's own setting and wins. PORT is what every
+// managed host injects — Render, Railway, Heroku, Cloud Run — and a
+// server that ignores it binds a port nothing routes to, which presents
+// as a deploy that builds, starts, reports healthy and refuses every
+// connection.
+func listenAddr() string {
+	if v := os.Getenv("SIGNAL_ADDR"); v != "" {
+		return v
+	}
+	if v := os.Getenv("PORT"); v != "" {
+		return ":" + strings.TrimPrefix(v, ":")
+	}
+	return ":8080"
 }
 
 func envOr(key, def string) string {

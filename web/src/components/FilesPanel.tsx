@@ -9,6 +9,23 @@ import { Dialog } from './Dialog'
 import { PreviewOverlay } from './PreviewOverlay'
 import { TransferCard, type TransferState } from './TransferCard'
 
+/**
+ * One file this browser was asked to send to the Depot (§5.10).
+ *
+ * `storedAs` is what the Depot actually called it, which is not always
+ * what was offered — it never overwrites, so a name already taken comes
+ * back with something appended.
+ */
+interface Outgoing {
+  id: number
+  name: string
+  size: number
+  to: string
+  state: 'waiting' | 'sending' | 'sent' | 'failed'
+  storedAs?: string
+  error?: string
+}
+
 interface Props {
   session: DepotConnection
   depotLabel: string
@@ -38,6 +55,18 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const [previewing, setPreviewing] = useState<string | null>(null)
   // The refusal dialog for a file too large to draw in a tab.
   const [uploading, setUploading] = useState<TransferState | null>(null)
+  /**
+   * What has been handed to this browser to send, and how each one went.
+   *
+   * Kept for the session rather than cleared as each finishes: the
+   * mirror of the phone's SHARED list, where what you picked stays on
+   * screen so you can see what you sent and what it was called at the
+   * other end. A Depot never overwrites, so the name it chose is often
+   * not the one that was offered, and that is worth saying once rather
+   * than leaving to be discovered.
+   */
+  const [outbox, setOutbox] = useState<Outgoing[]>([])
+  const [sendTo, setSendTo] = useState<string | null>(null)
   const [refused, setRefused] = useState<{ title: string; body: string; action?: { label: string; onClick: () => void } } | null>(null)
 
   // The refresh callbacks fire from outside React and must not capture a
@@ -46,6 +75,14 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   useEffect(() => {
     trailRef.current = trail
   }, [trail])
+
+  // Same reason as the trail above: fetchFile runs outside a render and
+  // needs to know what is already held without listing `received` as a
+  // dependency, which would rebuild it on every arrival.
+  const receivedRef = useRef<HeldFile[]>([])
+  useEffect(() => {
+    receivedRef.current = received
+  }, [received])
 
   const urlsRef = useRef<string[]>([])
   useEffect(
@@ -229,14 +266,18 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         // A re-fetch replaces the copy it supersedes rather than sitting
         // beside it: two rows with one name and different bytes is a
         // question nobody can answer from the outside.
-        setReceived((prev) => {
-          const previous = prev.find((f) => f.key === key)
-          if (previous) {
-            URL.revokeObjectURL(previous.url)
-            urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
-          }
-          return [held, ...prev.filter((f) => f.key !== key)]
-        })
+        // Handing back the superseded copy's save URL happens here and
+        // not inside the updater below. React may call an updater more
+        // than once and does so in development on purpose, to catch one
+        // that is doing something other than working out the next state
+        // — which is how the preview came to be pointed at a handle that
+        // had already been given back.
+        const previous = receivedRef.current.find((f) => f.key === key)
+        if (previous) {
+          URL.revokeObjectURL(previous.url)
+          urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
+        }
+        setReceived((prev) => [held, ...prev.filter((f) => f.key !== key)])
         log(
           persisted
             ? `${file.name} verified against the manifest and whole-file hash, and kept`
@@ -346,15 +387,66 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const uploadHere = trail.length > 0 && trail[trail.length - 1].writable === true
   const destination = uploadHere ? trail[trail.length - 1] : undefined
 
-  const upload = async (files: FileList | null) => {
-    const file = files?.[0]
-    if (!file || !destination || pending || uploading) return
+  /**
+   * Everywhere this Depot has said it will accept a file.
+   *
+   * Read from the root listing rather than from wherever the user has
+   * browsed to, because sending should not require finding the right
+   * folder first — the phone's half of this is one button, and so is
+   * this. `writable` is a statement of intent and not an authorisation:
+   * the Depot checks the grant again when the PUT lands, so the worst
+   * this can do is ask somewhere it will be refused.
+   */
+  const destinations = roots.filter((entry) => entry.kind === 'dir' && entry.writable === true)
+  const sendTarget =
+    destinations.find((d) => d.handle === sendTo) ?? (destinations.length > 0 ? destinations[0] : undefined)
+
+  /**
+   * Hands several files over at once, sent one after another.
+   *
+   * In sequence rather than together: two uploads racing share one data
+   * channel and one pair of hands at the other end, so they would take
+   * the same total time while each looked stuck.
+   */
+  const sendAll = async (files: FileList | null) => {
+    const picked = [...(files ?? [])]
+    if (picked.length === 0 || !sendTarget) return
+    const to = sendTarget
+    const queued: Outgoing[] = picked.map((file, i) => ({
+      id: nowMs() + i,
+      name: file.name,
+      size: file.size,
+      to: to.name,
+      state: 'waiting',
+    }))
+    setOutbox((prev) => [...queued, ...prev])
+
+    for (const [i, file] of picked.entries()) {
+      const id = queued[i].id
+      const mark = (patch: Partial<Outgoing>) =>
+        setOutbox((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)))
+      mark({ state: 'sending' })
+      try {
+        await uploadOne(file, to)
+        // uploadOne logs the name it was stored under; read it back from
+        // there rather than duplicating the rule about renaming.
+        mark({ state: 'sent', storedAs: lastStoredRef.current ?? file.name })
+      } catch (err) {
+        mark({ state: 'failed', error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+  }
+
+  /** What the Depot called the file it most recently accepted. */
+  const lastStoredRef = useRef<string | null>(null)
+
+  const uploadOne = async (file: File, to: DirEntry): Promise<void> => {
     const startedAt = nowMs()
     setUploading({ name: file.name, bytesReceived: 0, bytesTotal: file.size, startedAt, updatedAt: startedAt })
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
       const stored = await session.send(
-        destination.handle,
+        to.handle,
         { name: file.name, bytes, mime: file.type || undefined },
         (e) => {
           if (e.type === 'chunk-sent') {
@@ -366,16 +458,20 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
           }
         },
       )
+      lastStoredRef.current = stored
       // A Depot never overwrites, so what it stored may not be what was
       // asked for. Saying so beats letting someone find out later.
       log(
         stored === file.name
-          ? `${stored} sent to ${destination.name}`
-          : `sent to ${destination.name} as ${stored} — that name was taken`,
+          ? `${stored} sent to ${to.name}`
+          : `sent to ${to.name} as ${stored} — that name was taken`,
       )
       await refresh()
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err))
+      // Rethrown as well as reported: the queue needs to mark this one
+      // failed and carry on with the rest.
+      throw err
     } finally {
       setUploading(null)
     }
@@ -450,9 +546,10 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
               <label className={uploading ? 'upbtn busy' : 'upbtn'}>
                 <input
                   type="file"
+                  multiple
                   disabled={uploading !== null || pending !== null}
                   onChange={(e) => {
-                    void upload(e.target.files)
+                    void sendAll(e.target.files)
                     // Cleared so the same file can be picked twice.
                     e.target.value = ''
                   }}
@@ -524,6 +621,83 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
                   </div>
                 )
               })}
+          </div>
+
+          {/*
+            protocol.md §5.10, made a first-class action rather than
+            something found by browsing.
+            
+            Sending used to appear only once you had navigated into a
+            folder the Depot had marked writable, which meant the
+            feature existed and could not be found. The phone's half of
+            this is one button on its home screen; so is this.
+          */}
+          <div className="sendbox">
+            <div className="sl">SEND TO DEPOT</div>
+            {destinations.length === 0 ? (
+              <p className="sendnote">
+                This Depot is not accepting files. On the phone: <b>Shared folders</b>, pick a
+                folder, then turn on <b>Accept files into this folder</b>. Granting a folder to
+                read from is deliberately not the same question.
+              </p>
+            ) : (
+              <>
+                <div className="sendrow">
+                  <label className={uploading ? 'upbtn busy' : 'upbtn'}>
+                    <input
+                      type="file"
+                      multiple
+                      disabled={uploading !== null || pending !== null}
+                      onChange={(e) => {
+                        void sendAll(e.target.files)
+                        e.target.value = ''
+                      }}
+                    />
+                    {uploading ? `SENDING ${uploading.name}` : 'CHOOSE FILES TO SEND'}
+                  </label>
+                  {destinations.length === 1 ? (
+                    <span className="uphint">
+                      Into <b>{sendTarget?.name}</b>. Nothing is ever overwritten.
+                    </span>
+                  ) : (
+                    <label className="sendpick">
+                      INTO{' '}
+                      <select
+                        value={sendTarget?.handle ?? ''}
+                        onChange={(e) => setSendTo(e.target.value)}
+                      >
+                        {destinations.map((d) => (
+                          <option key={d.handle} value={d.handle}>
+                            {d.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+                {outbox.length > 0 && (
+                  <div className="outbox">
+                    {outbox.map((o) => (
+                      <div key={o.id} className={`out-row out-${o.state}`}>
+                        <span className="out-name" title={o.name}>
+                          {o.name}
+                        </span>
+                        <span className="out-size">{formatBytes(o.size)}</span>
+                        <span className="out-state">
+                          {o.state === 'waiting' && `WAITING · ${o.to.toUpperCase()}`}
+                          {o.state === 'sending' && `SENDING → ${o.to.toUpperCase()}`}
+                          {o.state === 'sent' &&
+                            (o.storedAs && o.storedAs !== o.name
+                              ? `SENT AS ${o.storedAs} · THAT NAME WAS TAKEN`
+                              : `SENT · IN ${o.to.toUpperCase()}`)}
+                          {o.state === 'failed' && (o.error ?? 'FAILED')}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           {received.length > 0 && (

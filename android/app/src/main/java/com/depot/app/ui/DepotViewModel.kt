@@ -13,6 +13,7 @@ import com.depot.app.pairing.runDepotPairing
 import com.depot.app.service.DepotService
 import com.depot.app.service.DepotSession
 import com.depot.app.service.OfferedSummary
+import com.depot.app.service.ReceivedFile
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.Grant
@@ -72,6 +73,8 @@ data class DepotUiState(
     val bytesTotal: Long = 0,
     val movedToday: Long = 0,
     val offeredFiles: List<OfferedSummary> = emptyList(),
+    val receivedFiles: List<ReceivedFile> = emptyList(),
+    val receiving: String? = null,
     val log: List<String> = emptyList(),
 )
 
@@ -123,6 +126,8 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
                         bytesTotal = session.bytesTotal,
                         movedToday = session.movedToday,
                         offeredFiles = session.offeredFiles,
+                        receivedFiles = session.receivedFiles,
+                        receiving = session.receiving,
                         log = linkLog + session.log,
                         error = it.error ?: session.error,
                     )

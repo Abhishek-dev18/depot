@@ -1966,6 +1966,105 @@ code {
   font-size: 12px;
   color: var(--ink3);
 }
+
+/* ---------- §5.10 — sending, without having to find a folder first ---------- */
+
+.sendbox {
+  margin-top: 22px;
+  max-width: 1100px;
+}
+.sendbox .sl {
+  padding: 0;
+  color: var(--amber);
+}
+.sendnote {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink3);
+  margin: 0;
+  max-width: 62ch;
+}
+.sendnote b {
+  color: var(--ink2);
+  font-weight: 500;
+}
+.sendrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.sendpick {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--ink3);
+}
+.sendpick select {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin-left: 6px;
+}
+
+/*
+  One row per file handed over, kept for the session.
+  The mirror of the phone's SHARED list: what you picked stays on
+  screen, and says what became of it.
+*/
+.outbox {
+  margin-top: 12px;
+}
+.out-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+.out-name {
+  flex: 1 1 auto;
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.out-size {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink3);
+  flex: 0 0 auto;
+}
+.out-state {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  flex: 0 0 auto;
+  color: var(--ink3);
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.out-sending .out-state {
+  color: var(--amber);
+}
+.out-sent .out-state {
+  color: var(--green);
+}
+.out-failed .out-state {
+  color: var(--red);
+}
+.out-failed {
+  border-color: var(--red-line);
+}
 .xh-up .xt {
   color: var(--amber);
 }

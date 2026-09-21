@@ -122,7 +122,13 @@ interface TransferCallbacks {
 
     /** §5.10 — a Client is sending something up. */
     fun onUploadStarted(name: String, chunkCount: Int) = Unit
-    fun onUploadStored(name: String) = Unit
+
+    /**
+     * It arrived, whole and verified. [where] opens it, or is null when
+     * the destination has nothing to open with; [folder] is what to call
+     * the place it landed, so the phone can say where to look.
+     */
+    fun onUploadStored(name: String, size: Long, folder: String, where: String?) = Unit
 }
 
 /** A file this Depot is willing to serve. */
@@ -405,7 +411,7 @@ class FileSender(
             return
         }
 
-        try {
+        val where = try {
             upload.target.store(upload.reserved, joined)
         } catch (e: Exception) {
             ctl.send(err(e.message ?: "could not write the file"))
@@ -414,7 +420,7 @@ class FileSender(
         ctl.send(
             JSONObject().put("type", "PUT_DONE").put("uploadId", uploadId).put("name", upload.reserved),
         )
-        cb.onUploadStored(upload.reserved)
+        cb.onUploadStored(upload.reserved, joined.size.toLong(), upload.target.label, where)
     }
 
     /**

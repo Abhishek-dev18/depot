@@ -76,8 +76,22 @@ interface DepotSource {
  * verified whole.
  */
 interface WritableTarget {
+    /**
+     * What to call the place things land, for this phone's own screen.
+     *
+     * "Saved to Downloads" is an answer; "saved" is not, and a file the
+     * user cannot find again may as well not have arrived.
+     */
+    val label: String
+
     fun reserve(name: String): String
-    fun store(name: String, bytes: ByteArray)
+
+    /**
+     * Returns something this app can open the stored file with, or null
+     * if the destination has nothing to offer. The upload is complete
+     * either way — this only decides whether the row is tappable.
+     */
+    fun store(name: String, bytes: ByteArray): String?
 }
 
 /** What a handle points at. Never sent anywhere. */
@@ -243,8 +257,9 @@ class AndroidDepotSource(
     override fun writable(handle: String): WritableTarget? {
         val location = handles[handle] ?: return null
         if (!location.isDirectory) return null
-        if (grantFor(location.treeUri)?.writable != true) return null
-        return SafFolder(context, location)
+        val grant = grantFor(location.treeUri) ?: return null
+        if (!grant.writable) return null
+        return SafFolder(context, location, grant.label)
     }
 
     override fun open(handle: String?): ServableFile? {
@@ -371,6 +386,7 @@ class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
 private class SafFolder(
     private val context: Context,
     private val location: Location,
+    override val label: String,
 ) : WritableTarget {
 
     /** Set by [reserve], written by [store]. */
@@ -400,7 +416,7 @@ private class SafFolder(
         return actual
     }
 
-    override fun store(name: String, bytes: ByteArray) {
+    override fun store(name: String, bytes: ByteArray): String? {
         val uri = pending
         if (uri == null || pendingName != name) {
             throw IllegalStateException("store() without a matching reserve()")
@@ -408,6 +424,7 @@ private class SafFolder(
         try {
             context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
                 ?: throw IllegalStateException("could not open the new file for writing")
+            return uri.toString()
         } catch (e: Exception) {
             // A half-written file with a plausible name is worse than no
             // file: §5.10 publishes nothing it has not verified whole.

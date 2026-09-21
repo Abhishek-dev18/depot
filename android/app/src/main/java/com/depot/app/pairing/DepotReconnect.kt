@@ -65,6 +65,17 @@ interface DepotReconnectCallbacks {
     fun onDisconnected(reason: String)
     fun onProgress(clientId: String, index: Int, total: Int, bytesSent: Long, bytesTotal: Long)
     fun onClientRejected(clientId: String, reason: String)
+
+    /**
+     * protocol.md §5.10 — a Client is sending something the other way.
+     *
+     * Reported so the phone can say a file is on its way and, when it
+     * lands, where to find it. Without these the transport wrote into a
+     * granted folder and said nothing at all, which is indistinguishable
+     * from nothing having happened.
+     */
+    fun onIncomingStarted(clientId: String, name: String) = Unit
+    fun onIncomingStored(clientId: String, name: String, size: Long, folder: String, where: String?) = Unit
 }
 
 class DepotReconnectListener(
@@ -272,6 +283,14 @@ private suspend fun handleIncoming(
 
                 override fun onError(message: String) {
                     cb.onClientRejected(clientId, message)
+                }
+
+                override fun onUploadStarted(name: String, chunkCount: Int) {
+                    cb.onIncomingStarted(clientId, name)
+                }
+
+                override fun onUploadStored(name: String, size: Long, folder: String, where: String?) {
+                    cb.onIncomingStored(clientId, name, size, folder, where)
                 }
             },
         )

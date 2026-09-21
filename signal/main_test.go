@@ -415,3 +415,29 @@ func TestConcurrentRegisterDuringRelay(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// A managed host tells a server where to listen through PORT, and a
+// server that only reads its own variable binds a port nothing routes
+// to — a deploy that builds, starts, reports healthy and refuses every
+// connection.
+func TestListenAddr(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		signalAddr string
+		port       string
+		want       string
+	}{
+		{"nothing set", "", "", ":8080"},
+		{"PORT alone, as a managed host sets it", "", "10000", ":10000"},
+		{"PORT already carrying its colon", "", ":10000", ":10000"},
+		{"SIGNAL_ADDR wins, because it is ours", "127.0.0.1:9999", "10000", "127.0.0.1:9999"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SIGNAL_ADDR", tc.signalAddr)
+			t.Setenv("PORT", tc.port)
+			if got := listenAddr(); got != tc.want {
+				t.Fatalf("listenAddr() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
