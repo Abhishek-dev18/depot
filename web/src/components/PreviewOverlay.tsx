@@ -19,7 +19,12 @@ interface Props {
  * revoked when this closes; the save URL outlives it.
  */
 export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
-  const preview = describePreview(file.name)
+  const preview = describePreview(file.name, file.mime)
+  // A media element that fails to decode renders nothing at all — no
+  // icon, no message, just an empty panel. That is indistinguishable
+  // from a preview that never opened, and it is what "the preview does
+  // not show" looks like from the outside whatever the real cause was.
+  const [failed, setFailed] = useState<string | null>(null)
   const [text, setText] = useState<string | null>(null)
   const [unreadable, setUnreadable] = useState(false)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -43,6 +48,14 @@ export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
   // Whether it is worth reading at all is a fact about the file, so it is
   // worked out while rendering rather than discovered by an effect.
   const tooLarge = preview.kind === 'text' && file.size > TEXT_PREVIEW_LIMIT
+
+  // The browser's own answer about the container, asked before trying.
+  // '' means "maybe" — it will not commit until it sees the codecs — so
+  // only a flat 'no' is worth pre-empting.
+  const playable =
+    preview.kind === 'video' || preview.kind === 'audio'
+      ? (document.createElement(preview.kind).canPlayType(preview.mime) || 'no')
+      : 'n/a'
 
   useEffect(() => {
     if (preview.kind !== 'text' || tooLarge) return
@@ -88,6 +101,11 @@ export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
             {file.name}
           </span>
           <span className="pv-size">{formatBytes(file.size)}</span>
+          {!file.persisted && (
+            <span className="pv-note" title="Too large to keep — it will need fetching again after a reload">
+              NOT KEPT
+            </span>
+          )}
           <a className="pv-act" href={file.url} download={file.name}>
             SAVE
           </a>
@@ -100,15 +118,47 @@ export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
         </div>
 
         <div className={`pv-body pv-body-${preview.kind}`}>
-          {preview.kind === 'image' && url && <img src={url} alt={file.name} />}
-
-          {preview.kind === 'video' && url && (
-            <video src={url} controls preload="metadata">
-              <track kind="captions" />
-            </video>
+          {failed !== null && (
+            <div className="pv-none">
+              <b>This browser could not open it.</b>
+              <span>{failed}</span>
+              <span className="pv-detail">
+                {formatBytes(file.size)} · sent as {preview.mime} · verified against the Depot&rsquo;s hash
+              </span>
+              <span>The file itself is fine — save it and open it in something else.</span>
+            </div>
           )}
 
-          {preview.kind === 'audio' && url && <audio src={url} controls />}
+          {preview.kind === 'image' && url && failed === null && (
+            <img
+              src={url}
+              alt={file.name}
+              onError={() => setFailed('The bytes arrived but do not decode as an image in this browser.')}
+            />
+          )}
+
+          {preview.kind === 'video' && url && failed === null && (
+            <video
+              src={url}
+              controls
+              preload="metadata"
+              onError={() =>
+                setFailed(
+                  playable === 'no'
+                    ? `This browser has no decoder for ${preview.mime}. Chrome and Edge play more formats than Firefox does.`
+                    : `This browser could not decode the video. Its container says ${preview.mime}, but the codec inside it is what matters, and phone recordings are not all the same.`,
+                )
+              }
+            />
+          )}
+
+          {preview.kind === 'audio' && url && failed === null && (
+            <audio
+              src={url}
+              controls
+              onError={() => setFailed(`This browser has no decoder for ${preview.mime}.`)}
+            />
+          )}
 
           {/* The only framed kind, and deliberately not sandboxed — see
               preview.ts. The asserted type is what keeps a document from
@@ -138,10 +188,18 @@ export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
             <div className="pv-none">Reading…</div>
           )}
 
-          {preview.kind === 'none' && (
+          {preview.kind === 'none' && failed === null && (
             <div className="pv-none">
-              <b>No preview for this kind of file.</b>
+              <b>
+                {preview.undecodable
+                  ? `${preview.undecodable} is not a format browsers can draw.`
+                  : 'No preview for this kind of file.'}
+              </b>
               <span>It is here and verified — save it to open it in something that knows how.</span>
+              <span className="pv-detail">
+                {file.name} · {formatBytes(file.size)}
+                {file.mime ? ` · the Depot calls it ${file.mime}` : ' · the Depot did not say what it is'}
+              </span>
             </div>
           )}
         </div>

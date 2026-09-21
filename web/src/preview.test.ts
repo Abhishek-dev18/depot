@@ -1,16 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isStale, type HeldFile } from './heldFiles'
 import { describePreview, retype } from './preview'
-
-const held = (over: Partial<HeldFile> = {}): HeldFile => ({
-  handle: 'h1',
-  name: 'notes.txt',
-  size: 100,
-  modifiedAt: 1000,
-  blob: new Blob(['hello']),
-  url: 'blob:x',
-  ...over,
-})
+import { keyFor } from './storage/fileCache'
 
 describe('describePreview', () => {
   it('shows images in an image element', () => {
@@ -64,6 +54,49 @@ describe('describePreview', () => {
   })
 })
 
+describe('describePreview with the Depot\'s own type', () => {
+  it('identifies a file whose name carries no extension', () => {
+    // Why this exists: Android providers hand back display names like
+    // "image:1000012345" with nothing to read an extension from, and a
+    // photograph then looks unpreviewable to the Client.
+    expect(describePreview('image:1000012345').kind).toBe('none')
+    expect(describePreview('image:1000012345', 'image/jpeg')).toEqual({
+      kind: 'image',
+      mime: 'image/jpeg',
+    })
+    expect(describePreview('document', 'application/pdf').kind).toBe('pdf')
+    expect(describePreview('VID_0001', 'video/mp4').kind).toBe('video')
+  })
+
+  it('ignores parameters on the type', () => {
+    expect(describePreview('x', 'text/plain; charset=utf-8').kind).toBe('text')
+    expect(describePreview('x', 'IMAGE/PNG').kind).toBe('image')
+  })
+
+  it('does not let the Depot turn a file into a document', () => {
+    // The Depot is a phone, possibly someone else's. A claimed type may
+    // choose among renderers the Client would have used anyway; it must
+    // never make the Client parse something it otherwise would not.
+    expect(describePreview('page', 'text/html')).toEqual({ kind: 'text', mime: 'text/plain' })
+    expect(describePreview('page', 'application/xhtml+xml').kind).toBe('none')
+    expect(describePreview('x', 'application/octet-stream').kind).toBe('none')
+    expect(describePreview('x', 'application/x-msdownload').kind).toBe('none')
+  })
+
+  it('lets the name overrule a type that sounds renderable', () => {
+    // image/heic is a real type and no browser draws it, so the panel
+    // should name the format rather than show an empty frame.
+    const heic = describePreview('IMG_0001.heic', 'image/heic')
+    expect(heic.kind).toBe('none')
+    expect(heic.undecodable).toBe('HEIC')
+    expect(describePreview('clip.mkv', 'video/x-matroska').undecodable).toBe('Matroska')
+  })
+
+  it('still prefers a known extension over the claimed type', () => {
+    expect(describePreview('photo.png', 'application/pdf')).toEqual({ kind: 'image', mime: 'image/png' })
+  })
+})
+
 describe('retype', () => {
   it('relabels the same bytes', async () => {
     const original = new Blob([new Uint8Array([1, 2, 3])], { type: 'application/octet-stream' })
@@ -74,34 +107,33 @@ describe('retype', () => {
   })
 })
 
-describe('isStale', () => {
-  const entry = (over: Record<string, unknown> = {}) =>
-    ({ handle: 'h1', name: 'notes.txt', kind: 'file' as const, size: 100, modifiedAt: 1000, ...over })
+describe('keyFor — what counts as the same file across sessions', () => {
+  const file = (over: Record<string, unknown> = {}) =>
+    ({ name: 'notes.txt', size: 100, modifiedAt: 1000, ...over })
 
-  it('holds on to a file the listing still agrees with', () => {
-    expect(isStale(held(), entry())).toBe(false)
+  it('matches a listing that still agrees', () => {
+    expect(keyFor(file())).toBe(keyFor(file()))
   })
 
-  it('re-fetches when the file changed underneath', () => {
-    expect(isStale(held(), entry({ size: 101 }))).toBe(true)
-    expect(isStale(held(), entry({ modifiedAt: 2000 }))).toBe(true)
+  it('does not match once the file has changed underneath', () => {
+    expect(keyFor(file({ size: 101 }))).not.toBe(keyFor(file()))
+    expect(keyFor(file({ modifiedAt: 2000 }))).not.toBe(keyFor(file()))
+    expect(keyFor(file({ name: 'other.txt' }))).not.toBe(keyFor(file()))
   })
 
-  it('keeps the held copy when the Depot says nothing to compare', () => {
-    // No size and no timestamp is not evidence of a change, and
-    // treating it as one would re-download on every single click.
-    expect(isStale(held(), entry({ size: undefined, modifiedAt: undefined }))).toBe(false)
-  })
-
-  it('uses whichever figure the Depot did report', () => {
-    expect(isStale(held(), entry({ size: undefined, modifiedAt: 2000 }))).toBe(true)
-    expect(isStale(held(), entry({ size: 99, modifiedAt: undefined }))).toBe(true)
+  it('still identifies a file the Depot says nothing about', () => {
+    // No size and no timestamp is not evidence of a change. Treating it
+    // as one would re-download on every single click, so the key holds
+    // and the preview's "fetch again" is the way out.
+    const vague = { name: 'notes.txt' }
+    expect(keyFor(vague)).toBe(keyFor({ name: 'notes.txt' }))
+    expect(keyFor(vague)).not.toBe(keyFor(file()))
   })
 
   it('does not mistake a zero for a missing figure', () => {
-    // An empty file has size 0, and `entry.size || ...` would read that
-    // as "not reported" and quietly keep the wrong bytes.
-    expect(isStale(held({ size: 100 }), entry({ size: 0 }))).toBe(true)
-    expect(isStale(held({ size: 0 }), entry({ size: 0 }))).toBe(false)
+    // An empty file has size 0, and `size || '?'` would write that as
+    // "not reported" — making every empty file look like every other.
+    expect(keyFor({ name: 'a', size: 0, modifiedAt: 5 })).not.toBe(keyFor({ name: 'a', modifiedAt: 5 }))
+    expect(keyFor({ name: 'a', size: 0, modifiedAt: 5 })).toBe(keyFor({ name: 'a', size: 0, modifiedAt: 5 }))
   })
 })

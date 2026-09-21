@@ -205,6 +205,20 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * protocol.md §5.10. A separate decision from sharing, and the one
+     * that lets a paired device write. Connected Clients are told, so a
+     * folder that just became writable starts offering the control
+     * without anyone reloading anything.
+     */
+    fun onToggleGrantWritable(view: GrantView, writable: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            GrantStore.setWritable(getApplication(), view.grant.treeUri, writable)
+            DepotSession.notifySharedChanged()
+            refreshGrants()
+        }
+    }
+
     fun onForgetGrant(view: GrantView) {
         viewModelScope.launch(Dispatchers.IO) {
             GrantStore.remove(getApplication(), view.grant.treeUri)
@@ -271,7 +285,10 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
                 val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: throw IllegalStateException("could not open the selected file")
-                DepotSession.setOfferedFile(OfferedFile(name, bytes))
+                // The provider's own type, passed on so the browser can
+                // preview a file whose display name carries no extension
+                // — which is what Photos and Drive hand back.
+                DepotSession.setOfferedFile(OfferedFile(name, bytes, resolver.getType(uri)))
             } catch (e: Exception) {
                 DepotSession.reportError(e.message ?: e.toString())
             }

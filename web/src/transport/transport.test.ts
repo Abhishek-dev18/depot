@@ -219,3 +219,58 @@ describe('compression (protocol.md §5.6)', () => {
     expect(estimateEntropy(random)).toBeGreaterThan(7.9)
   })
 })
+
+describe('the replay window (protocol.md §5.3)', () => {
+  /** Mirrors createCtlCodec's acceptor, which is not exported. */
+  function acceptor(windowSize = 1024) {
+    let highest = -1
+    const recent = new Set<number>()
+    return {
+      accept(counter: number): boolean {
+        if (counter <= highest - windowSize) return false
+        if (recent.has(counter)) return false
+        recent.add(counter)
+        if (counter > highest) {
+          highest = counter
+          for (const old of recent) if (old <= highest - windowSize) recent.delete(old)
+        }
+        return true
+      },
+      held: () => recent.size,
+    }
+  }
+
+  it('accepts each counter once and never twice', () => {
+    const w = acceptor()
+    expect(w.accept(0)).toBe(true)
+    expect(w.accept(1)).toBe(true)
+    expect(w.accept(0)).toBe(false)
+    expect(w.accept(1)).toBe(false)
+  })
+
+  it('still tolerates the reordering a real transport produces', () => {
+    const w = acceptor()
+    expect(w.accept(5)).toBe(true)
+    expect(w.accept(3)).toBe(true) // late, but inside the window
+    expect(w.accept(4)).toBe(true)
+    expect(w.accept(3)).toBe(false) // and still only once
+  })
+
+  it('refuses anything older than the window outright', () => {
+    const w = acceptor(8)
+    expect(w.accept(100)).toBe(true)
+    expect(w.accept(99)).toBe(true)
+    // 92 is exactly the edge; below it there is no legitimate sender.
+    expect(w.accept(92)).toBe(false)
+    expect(w.accept(0)).toBe(false)
+  })
+
+  it('does not grow without bound', () => {
+    // The point of the change: remembering every counter forever is
+    // correct and unbounded, and a session that browses a large tree
+    // sends one ctl message per directory.
+    const w = acceptor(8)
+    for (let i = 0; i < 10_000; i++) expect(w.accept(i)).toBe(true)
+    expect(w.held()).toBeLessThanOrEqual(9)
+  })
+})

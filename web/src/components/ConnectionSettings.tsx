@@ -1,4 +1,7 @@
+import { useCallback, useEffect, useState } from 'react'
+import { formatBytes } from '../format'
 import { isLoopbackSignalUrl } from '../signalUrl'
+import { MAX_CACHED_FILE, cacheUsage, clearFileCache } from '../storage/fileCache'
 import type { TurnConfig } from '../transport/webrtc'
 
 interface Props {
@@ -28,6 +31,13 @@ export function ConnectionSettings({
   onClose,
   onOpenSimulator,
 }: Props) {
+  const [usage, setUsage] = useState<{ count: number; bytes: number } | null>(null)
+
+  const readUsage = useCallback(() => {
+    void cacheUsage().then(setUsage)
+  }, [])
+  useEffect(readUsage, [readUsage])
+
   return (
     <div className="settings-panel">
       <div className="settings-head">
@@ -79,6 +89,28 @@ export function ConnectionSettings({
           spellCheck={false}
         />
       </label>
+
+      <p className="hint settings-section-label">
+        Downloaded files — kept in this browser so a reload does not fetch them again. Only files under{' '}
+        {formatBytes(MAX_CACHED_FILE)}; larger ones are handed over and forgotten. They never leave this
+        device, but they are file contents sitting in a browser profile, so clear them on a shared machine.
+      </p>
+      <div className="cache-row">
+        <span className="cache-usage">
+          {usage === null
+            ? 'Reading…'
+            : usage.count === 0
+              ? 'Nothing held'
+              : `${usage.count} file${usage.count === 1 ? '' : 's'} · ${formatBytes(usage.bytes)}`}
+        </span>
+        <button
+          className="wnav-action"
+          disabled={usage === null || usage.count === 0}
+          onClick={() => void clearFileCache().then(readUsage)}
+        >
+          Clear
+        </button>
+      </div>
 
       {onOpenSimulator && (
         <button className="wnav-action settings-simulator" onClick={onOpenSimulator}>

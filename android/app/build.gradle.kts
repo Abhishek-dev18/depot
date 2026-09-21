@@ -1,7 +1,43 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+/**
+ * Signing material, from a file locally or from the environment in CI.
+ *
+ * keystore.properties is gitignored and the keystore itself never goes
+ * near the repository. When neither is present the release build is
+ * simply unsigned, so anyone can run `assembleRelease` to check that the
+ * shrinker has not broken anything without first being handed a key.
+ *
+ * Generating one, once, and keeping it somewhere you will still have it
+ * in two years — losing it means never being able to update an installed
+ * app again:
+ *
+ *   keytool -genkeypair -v -keystore depot-release.jks \
+ *     -keyalg RSA -keysize 4096 -validity 10000 -alias depot
+ */
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingValue(key: String, env: String): String? =
+    keystoreProperties.getProperty(key) ?: System.getenv(env)
+
+val releaseStoreFile: String? = signingValue("storeFile", "DEPOT_KEYSTORE_FILE")
+val releaseStorePassword: String? = signingValue("storePassword", "DEPOT_KEYSTORE_PASSWORD")
+val releaseKeyAlias: String? = signingValue("keyAlias", "DEPOT_KEY_ALIAS")
+val releaseKeyPassword: String? = signingValue("keyPassword", "DEPOT_KEY_PASSWORD")
+val canSignRelease = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.depot.app"
@@ -13,10 +49,28 @@ android {
         applicationId = "com.depot.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // Overridable from CI so a tagged build carries its own version
+        // rather than every release calling itself 1.0.
+        versionCode = (System.getenv("DEPOT_VERSION_CODE") ?: "1").toInt()
+        versionName = System.getenv("DEPOT_VERSION_NAME") ?: "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (canSignRelease) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                // v1 is for API < 24 and this app is minSdk 26, so the
+                // modern schemes are the only ones that need to be on.
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -24,6 +78,11 @@ android {
             optimization {
                 enable = false
             }
+            signingConfig = if (canSignRelease) signingConfigs.getByName("release") else null
+            // A release build that reports itself as debuggable would let
+            // anything on the device read this app's private storage,
+            // which is where the Depot identity key lives.
+            isDebuggable = false
         }
     }
     compileOptions {

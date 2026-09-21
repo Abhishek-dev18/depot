@@ -163,10 +163,18 @@ Client says so explicitly rather than hanging.
 | Protocol specification | ✅ Complete — pairing, reconnection, transport, revocation, design decisions resolved |
 | Signal relay server (Go) | ✅ Complete — pairing rooms, presence, rate limiting, keepalive, race-tested |
 | Web client + Depot simulator | ✅ Complete — pairing, reconnection, WebRTC transport, verified file transfer |
-| **Android Depot app** | 🚧 **Not started** — the real phone-side implementation |
+| Android Depot app | ✅ Built — pairing, reconnection, folder grants, browsing, streamed transfer, foreground service |
+| Release build & distribution | 🚧 Not started — no signing config, no published artifact |
+| Client → Depot upload | 🚧 Not started, and not in the protocol either — the Depot only serves |
 
-The web app's Depot simulator is a development stand-in, not the product. The Android app is
-the next milestone, and the UI shown above is the design spec it will follow.
+The web app's Depot simulator is a development stand-in, not the product: the Android app is
+the Depot. The simulator stays because it makes the whole protocol testable in two browser
+tabs, which is how most of this was verified.
+
+Two things the Android app has not been proven to do, because neither can be tested without a
+handset on a real network: recover its Signal registration from a genuine connection drop, and
+push §5.9's `SHARED_CHANGED` to a browser tab that is already open. Both are implemented and
+both pass in the two-tab harness.
 
 ## Contributing
 
@@ -175,11 +183,25 @@ The specification is the source of truth: if an implementation and
 should be decided explicitly.
 
 ```bash
-cd signal && go test ./... -race    # relay server
-cd web && npm test && npm run lint  # client
+cd signal && go test ./... -race                    # relay server
+cd web && npm test && npm run lint                  # client
+cd android && ./gradlew testDebugUnitTest           # Depot, JVM tests only
 ```
 
-CI runs both on every pull request.
+CI runs all three on every push to `main` and to `claude/**`, and on every pull request.
+
+Two suites are **not** in CI and have to be run by hand:
+
+```bash
+cd web && npm run build && npx vite preview --port 4173 &
+cd signal && go run . &
+cd web && node scripts/e2e.mjs        # the whole protocol through two real browser tabs
+cd web && node scripts/check-mark.mjs # the app mark, measured in all five places it appears
+```
+
+`android/app/src/androidTest/` is not in CI either — those need a device or emulator, and
+`VectorsTest` is the one that proves Android and web derive the same keys. Running it needs
+`./gradlew connectedDebugAndroidTest` with a device attached.
 
 ## License
 

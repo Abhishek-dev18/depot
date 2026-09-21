@@ -44,6 +44,11 @@ export interface Preview {
   kind: PreviewKind
   /** The type the bytes will be stamped with before being handed over. */
   mime: string
+  /**
+   * Set when the format was recognised but no browser can draw it, so
+   * the panel can name it instead of showing an empty frame.
+   */
+  undecodable?: string
 }
 
 const NONE: Preview = { kind: 'none', mime: 'application/octet-stream' }
@@ -95,22 +100,138 @@ const TEXT = new Set([
 
 /**
  * Past this, a preview stops being a glance and becomes a way to freeze
- * the tab. Big files still save; they just do not get painted.
+ * the tab. Text is the worst of them: every byte becomes a DOM character.
  */
-export const TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024
+export const TEXT_PREVIEW_LIMIT = 2_000_000
 
-export function describePreview(name: string): Preview {
+/**
+ * The general ceiling on previewing.
+ *
+ * An image is decoded whole before anything is drawn — a 50-megapixel
+ * photograph is a 200 MB bitmap regardless of how small the JPEG is —
+ * and a PDF viewer reads the document in. Above this the tab is likely
+ * to stall or die, and a browser that dies takes the file with it.
+ *
+ * It is deliberately one number rather than a rule per kind. Video and
+ * audio actually stream from a blob URL and could go higher, so this is
+ * conservative for those; a single predictable limit is worth more than
+ * four defensible ones nobody can keep in their head.
+ */
+export const MAX_PREVIEW_SIZE = 50_000_000
+
+/**
+ * Why this file cannot be shown, or null if it can.
+ *
+ * Separate from describePreview because size is not a property of the
+ * format: the same photograph is previewable at 2 MB and not at 200 MB,
+ * and the UI needs to know before it offers the action, not after.
+ */
+export function previewBlockedReason(preview: Preview, size: number): string | null {
+  if (preview.kind === 'text' && size > TEXT_PREVIEW_LIMIT) {
+    return `This is ${formatSize(size)} of text. Anything over ${formatSize(
+      TEXT_PREVIEW_LIMIT,
+    )} is shown as a file rather than printed into the page.`
+  }
+  if (size > MAX_PREVIEW_SIZE) {
+    return `This file is ${formatSize(size)}. Previewing anything over ${formatSize(
+      MAX_PREVIEW_SIZE,
+    )} in a browser tab risks running it out of memory, so it is offered as a download instead.`
+  }
+  return null
+}
+
+/** Local so this module stays free of UI imports; matches format.ts. */
+function formatSize(bytes: number): string {
+  const units = ['KB', 'MB', 'GB']
+  if (bytes < 1000) return `${bytes} B`
+  let value = bytes / 1000
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit++
+  }
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
+}
+
+/**
+ * What the Depot says a file is, where that maps onto something safe.
+ *
+ * A name is not always enough. Android content providers hand back
+ * display names with no extension at all — Google Photos and Drive both
+ * do — and a Client that only reads extensions decides those files are
+ * unpreviewable, which looks exactly like a broken preview.
+ *
+ * The Depot's own type is better evidence, but it is still the Depot
+ * talking, so it buys nothing beyond choosing which of the renderers
+ * below to use. It is matched against the same allowlist, and a Depot
+ * claiming text/html gets a <pre> like any other text.
+ */
+const MIME_KIND: Array<[RegExp, PreviewKind]> = [
+  [/^image\/(png|jpeg|gif|webp|avif|bmp|x-icon|svg\+xml)$/, 'image'],
+  [/^application\/pdf$/, 'pdf'],
+  [/^video\//, 'video'],
+  [/^audio\//, 'audio'],
+  [/^text\//, 'text'],
+  [/^application\/(json|xml|x-yaml|yaml|javascript|x-sh|sql)$/, 'text'],
+]
+
+function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.')
   // A file with no extension at all is usually a README or a script, but
-  // guessing is exactly what rule 1 forbids, so it gets no preview.
-  const ext = dot <= 0 ? '' : name.slice(dot + 1).toLowerCase()
-  if (ext === '') return NONE
+  // guessing is exactly what rule 1 forbids, so it gets no preview from
+  // the name alone.
+  return dot <= 0 ? '' : name.slice(dot + 1).toLowerCase()
+}
+
+/**
+ * Formats a browser will not decode, named so the panel can say which
+ * rather than going blank. HEIC is the one that matters: it is what a
+ * modern phone camera writes, and no major browser reads it.
+ */
+const UNDECODABLE: Record<string, string> = {
+  heic: 'HEIC',
+  heif: 'HEIF',
+  hevc: 'HEVC',
+  raw: 'camera RAW',
+  dng: 'camera RAW (DNG)',
+  cr2: 'camera RAW (CR2)',
+  nef: 'camera RAW (NEF)',
+  arw: 'camera RAW (ARW)',
+  tif: 'TIFF',
+  tiff: 'TIFF',
+  mkv: 'Matroska',
+  avi: 'AVI',
+  wmv: 'Windows Media',
+  flv: 'Flash Video',
+}
+
+export function describePreview(name: string, mime?: string): Preview {
+  const ext = extensionOf(name)
+
+  // The name first: it is what the user sees, and an extension the
+  // browser cannot decode should be named as such even when the Depot
+  // reports a type that sounds renderable (image/heic is still HEIC).
+  const undecodable = UNDECODABLE[ext]
+  if (undecodable) return { kind: 'none', mime: 'application/octet-stream', undecodable }
 
   if (ext in IMAGE) return { kind: 'image', mime: IMAGE[ext] }
   if (ext === 'pdf') return { kind: 'pdf', mime: 'application/pdf' }
   if (ext in VIDEO) return { kind: 'video', mime: VIDEO[ext] }
   if (ext in AUDIO) return { kind: 'audio', mime: AUDIO[ext] }
   if (TEXT.has(ext)) return { kind: 'text', mime: 'text/plain' }
+
+  // Only then what the Depot claims, which is how a file with no usable
+  // extension gets previewed at all.
+  const claimed = (mime ?? '').split(';')[0].trim().toLowerCase()
+  if (claimed) {
+    for (const [pattern, kind] of MIME_KIND) {
+      if (!pattern.test(claimed)) continue
+      // Text is printed, never parsed, so it is served as text/plain
+      // whatever the Depot called it.
+      return { kind, mime: kind === 'text' ? 'text/plain' : claimed }
+    }
+  }
+
   return NONE
 }
 

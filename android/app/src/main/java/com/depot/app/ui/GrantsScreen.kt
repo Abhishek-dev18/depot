@@ -47,6 +47,7 @@ fun GrantsScreen(
     offeredFileSize: Int,
     onAddFolder: () -> Unit,
     onToggle: (GrantView, Boolean) -> Unit,
+    onToggleWritable: (GrantView, Boolean) -> Unit,
     onForget: (GrantView) -> Unit,
     onPickFile: () -> Unit,
     onBack: () -> Unit,
@@ -95,6 +96,32 @@ fun GrantsScreen(
                         },
                         trailing = { GrantSwitch(on = view.grant.enabled) },
                     )
+                    // protocol.md §5.10. Asked separately from sharing,
+                    // and only once sharing is on, because granting a
+                    // folder to read from is not consent to have things
+                    // put into it — they are different questions.
+                    if (view.grant.enabled) {
+                        ListRow(
+                            name = "Accept files into this folder",
+                            meta = if (view.grant.writable) {
+                                "A paired device may add files here. Nothing is ever overwritten."
+                            } else {
+                                "Read only — a paired device cannot put anything here."
+                            },
+                            nameColor = if (view.grant.writable) DepotColors.Ink else DepotColors.Ink3,
+                            onClick = { onToggleWritable(view, !view.grant.writable) },
+                            leading = {
+                                RowTile {
+                                    IconGrant(
+                                        if (view.grant.writable) DepotColors.Green else DepotColors.Ink3,
+                                        16.dp,
+                                    )
+                                }
+                            },
+                            trailing = { GrantSwitch(on = view.grant.writable) },
+                        )
+                    }
+
                     // Forgetting is offered only once sharing is already
                     // off, so releasing the permission is a second,
                     // deliberate step rather than a mis-tap.

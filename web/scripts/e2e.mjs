@@ -14,15 +14,26 @@
  *   cd web && npm run build && npx vite preview --port 4173
  *   cd web && node scripts/e2e.mjs
  *
- * Screenshots land in /tmp. Not part of `npm test` — it wants servers and
- * a browser, and CI has neither wired up.
+ * CI runs it on every push (the `browser` job), so a change that breaks
+ * pairing, browsing or a transfer is caught there rather than here.
+ *
+ * Screenshots land in /tmp. Not part of `npm test`: it wants two servers
+ * and a real browser, which is a different kind of slow.
  */
 import { writeFileSync } from 'node:fs'
-import { chromium } from 'playwright'
+import { launchChromium } from './browser.mjs'
 
-const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
 const BASE = 'http://localhost:4173'
 const log = (...a) => console.log('[e2e]', ...a)
+
+/**
+ * The row for whatever the Depot is currently sharing.
+ *
+ * The listing also carries the Inbox folder (§5.10), so "the first row"
+ * stopped meaning "the shared file" — targeting by name rather than by
+ * position is what keeps these steps saying what they mean.
+ */
+const shared = () => client.locator('.fr:not(.fr-note)').filter({ hasNotText: 'Inbox' })
 
 // Fixtures, written here so the script needs nothing but a server.
 // The PNG is a 1x1 red pixel; the point is that it decodes, not what it shows.
@@ -35,6 +46,14 @@ writeFileSync(
   ),
 )
 writeFileSync('/tmp/sample.pdf', minimalPdf('DEPOT PDF'))
+// A name that says JPEG over bytes that are not one, to drive the
+// failure path: a media element that cannot decode renders nothing
+// at all, which is indistinguishable from a preview that never came.
+writeFileSync('/tmp/upload.txt', 'sent from the browser to the phone\n'.repeat(120))
+writeFileSync('/tmp/fetchonly.txt', 'fetched without opening\n'.repeat(50))
+// Over MAX_PREVIEW_SIZE, so the preview must refuse before it starts.
+writeFileSync('/tmp/huge.txt', 'x'.repeat(52_000_000))
+writeFileSync('/tmp/broken.jpg', 'not an image at all, just text pretending\n'.repeat(20))
 
 /** One page, one line of Helvetica. Real enough for a browser to open. */
 function minimalPdf(text) {
@@ -59,10 +78,7 @@ function minimalPdf(text) {
   return Buffer.from(out, 'latin1')
 }
 
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  args: ['--no-sandbox', '--disable-dev-shm-usage'],
-})
+const browser = await launchChromium()
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
 
 const client = await ctx.newPage()
@@ -112,23 +128,37 @@ log('depot listening — client should notice on its own, with no clicks')
 await client.waitForSelector('.ftable', { timeout: 45000 })
 log('client reconnected unaided')
 
-const emptyRows = await client.locator('.fr:not(.fr-note)').count()
-log(`listing before anything is shared: ${emptyRows} row(s)`, emptyRows === 0 ? '✓' : '✗ EXPECTED EMPTY')
+const emptyRows = await shared().count()
+const inboxRows = await client.locator('.fr:not(.fr-note)').filter({ hasText: 'Inbox' }).count()
+log(
+  `before anything is shared: ${emptyRows} file(s), ${inboxRows} inbox`,
+  emptyRows === 0 && inboxRows === 1 ? '✓ only the place uploads go' : '✗ UNEXPECTED LISTING',
+)
 
 // --- share a file at a Client that is already connected -------------
 // The reported bug: this only appeared after reloading the browser.
 await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
-await client.waitForSelector('.fr:not(.fr-note)', { timeout: 20000 })
-const rows = await client.locator('.fr:not(.fr-note)').allInnerTexts()
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'sample.txt'),
+  null,
+  { timeout: 20000 },
+)
+const rows = await shared().allInnerTexts()
 log('listing updated with no reload:', JSON.stringify(rows))
 
 await client.waitForTimeout(600)
 await client.screenshot({ path: '/tmp/client-files.png' })
 
-// --- download it -----------------------------------------------------
-await client.locator('.fr:not(.fr-note)').first().click()
+// --- click the file: fetch it and open it ----------------------------
+// Clicking the name means "bring it over and show me". FETCH, tested
+// further down, is the same transfer without the opening.
+await shared().locator('.fr-open').first().click()
 await client.waitForSelector('.received-row', { timeout: 40000 })
 log('received:', (await client.locator('.received-row').first().innerText()).replace(/\s+/g, ' '))
+await client.waitForSelector('.pv', { timeout: 15000 })
+log('clicking the file opened it as well as fetching it ✓')
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
 await client.screenshot({ path: '/tmp/client-received.png' })
 
 // --- a file already in hand is not asked for twice -------------------
@@ -140,10 +170,10 @@ const before = await fetches()
 await client.waitForSelector('.fr .held', { timeout: 10000 })
 log(`row marked HELD after the transfer ✓  (fetches so far: ${before})`)
 
-await client.locator('.fr:not(.fr-note)').first().click()
+await shared().locator('.fr-open').first().click()
 await client.waitForSelector('.pv', { timeout: 10000 })
 const after = await fetches()
-log(`second click -> preview open, fetches ${before} -> ${after}`,
+log(`clicked again -> preview open, fetches ${before} -> ${after}`,
   after === before ? '✓ nothing re-downloaded' : '✗ FETCHED AGAIN')
 
 const shown = await client.locator('.pv-text').innerText()
@@ -160,8 +190,9 @@ log('Escape closed it ✓')
 await depot.locator('input[type=file]').setInputFiles('/tmp/sample.png')
 await client.waitForFunction(
   () => {
-    const row = document.querySelector('.fr:not(.fr-note) .fn')
-    return !!row && row.textContent.endsWith('.png')
+    return [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) =>
+      n.textContent.endsWith('.png'),
+    )
   },
   null,
   { timeout: 20000 },
@@ -170,12 +201,14 @@ const heldOnNewFile = await client.locator('.fr .held').count()
 log(`listing swapped to the png; stale HELD marks: ${heldOnNewFile}`,
   heldOnNewFile === 0 ? '✓ not claimed as held' : '✗ CLAIMS TO HOLD THE OLD FILE')
 
-await client.locator('.fr:not(.fr-note)').first().click()
+await shared().locator('.fr-open').first().click()
 await client.waitForSelector('.fr .held', { timeout: 40000 })
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 8000 })
 const afterPng = await fetches()
 log(`png fetched (${before} -> ${afterPng})`, afterPng > before ? '✓ went over the wire' : '✗ SERVED STALE BYTES')
 
-await client.locator('.fr:not(.fr-note)').first().click()
+await shared().locator('.fr-open').first().click()
 await client.waitForSelector('.pv img', { timeout: 10000 })
 const decoded = await client.evaluate(() => {
   const img = document.querySelector('.pv img')
@@ -186,22 +219,164 @@ log('image preview:', JSON.stringify(decoded),
 await client.screenshot({ path: '/tmp/client-preview-image.png' })
 await client.keyboard.press('Escape')
 
+// --- a reload must not throw away what already arrived ---------------
+// The report: everything under RECEIVED vanished on refresh, and the
+// same bytes had to come over the phone's data a second time.
+const fetchesBeforeReload = await fetches()
+await client.reload({ waitUntil: 'networkidle' })
+await client.waitForSelector('.received-row', { timeout: 45000 })
+const survived = await client.locator('.received-row').allInnerTexts()
+log('after reload, RECEIVED holds:', JSON.stringify(survived.map((t) => t.split('\n')[0])))
+await client.waitForSelector('.ftable', { timeout: 45000 })
+await client.waitForSelector('.fr .held', { timeout: 20000 })
+log('the row is still marked HELD after a reload ✓')
+
+// And clicking it must open, not re-fetch.
+await shared().locator('.fr-open').first().click()
+await client.waitForSelector('.pv', { timeout: 10000 })
+const fetchesAfterReload = await fetches()
+log(
+  `clicked after reload: fetches this page = ${fetchesAfterReload}`,
+  fetchesAfterReload === 0
+    ? '✓ opened from the cache, nothing re-downloaded'
+    : '✗ WENT BACK OVER THE WIRE',
+)
+log(`(before the reload this page had done ${fetchesBeforeReload})`)
+await client.keyboard.press('Escape')
+
+// --- what the browser admits to holding ------------------------------
+await client.getByRole('button', { name: 'Settings' }).click()
+await client.waitForFunction(
+  () => {
+    const el = document.querySelector('.cache-usage')
+    return !!el && !el.textContent.includes('Reading')
+  },
+  null,
+  { timeout: 10000 },
+)
+const usage = await client.locator('.cache-usage').innerText()
+log('settings reports held files:', JSON.stringify(usage))
+await client.screenshot({ path: '/tmp/client-settings.png' })
+await client.getByRole('button', { name: 'Close' }).click()
+await client.waitForSelector('.ftable', { timeout: 10000 })
+
+// --- two ways to click a row, and two verbs on what arrived ----------
+// FETCH brings it over and says nothing more; the name brings it over
+// and opens it. Below, PREVIEW stays in the browser and DOWNLOAD is the
+// only thing that writes to the machine.
+await depot.locator('input[type=file]').setInputFiles('/tmp/fetchonly.txt')
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'fetchonly.txt'),
+  null,
+  { timeout: 20000 },
+)
+const beforeFetch = await fetches()
+await shared().locator('.fr-fetch').first().click()
+await client.waitForSelector('.fr .held', { timeout: 40000 })
+const openedByFetch = await client.locator('.pv').count()
+log(
+  `FETCH: fetches ${beforeFetch} -> ${await fetches()}, preview open = ${openedByFetch}`,
+  openedByFetch === 0 ? '✓ brought it over without opening it' : '✗ OPENED A PREVIEW',
+)
+
+const row = client.locator('.received-row').filter({ hasText: 'fetchonly.txt' })
+const verbs = await row.locator('.received-act').allInnerTexts()
+log('verbs on the received row:', JSON.stringify(verbs),
+  verbs.join(',') === 'PREVIEW,DOWNLOAD' ? '✓' : '✗ WRONG ACTIONS')
+const downloadHref = await row.locator('a.received-act.download').getAttribute('download')
+log('download writes to disk as:', JSON.stringify(downloadHref),
+  downloadHref === 'fetchonly.txt' ? '✓ and only on click' : '✗')
+
+await row.locator('button.received-act').click()
+await client.waitForSelector('.pv', { timeout: 10000 })
+log('PREVIEW opened from the cache ✓  (fetches unchanged:', await fetches(), ')')
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
+
+// --- too large to draw: shadowed, and it says why --------------------
+await depot.locator('input[type=file]').setInputFiles('/tmp/huge.txt')
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'huge.txt'),
+  null,
+  { timeout: 20000 },
+)
+await shared().locator('.fr-open').first().click()
+await client.waitForSelector('.dlg', { timeout: 10000 })
+const refusal = await client.evaluate(() => ({
+  title: document.querySelector('.dlg-title')?.textContent,
+  body: document.querySelector('.dlg-body')?.textContent,
+  offers: [...document.querySelectorAll('.dlg-actions button')].map((b) => b.textContent),
+}))
+log('clicking a too-large file:', JSON.stringify(refusal))
+log(
+  refusal.title === 'Too large to preview' && refusal.offers.includes('Fetch it anyway')
+    ? '  ✓ refused, explained, and still offers the thing that works'
+    : '  ✗ WRONG REFUSAL',
+)
+await client.screenshot({ path: '/tmp/client-toobig.png' })
+await client.locator('.dlg-go').click()
+await client.waitForSelector('.fr .held', { timeout: 60000 })
+
+const shadowed = await client.evaluate(() => {
+  const r = [...document.querySelectorAll('.received-row')].find((x) => x.textContent.includes('huge.txt'))
+  const b = r?.querySelector('button.received-act')
+  const style = b ? getComputedStyle(b) : null
+  return {
+    dimmed: b?.className.includes('off') && Number(style?.opacity) < 1,
+    // Not disabled in any sense a machine reads: it still takes clicks,
+    // and a screen reader is not told otherwise.
+    reallyClickable: b !== null && !b?.hasAttribute('disabled') && !b?.hasAttribute('aria-disabled'),
+    explains: (b?.getAttribute('title') ?? '').slice(0, 40),
+  }
+})
+log('its PREVIEW in the lower list:', JSON.stringify(shadowed),
+  shadowed.dimmed && shadowed.reallyClickable ? '✓ shadowed but live' : '✗ WRONG STATE')
+
+// Shadowed, not disabled: the click still lands and gets an answer.
+await client
+  .locator('.received-row')
+  .filter({ hasText: 'huge.txt' })
+  .locator('button.received-act')
+  .click()
+await client.waitForSelector('.dlg', { timeout: 10000 })
+log('clicking the shadowed PREVIEW still explains itself ✓')
+await client.keyboard.press('Escape')
+
+// --- a preview that cannot decode must say so ------------------------
+await depot.locator('input[type=file]').setInputFiles('/tmp/broken.jpg')
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent.endsWith('.jpg')),
+  null,
+  { timeout: 20000 },
+)
+await shared().locator('.fr-open').first().click()
+await client.waitForSelector('.pv', { timeout: 40000 })
+await client.waitForTimeout(1200)
+const broken = await client.evaluate(() => {
+  const note = document.querySelector('.pv-none')
+  const img = document.querySelector('.pv img')
+  return { explained: note ? note.innerText.replace(/\s+/g, ' ').slice(0, 90) : null, stillShowingImg: !!img }
+})
+log('undecodable image:', JSON.stringify(broken))
+log(
+  broken.explained && !broken.stillShowingImg
+    ? '  ✓ says what happened instead of going blank'
+    : '  ✗ BLANK PANEL — the user is told nothing',
+)
+await client.screenshot({ path: '/tmp/client-preview-failed.png' })
+await client.keyboard.press('Escape')
+
 // --- a pdf, the one kind that needs a frame --------------------------
 // Worth its own step: the frame carries no sandbox (see preview.ts), and
 // that decision is only defensible if it is the one that renders.
 await depot.locator('input[type=file]').setInputFiles('/tmp/sample.pdf')
 await client.waitForFunction(
-  () => {
-    const row = document.querySelector('.fr:not(.fr-note) .fn')
-    return !!row && row.textContent.endsWith('.pdf')
-  },
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent.endsWith('.pdf')),
   null,
   { timeout: 20000 },
 )
-await client.locator('.fr:not(.fr-note)').first().click()
-await client.waitForSelector('.fr .held', { timeout: 40000 })
-await client.locator('.fr:not(.fr-note)').first().click()
-await client.waitForSelector('.pv-frame', { timeout: 10000 })
+await shared().locator('.fr-open').first().click()
+await client.waitForSelector('.pv-frame', { timeout: 40000 })
 await client.waitForTimeout(3000)
 // Chromium draws a broken-file icon on a grey field when the viewer
 // refuses the document, so a white page is the thing to look for.
@@ -217,12 +392,78 @@ await client.keyboard.press('Escape')
 await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
 await client.waitForFunction(
   () => {
-    const row = document.querySelector('.fr:not(.fr-note) .fn')
-    return !!row && row.textContent.endsWith('.txt')
+    return [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some(
+      (n) => n.textContent === 'sample.txt',
+    )
   },
   null,
   { timeout: 20000 },
 )
+
+// --- §5.10: the direction that writes --------------------------------
+// The Depot's Inbox is the one folder it accepts into. Everything else
+// must not even offer the control.
+await client.locator('.crumb-link').first().click()
+await client.waitForSelector('.ftable', { timeout: 15000 })
+const offeredAtRoot = await client.locator('.uprow').count()
+log(`upload control at the root: ${offeredAtRoot}`,
+  offeredAtRoot === 0 ? '✓ not offered where it is not allowed' : '✗ OFFERED EVERYWHERE')
+
+await client.locator('.fr-open').filter({ hasText: 'Inbox' }).first().click()
+await client.waitForSelector('.uprow', { timeout: 15000 })
+log('inside Inbox, the control appears ✓')
+
+await client.locator('.upbtn input').setInputFiles('/tmp/upload.txt')
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.log-line')].some((l) => l.textContent.includes('sent to Inbox')),
+  null,
+  { timeout: 60000 },
+)
+const sentLine = await client.evaluate(
+  () => [...document.querySelectorAll('.log-line')].filter((l) => l.textContent.includes('sent to')).pop()
+    .textContent,
+)
+log('upload:', JSON.stringify(sentLine))
+
+const onDepot = await depot.locator('.inbox-list li').allInnerTexts()
+log('the Depot now holds:', JSON.stringify(onDepot),
+  onDepot.includes('upload.txt') ? '✓ it arrived' : '✗ NOT STORED')
+
+// Browsing must survive the upload: the listing effect used to reset
+// the breadcrumb on any re-render, which a finishing upload causes.
+const afterFirst = await client.evaluate(() => ({
+  uprow: document.querySelectorAll('.uprow').length,
+  crumb: document.querySelector('.crumb')?.innerText.replace(/\s+/g, ' '),
+}))
+log('still in the folder afterwards:', JSON.stringify(afterFirst),
+  afterFirst.uprow === 1 && afterFirst.crumb?.includes('Inbox') ? '✓' : '✗ THROWN BACK TO THE ROOT')
+
+// Send it again: the Depot must not overwrite.
+await client.locator('.upbtn input').setInputFiles('/tmp/upload.txt')
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.log-line')].some((l) => l.textContent.includes('that name was taken')),
+  null,
+  { timeout: 60000 },
+)
+const afterSecond = await depot.locator('.inbox-list li').allInnerTexts()
+log('after sending the same name twice:', JSON.stringify(afterSecond),
+  afterSecond.length === 2 ? '✓ kept both, overwrote neither' : '✗ OVERWROTE')
+
+// And the Client can read back what it just sent.
+await client.waitForFunction(
+  () => document.querySelectorAll('.fr:not(.fr-note)').length >= 2,
+  null,
+  { timeout: 20000 },
+)
+await client.locator('.fr-open').filter({ hasText: 'upload.txt' }).first().click()
+await client.waitForSelector('.pv-text', { timeout: 40000 })
+const roundTripped = await client.locator('.pv-text').innerText()
+log('read back what was sent up:', JSON.stringify(roundTripped.slice(0, 34)),
+  roundTripped.startsWith('sent from the browser') ? '✓ byte for byte' : '✗ WRONG CONTENT')
+await client.screenshot({ path: '/tmp/client-upload.png' })
+await client.keyboard.press('Escape')
+await client.locator('.crumb-link').first().click()
+await client.waitForSelector('.ftable', { timeout: 15000 })
 
 // --- the Depot goes away, then comes back ---------------------------
 // The other reported bug: turning the phone's terminal off and on again

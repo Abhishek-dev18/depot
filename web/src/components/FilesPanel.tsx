@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DepotConnection } from '../pairing/clientReconnect'
 import type { DirEntry } from '../transport/transferSession'
 import { formatBytes, formatDay, nowMs } from '../format'
-import { isStale, type HeldFile } from '../heldFiles'
-import { describePreview } from '../preview'
+import { heldFor, keyFor, type HeldFile } from '../heldFiles'
+import { describePreview, previewBlockedReason } from '../preview'
+import { listCachedFiles, putCachedFile } from '../storage/fileCache'
+import { Dialog } from './Dialog'
 import { PreviewOverlay } from './PreviewOverlay'
 import { TransferCard, type TransferState } from './TransferCard'
 
@@ -34,6 +36,9 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
   const [received, setReceived] = useState<HeldFile[]>([])
   const [pending, setPending] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState<string | null>(null)
+  // The refusal dialog for a file too large to draw in a tab.
+  const [uploading, setUploading] = useState<TransferState | null>(null)
+  const [refused, setRefused] = useState<{ title: string; body: string; action?: { label: string; onClick: () => void } } | null>(null)
 
   // The refresh callbacks fire from outside React and must not capture a
   // stale trail, so the current one is kept in a ref alongside the state.
@@ -49,6 +54,35 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     },
     [],
   )
+
+  // What previous visits left behind. Without this a reload throws away
+  // files that are sitting in the browser's own storage, and the user
+  // pays the phone's data to fetch them a second time.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const cached = await listCachedFiles()
+      if (cancelled || cached.length === 0) return
+      const restored = cached.map((file) => {
+        const url = URL.createObjectURL(file.blob)
+        urlsRef.current.push(url)
+        return {
+          key: file.key,
+          name: file.name,
+          size: file.size,
+          modifiedAt: file.modifiedAt,
+          mime: file.mime,
+          blob: file.blob,
+          url,
+          persisted: true,
+        }
+      })
+      setReceived((prev) => [...restored.filter((r) => !prev.some((p) => p.key === r.key)), ...prev])
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const open = useCallback(
     async (next: DirEntry[]) => {
@@ -68,9 +102,20 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     [session, onError],
   )
 
-  // The first listing is deliberately not routed through open(): an
-  // effect must not set state synchronously, and it should drop its result
-  // if the component goes away mid-request.
+  /*
+   * The first listing, once per session.
+   *
+   * Deliberately not routed through open(): an effect must not set state
+   * synchronously, and it should drop its result if the component goes
+   * away mid-request.
+   *
+   * Its dependencies must all be stable, which is why ClientView hands
+   * this component memoised callbacks. They were not, and re-running
+   * this effect calls setTrail([]) — so it was silently a "go back to
+   * the root" button wired to anything that caused a render: a progress
+   * tick, a log line, an upload finishing. Invisible until there was a
+   * folder to be thrown out of.
+   */
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -129,11 +174,6 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [refresh])
 
-  const heldFor = useCallback(
-    (handle: string) => received.find((file) => file.handle === handle),
-    [received],
-  )
-
   const fetchFile = useCallback(
     async (entry: DirEntry) => {
       setPending(entry.handle)
@@ -158,26 +198,42 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         })
         const url = URL.createObjectURL(file.blob)
         urlsRef.current.push(url)
-        const held: HeldFile = {
-          handle: entry.handle,
+        const key = keyFor({ name: file.name, size: entry.size ?? file.size, modifiedAt: entry.modifiedAt })
+        const persisted = await putCachedFile({
+          key,
           name: file.name,
           size: file.size,
           modifiedAt: entry.modifiedAt,
+          mime: entry.mime,
+          blob: file.blob,
+          receivedAt: nowMs(),
+        })
+        const held: HeldFile = {
+          key,
+          name: file.name,
+          size: file.size,
+          modifiedAt: entry.modifiedAt,
+          mime: entry.mime,
           blob: file.blob,
           url,
+          persisted,
         }
         // A re-fetch replaces the copy it supersedes rather than sitting
         // beside it: two rows with one name and different bytes is a
         // question nobody can answer from the outside.
         setReceived((prev) => {
-          const previous = prev.find((f) => f.handle === entry.handle)
+          const previous = prev.find((f) => f.key === key)
           if (previous) {
             URL.revokeObjectURL(previous.url)
             urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
           }
-          return [held, ...prev.filter((f) => f.handle !== entry.handle)]
+          return [held, ...prev.filter((f) => f.key !== key)]
         })
-        log(`${file.name} verified against the manifest and whole-file hash`)
+        log(
+          persisted
+            ? `${file.name} verified against the manifest and whole-file hash, and kept`
+            : `${file.name} verified — too large to keep, so a reload will need it again`,
+        )
       } catch (err) {
         onError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -196,32 +252,125 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
    * data to arrive at what the browser is already holding. Only a listing
    * that disagrees with the held copy sends it back over the wire.
    */
-  const activate = async (entry: DirEntry) => {
-    if (pending) return
-    const held = heldFor(entry.handle)
-    if (held && !isStale(held, entry)) {
-      setPreviewing(held.handle)
-      return
-    }
-    if (held) log(`${entry.name} changed on the Depot since it was received — fetching again`)
+  /** Why this file cannot be drawn, or null. Size is known from the listing. */
+  const blockedReason = (file: { name: string; size?: number; mime?: string }): string | null =>
+    previewBlockedReason(describePreview(file.name, file.mime), file.size ?? 0)
+
+  /** Bring it over and say nothing more — the FETCH action on a row. */
+  const fetchOnly = async (entry: DirEntry) => {
+    if (pending || heldFor(received, entry)) return
     await fetchFile(entry)
   }
 
-  const refetch = async (handle: string) => {
+  /**
+   * Clicking the file itself: bring it over and open it.
+   *
+   * The two actions are one code path with different endings, which is
+   * the point — fetching is fetching, and whether a preview follows is a
+   * property of the click, not of the transfer.
+   */
+  const fetchAndPreview = async (entry: DirEntry) => {
     if (pending) return
-    const held = heldFor(handle)
+    const reason = blockedReason(entry)
+    if (reason !== null) {
+      const held = heldFor(received, entry)
+      setRefused({
+        title: 'Too large to preview',
+        body: reason,
+        action: held
+          ? undefined
+          : { label: 'Fetch it anyway', onClick: () => void fetchFile(entry) },
+      })
+      return
+    }
+    const held = heldFor(received, entry)
+    if (held) {
+      setPreviewing(held.key)
+      return
+    }
+    await fetchFile(entry)
+    // Opened by key rather than by the returned value: fetchFile owns the
+    // received list, and reading it back is what keeps one source of truth.
+    setPreviewing(keyFor(entry))
+  }
+
+  /** PREVIEW in the lower list, which never goes back to the Depot. */
+  const previewHeld = (file: HeldFile) => {
+    const reason = blockedReason(file)
+    if (reason !== null) {
+      setRefused({ title: 'Too large to preview', body: reason })
+      return
+    }
+    setPreviewing(file.key)
+  }
+
+  /**
+   * Ask for it again anyway.
+   *
+   * The only escape from a Depot that reports neither a size nor a
+   * modification time: with nothing to compare, a changed file keeps the
+   * same key and the held copy would otherwise stand forever.
+   */
+  const refetch = async (key: string) => {
+    if (pending) return
     setPreviewing(null)
-    // Re-read the listing first, so the copy that comes back records the
-    // Depot's current figures. Fetching against a remembered row would
-    // store the old timestamp alongside the new bytes, and the next
-    // click would find them disagreeing and fetch a third time.
-    const entry = (await refresh())?.find((e) => e.handle === handle)
-    // If the row is gone — the user navigated away, or the Depot stopped
-    // offering it — the handle alone is still enough to ask with, and
-    // what is already known about the file is the best record available.
-    await fetchFile(
-      entry ?? { handle, name: held?.name ?? '', kind: 'file', size: held?.size, modifiedAt: held?.modifiedAt },
-    )
+    // Re-read the listing first, so the copy that comes back is recorded
+    // under the Depot's current figures rather than remembered ones.
+    const listed = await refresh()
+    const entry = listed?.find((e) => e.kind === 'file' && keyFor(e) === key)
+    if (!entry) {
+      onError('that file is no longer in this listing')
+      return
+    }
+    // Dropped first, so the fetch is not short-circuited by the very copy
+    // it is meant to replace.
+    setReceived((prev) => prev.filter((f) => f.key !== key))
+    await fetchFile(entry)
+  }
+
+  /**
+   * §5.10 — the one direction that writes.
+   *
+   * Offered only where the Depot said `writable`, which is a statement
+   * of intent and not an authorisation: the Depot checks the grant again
+   * when the PUT lands, so the worst this can do is ask and be refused.
+   */
+  const uploadHere = trail.length > 0 && trail[trail.length - 1].writable === true
+  const destination = uploadHere ? trail[trail.length - 1] : undefined
+
+  const upload = async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file || !destination || pending || uploading) return
+    const startedAt = nowMs()
+    setUploading({ name: file.name, bytesReceived: 0, bytesTotal: file.size, startedAt, updatedAt: startedAt })
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const stored = await session.send(
+        destination.handle,
+        { name: file.name, bytes, mime: file.type || undefined },
+        (e) => {
+          if (e.type === 'chunk-sent') {
+            setUploading((prev) =>
+              prev === null
+                ? prev
+                : { ...prev, bytesReceived: e.bytesSent ?? prev.bytesReceived, updatedAt: nowMs() },
+            )
+          }
+        },
+      )
+      // A Depot never overwrites, so what it stored may not be what was
+      // asked for. Saying so beats letting someone find out later.
+      log(
+        stored === file.name
+          ? `${stored} sent to ${destination.name}`
+          : `sent to ${destination.name} as ${stored} — that name was taken`,
+      )
+      await refresh()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploading(null)
+    }
   }
 
   const rate =
@@ -233,7 +382,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     onRate(rate)
   }, [rate, onRate])
 
-  const previewFile = previewing === null ? undefined : received.find((f) => f.handle === previewing)
+  const previewFile = previewing === null ? undefined : received.find((f) => f.key === previewing)
 
   return (
     <div className="wbody">
@@ -288,6 +437,24 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
             ))}
           </div>
 
+          {uploadHere && (
+            <div className="uprow">
+              <label className={uploading ? 'upbtn busy' : 'upbtn'}>
+                <input
+                  type="file"
+                  disabled={uploading !== null || pending !== null}
+                  onChange={(e) => {
+                    void upload(e.target.files)
+                    // Cleared so the same file can be picked twice.
+                    e.target.value = ''
+                  }}
+                />
+                {uploading ? `SENDING ${uploading.name}` : `SEND A FILE TO ${destination?.name.toUpperCase()}`}
+              </label>
+              <span className="uphint">This folder accepts files. Nothing is overwritten.</span>
+            </div>
+          )}
+
           <div className="ftable">
             <div className="fh">
               <div>NAME</div>
@@ -304,26 +471,49 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
             )}
             {!loading &&
               entries.map((entry) => {
-                const held = entry.kind === 'file' ? heldFor(entry.handle) : undefined
-                const current = held !== undefined && !isStale(held, entry)
+                const held = heldFor(received, entry)
+                const busy = pending === entry.handle
+                // A held file opens from memory, so a transfer in flight
+                // is no reason to make it unclickable.
+                const frozen = pending !== null && held === undefined
                 return (
-                  <button
-                    key={entry.handle}
-                    className={pending === entry.handle ? 'fr fr-busy' : 'fr'}
-                    onClick={() => (entry.kind === 'dir' ? void open([...trail, entry]) : void activate(entry))}
-                    // A held file opens from memory, so a transfer in
-                    // flight is no reason to make it unclickable.
-                    disabled={pending !== null && !current}
-                    title={current ? 'Already received — opens without asking the Depot again' : undefined}
-                  >
-                    <div className="n">
-                      <i aria-hidden="true">{entry.kind === 'dir' ? '▤' : '▣'}</i>
-                      <span className="fn">{entry.name}</span>
-                      {current && <span className="held">✓ HELD</span>}
+                  <div key={entry.handle} className={busy ? 'fr fr-busy' : 'fr'}>
+                    <button
+                      className="fr-open"
+                      onClick={() =>
+                        entry.kind === 'dir' ? void open([...trail, entry]) : void fetchAndPreview(entry)
+                      }
+                      disabled={frozen}
+                      title={
+                        entry.kind === 'dir'
+                          ? undefined
+                          : held
+                            ? 'Already in this browser — opens without asking the Depot again'
+                            : 'Fetch it and open it'
+                      }
+                    >
+                      <span className="n">
+                        <i aria-hidden="true">{entry.kind === 'dir' ? '▤' : '▣'}</i>
+                        <span className="fn">{entry.name}</span>
+                      </span>
+                      <span className="sz">{entry.kind === 'dir' ? '—' : formatBytes(entry.size ?? 0)}</span>
+                      <span className="dt">{formatDay(entry.modifiedAt)}</span>
+                    </button>
+                    <div className="fr-act">
+                      {entry.kind === 'dir' ? null : held ? (
+                        <span className="held">✓ HELD</span>
+                      ) : (
+                        <button
+                          className="fr-fetch"
+                          onClick={() => void fetchOnly(entry)}
+                          disabled={frozen}
+                          title="Bring it over without opening it"
+                        >
+                          {busy ? 'FETCHING' : 'FETCH'}
+                        </button>
+                      )}
                     </div>
-                    <div className="sz">{entry.kind === 'dir' ? '—' : formatBytes(entry.size ?? 0)}</div>
-                    <div className="dt">{formatDay(entry.modifiedAt)}</div>
-                  </button>
+                  </div>
                 )
               })}
           </div>
@@ -331,32 +521,63 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
           {received.length > 0 && (
             <div className="received">
               <div className="sl">RECEIVED · VERIFIED</div>
-              {received.map((file) => (
-                <div key={file.handle} className="received-row">
-                  <button className="received-open" onClick={() => setPreviewing(file.handle)}>
-                    <span className="received-name">{file.name}</span>
-                    <span className="received-size">{formatBytes(file.size)}</span>
-                    <span className="received-view">
-                      {describePreview(file.name).kind === 'none' ? 'DETAILS' : 'VIEW'}
+              {received.map((file) => {
+                const reason = blockedReason(file)
+                const kind = describePreview(file.name, file.mime).kind
+                return (
+                  <div key={file.key} className="received-row">
+                    <span className="received-name" title={file.name}>
+                      {file.name}
                     </span>
-                  </button>
-                  <a className="received-save" href={file.url} download={file.name}>
-                    SAVE
-                  </a>
-                </div>
-              ))}
+                    <span className="received-size">{formatBytes(file.size)}</span>
+                    {/*
+                      Shadowed, and deliberately not marked disabled in
+                      any sense a machine reads. A disabled control
+                      swallows its own click, so the question it provokes
+                      — why can I not press this — would have nowhere to
+                      be answered; and aria-disabled would tell a screen
+                      reader the same lie, since this button does work.
+                      It is dimmed to say "not what you want", and
+                      pressing it explains why.
+                    */}
+                    <button
+                      className={reason === null ? 'received-act' : 'received-act off'}
+                      title={reason ?? undefined}
+                      onClick={() => previewHeld(file)}
+                    >
+                      {kind === 'none' ? 'DETAILS' : 'PREVIEW'}
+                    </button>
+                    {/*
+                      The only thing here that writes to the machine.
+                      Everything above this line happens in the browser.
+                    */}
+                    <a className="received-act download" href={file.url} download={file.name}>
+                      DOWNLOAD
+                    </a>
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
 
+      {refused && (
+        <Dialog
+          title={refused.title}
+          body={refused.body}
+          action={refused.action}
+          onClose={() => setRefused(null)}
+        />
+      )}
       {previewFile && (
         <PreviewOverlay
           file={previewFile}
           onClose={() => setPreviewing(null)}
-          onRefetch={() => void refetch(previewFile.handle)}
+          onRefetch={() => void refetch(previewFile.key)}
         />
       )}
       {transfer && <TransferCard transfer={transfer} />}
+      {uploading && <TransferCard transfer={uploading} direction="up" />}
     </div>
   )
 }

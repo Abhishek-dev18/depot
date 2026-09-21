@@ -8,3 +8,9 @@ dist/
 # Go
 signal/signal
 /signal/*.exe
+# Android signing — the keystore and its passwords never go in the repo.
+# Losing the keystore means never being able to update an installed app,
+# so keep it somewhere you will still have it in two years.
+keystore.properties
+*.jks
+*.keystore

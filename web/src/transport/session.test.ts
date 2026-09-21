@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { putChunks, resetChunkCacheForTests } from '../storage/chunkCache'
+import { Direction, encodeChunkFrame, encodeCtlFrame } from './frame'
 import { buildManifest } from './manifest'
 import { cdcParamsForAvg } from './chunkSize'
 import {
@@ -9,6 +10,7 @@ import {
   type DepotSource,
   type OfferedFile,
   type SessionKeys,
+  type WritableTarget,
 } from './transferSession'
 import type { DataChannels } from './webrtc'
 
@@ -264,4 +266,257 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
     session.close()
     stop()
   })
+})
+
+/**
+ * A Depot whose answers are already on the wire.
+ *
+ * The fake channel above delivers in a microtask and runs a real Depot,
+ * so every reply takes several turns to come back — which is the timing
+ * that hides this. Here each reply is encrypted up front and dispatched
+ * in the same turn as the request that triggers it, which is what a fast
+ * link does in practice.
+ *
+ * It matters most for chunks. The ctl codec decodes asynchronously, so a
+ * ctl reply still finds its subscriber by the time it is parsed; the
+ * chunk listener is attached straight to the data channel, so anything
+ * that arrives before that line runs is simply gone, `outstanding` never
+ * empties, and the transfer sits there until its two-minute timeout.
+ */
+describe('a reply that arrives in the same turn as the request', () => {
+  it('does not lose chunks written the instant NEED goes out', async () => {
+    const k = keys()
+    const file = fileOf('a.bin', 6000, 5)
+    const manifest = await buildManifest(1, file.name, file.bytes, cdcParamsForAvg(1024))
+
+    const ctl = new FakeChannel()
+    const data = new FakeChannel()
+    const channels: DataChannels = {
+      pc: { getStats: () => Promise.resolve(new Map()) } as unknown as RTCPeerConnection,
+      ctl: ctl as unknown as RTCDataChannel,
+      data: data as unknown as RTCDataChannel,
+      connectionType: 'direct',
+      close: () => {},
+    }
+
+    const ctlFrame = async (counter: number, msg: unknown) =>
+      encodeCtlFrame(
+        k.kD2C,
+        Direction.DepotToClient,
+        counter,
+        // Re-wrapped: libsodium rejects the view TextEncoder returns.
+        new Uint8Array(new TextEncoder().encode(JSON.stringify(msg))),
+      )
+
+    const caps = await ctlFrame(0, {
+      type: 'CAPS',
+      version: 1,
+      maxChunkSize: 1 << 20,
+      compression: ['deflate-raw'],
+    })
+    const manifestFrame = await ctlFrame(1, { type: 'MANIFEST', manifest })
+
+    const chunkFrames: Uint8Array[] = []
+    for (const info of manifest.chunks) {
+      chunkFrames.push(
+        await encodeChunkFrame(k.kD2C, Direction.DepotToClient, {
+          transferId: manifest.transferId,
+          chunkIndex: info.index,
+          plaintext: file.bytes.subarray(info.offset, info.offset + info.length),
+          compressed: false,
+        }),
+      )
+    }
+
+    const deliver = (channel: FakeChannel, frame: Uint8Array) =>
+      channel.dispatchEvent(new MessageEvent('message', { data: frame.slice().buffer }))
+
+    let writes = 0
+    ctl.send = () => {
+      writes++
+      if (writes === 1) deliver(ctl, caps) // answering our CAPS
+      else if (writes === 2) deliver(ctl, manifestFrame) // answering REQUEST_FILE
+      else if (writes === 3) for (const frame of chunkFrames) deliver(data, frame) // answering NEED
+    }
+
+    const session = await openClientSession(channels, k)
+    const received = await session.fetch('h1')
+    expect(received.name).toBe('a.bin')
+    expect(await bytesOf(received)).toEqual(Array.from(file.bytes))
+  }, 8000)
+})
+
+/**
+ * A folder the user marked writable, in memory.
+ *
+ * reserve() mirrors what SAF does on the phone: it never hands back a
+ * name that is taken, so "never overwrite" is a property of the
+ * destination rather than a check the protocol has to remember.
+ */
+function writableFolder() {
+  const files = new Map<string, Uint8Array>()
+  const target: WritableTarget = {
+    reserve(name) {
+      if (!files.has(name)) return name
+      const dot = name.lastIndexOf('.')
+      const stem = dot <= 0 ? name : name.slice(0, dot)
+      const ext = dot <= 0 ? '' : name.slice(dot)
+      for (let n = 1; ; n++) {
+        const candidate = `${stem} (${n})${ext}`
+        if (!files.has(candidate)) return candidate
+      }
+    },
+    store(name, bytes) {
+      files.set(name, bytes)
+    },
+  }
+  return { files, target }
+}
+
+describe('upload (protocol.md §5.10)', () => {
+  beforeEach(() => {
+    resetChunkCacheForTests()
+    // The real figure is 30s; waiting it out would make this suite the
+    // slowest thing in the repository.
+    ;(globalThis as { DEPOT_UPLOAD_STALL_MS?: number }).DEPOT_UPLOAD_STALL_MS = 1_500
+  })
+
+  function sourceWith(folder: ReturnType<typeof writableFolder> | null): DepotSource {
+    return {
+      list: (handle) =>
+        handle === '' ? [{ handle: 'inbox', name: 'Inbox', kind: 'dir' as const }] : [],
+      open: () => null,
+      writable: (handle) => (handle === 'inbox' ? (folder?.target ?? null) : null),
+    }
+  }
+
+  it('carries a file up and stores it byte for byte', async () => {
+    const folder = writableFolder()
+    const { session, stop } = await connect(sourceWith(folder))
+    const file = fileOf('scan.pdf', 40_000, 3)
+
+    const stored = await session.send('inbox', { name: file.name, bytes: file.bytes })
+
+    expect(stored).toBe('scan.pdf')
+    expect(Array.from(folder.files.get('scan.pdf')!)).toEqual(Array.from(file.bytes))
+    stop()
+  }, 20_000)
+
+  it('never overwrites, and says what it called it instead', async () => {
+    // The rule that stops an upload feature from being a way to destroy
+    // things. There is no version history here to recover from.
+    const folder = writableFolder()
+    folder.files.set('scan.pdf', new Uint8Array([1, 2, 3]))
+
+    const { session, stop } = await connect(sourceWith(folder))
+    const file = fileOf('scan.pdf', 5_000, 9)
+    const stored = await session.send('inbox', { name: file.name, bytes: file.bytes })
+
+    expect(stored).toBe('scan (1).pdf')
+    expect(Array.from(folder.files.get('scan.pdf')!)).toEqual([1, 2, 3])
+    expect(folder.files.get('scan (1).pdf')!.length).toBe(5_000)
+    stop()
+  }, 20_000)
+
+  it('refuses a directory the user did not mark writable', async () => {
+    // Granting a folder to read from is not consent to have things put
+    // in it, which is why writable() answers null by default.
+    const { session, stop } = await connect(sourceWith(null))
+    await expect(
+      session.send('inbox', { name: 'x.bin', bytes: new Uint8Array(10) }),
+    ).rejects.toThrow(/not somewhere this Depot accepts files/)
+    stop()
+  }, 20_000)
+
+  it('gives the same answer for "not writable" and "no such handle"', async () => {
+    // Distinguishable answers would let a Client map which handles exist
+    // by trying to write to them.
+    const folder = writableFolder()
+    const { session, stop } = await connect(sourceWith(folder))
+
+    const refusals = await Promise.all(
+      ['not-a-handle', '../../etc'].map((h) =>
+        session.send(h, { name: 'x.bin', bytes: new Uint8Array(10) }).catch((e: Error) => e.message),
+      ),
+    )
+    expect(new Set(refusals).size).toBe(1)
+    stop()
+  }, 20_000)
+
+  it('refuses a name shaped like a path before anything is reserved', async () => {
+    const folder = writableFolder()
+    const { session, stop } = await connect(sourceWith(folder))
+    await expect(
+      session.send('inbox', { name: '../escape.txt', bytes: new Uint8Array(10) }),
+    ).rejects.toThrow(/looks like a path/)
+    expect(folder.files.size).toBe(0)
+    stop()
+  }, 20_000)
+
+  it('serves and accepts over one session', async () => {
+    // The two directions share a data channel and a codec; running both
+    // is what proves the upload listener does not eat served chunks.
+    const folder = writableFolder()
+    const offered = fileOf('down.bin', 20_000, 4)
+    const source: DepotSource = {
+      list: (handle) =>
+        handle === ''
+          ? [
+              { handle: 'inbox', name: 'Inbox', kind: 'dir' as const },
+              { handle: 'f', name: offered.name, kind: 'file' as const, size: offered.bytes.length },
+            ]
+          : [],
+      open: (handle) => (handle === 'f' ? offered : null),
+      writable: (handle) => (handle === 'inbox' ? folder.target : null),
+    }
+
+    const { session, stop } = await connect(source)
+    const up = fileOf('up.bin', 18_000, 5)
+
+    const got = await session.fetch('f')
+    expect(await bytesOf(got)).toEqual(Array.from(offered.bytes))
+
+    await session.send('inbox', { name: up.name, bytes: up.bytes })
+    expect(Array.from(folder.files.get('up.bin')!)).toEqual(Array.from(up.bytes))
+
+    // And down again afterwards, so it is not one-then-broken.
+    const again = await session.fetch('f')
+    expect(await bytesOf(again)).toEqual(Array.from(offered.bytes))
+    stop()
+  }, 30_000)
+
+  it('writes nothing, and says so, when the chunks never verify', async () => {
+    // Every chunk corrupted in flight. The Depot drops each one, which
+    // is right — but dropping them silently would leave the Client
+    // watching a progress bar that never moves, so it gives up out loud.
+    const folder = writableFolder()
+    const { client, depot } = linkedChannels()
+    const k = keys()
+
+    // Flip a bit in every frame the Client puts on the wire, after the
+    // AEAD has been applied, which is what a corrupted link looks like.
+    const wire = client.data as unknown as { send: (data: Uint8Array) => void }
+    const realSend = wire.send.bind(client.data)
+    wire.send = (data: Uint8Array) => {
+      const copy = data.slice()
+      copy[copy.length - 1] ^= 0xff
+      realSend(copy)
+    }
+
+    const [sender, session] = await Promise.all([
+      runFileSender(depot, k, {
+        list: () => [],
+        open: () => null,
+        writable: (h) => (h === 'inbox' ? folder.target : null),
+      }, () => {}),
+      openClientSession(client, k),
+    ])
+
+    const file = fileOf('corrupt.bin', 9_000, 11)
+    await expect(session.send('inbox', { name: file.name, bytes: file.bytes })).rejects.toThrow(
+      /stopped making progress/,
+    )
+    expect(folder.files.size).toBe(0)
+    sender.stop()
+  }, 60_000)
 })
