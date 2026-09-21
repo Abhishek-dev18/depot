@@ -20,6 +20,7 @@ import com.depot.app.ui.components.BottomSheet
 import com.depot.app.ui.components.FailState
 import com.depot.app.ui.components.SheetButton
 import com.depot.app.service.OfferedSummary
+import com.depot.app.service.ReceivedFile
 import com.depot.app.ui.theme.DepotColors
 
 /**
@@ -37,6 +38,7 @@ fun DepotApp(
     onToggleListening: () -> Unit,
     onPickFile: () -> Unit,
     onRemoveFile: (OfferedSummary) -> Unit,
+    onOpenReceived: (ReceivedFile) -> Unit,
     onAddFolder: () -> Unit,
     onToggleGrant: (GrantView, Boolean) -> Unit,
     onToggleGrantWritable: (GrantView, Boolean) -> Unit,
@@ -143,6 +145,7 @@ fun DepotApp(
                 onOpenSettings = { settingsOpen = true },
                 onDeviceClick = { selectedDeviceId = it.clientIdentityPub },
                 onLinkDevice = { scanning = true },
+                onOpenReceived = onOpenReceived,
             )
         }
 

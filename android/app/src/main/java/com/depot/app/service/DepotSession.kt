@@ -26,6 +26,20 @@ import kotlinx.coroutines.launch
 /** One file on offer, as the screens need to show it. */
 data class OfferedSummary(val name: String, val size: Int)
 
+/**
+ * One file a Client sent up (§5.10), as the home screen shows it.
+ *
+ * [where] is a content URI string or null; null only means this phone
+ * has nothing to open it with, never that the file is missing.
+ */
+data class ReceivedFile(
+    val name: String,
+    val size: Long,
+    val folder: String,
+    val where: String?,
+    val at: Long,
+)
+
 data class SessionState(
     val listeningAs: String? = null,
     /** When registration succeeded, for the hero's UPTIME cell. */
@@ -46,6 +60,10 @@ data class SessionState(
     val movedToday: Long = 0,
     /** The files picked directly, in the order they were added. */
     val offeredFiles: List<OfferedSummary> = emptyList(),
+    /** What Clients have sent up this session, newest first. */
+    val receivedFiles: List<ReceivedFile> = emptyList(),
+    /** The name of one arriving right now, between PUT_OK and PUT_DONE. */
+    val receiving: String? = null,
     val log: List<String> = emptyList(),
     val error: String? = null,
 )
@@ -329,6 +347,29 @@ object DepotSession {
 
         override fun onClientRejected(clientId: String, reason: String) {
             _state.update { it.copy(log = it.log + "rejected $clientId: $reason") }
+        }
+
+        override fun onIncomingStarted(clientId: String, name: String) {
+            _state.update { it.copy(receiving = name, log = it.log + "receiving $name") }
+        }
+
+        override fun onIncomingStored(
+            clientId: String,
+            name: String,
+            size: Long,
+            folder: String,
+            where: String?,
+        ) {
+            val file = ReceivedFile(name, size, folder, where, System.currentTimeMillis())
+            _state.update {
+                it.copy(
+                    receiving = if (it.receiving == name) null else it.receiving,
+                    // Newest first: the one that just arrived is the one
+                    // being looked for.
+                    receivedFiles = listOf(file) + it.receivedFiles,
+                    log = it.log + "received $name into $folder",
+                )
+            }
         }
     }
 

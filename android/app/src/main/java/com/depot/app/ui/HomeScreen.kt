@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.depot.app.service.ReceivedFile
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.transport.ConnectionType
 import com.depot.app.ui.components.AppBar
@@ -40,6 +41,7 @@ import com.depot.app.ui.components.GrantSwitch
 import com.depot.app.ui.components.HeroStat
 import com.depot.app.ui.components.IconBlock
 import com.depot.app.ui.components.IconFile
+import com.depot.app.ui.components.IconUp
 import com.depot.app.ui.components.IconGrant
 import com.depot.app.ui.components.IconSettings
 import com.depot.app.ui.components.IcoButton
@@ -73,6 +75,7 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onDeviceClick: (DeviceRecord) -> Unit,
     onLinkDevice: () -> Unit,
+    onOpenReceived: (ReceivedFile) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listening = state.listeningAs != null
@@ -106,6 +109,18 @@ fun HomeScreen(
             SectionLabel("SHARED")
             SharedSummaryRow(state = state, onOpen = onOpenGrants)
             SingleFileRow(state = state, onPickFile = onPickFile)
+
+            // protocol.md §5.10 in the direction the phone receives.
+            // Shown only once something has come the other way: an empty
+            // RECEIVED on a Depot nobody sends to is a permanent reminder
+            // of a feature rather than a place to look.
+            if (state.receiving != null || state.receivedFiles.isNotEmpty()) {
+                SectionLabel("RECEIVED")
+                state.receiving?.let { name -> ReceivingRow(name) }
+                for (file in state.receivedFiles) {
+                    ReceivedFileRow(file = file, onOpen = { onOpenReceived(file) })
+                }
+            }
 
             SectionLabel("LINKED DEVICES")
             if (state.devices.isEmpty()) {
@@ -380,6 +395,48 @@ private fun SingleFileRow(state: DepotUiState, onPickFile: () -> Unit) {
             RowTile { IconFile(if (files.isEmpty()) DepotColors.Ink3 else DepotColors.Amber, 18.dp) }
         },
         trailing = { GrantSwitch(on = files.isNotEmpty()) },
+    )
+}
+
+/**
+ * A file on its way up, between PUT_OK and PUT_DONE (§5.10).
+ *
+ * Nothing is written until the whole file has verified, so this is not
+ * a progress bar for a file that exists yet — which is exactly why it
+ * says "receiving" rather than naming a place to find it.
+ */
+@Composable
+private fun ReceivingRow(name: String) {
+    ListRow(
+        name = name,
+        meta = "RECEIVING…",
+        nameColor = DepotColors.Ink2,
+        metaColor = DepotColors.Amber,
+        leading = { RowTile { IconUp(DepotColors.Amber, 18.dp) } },
+    )
+}
+
+/**
+ * One that arrived.
+ *
+ * The folder is named because "saved" is not an answer: a file the user
+ * cannot find again may as well not have come. Tapping hands it to
+ * whatever app the phone would have used anyway — this one does not
+ * open other people's files itself.
+ */
+@Composable
+private fun ReceivedFileRow(file: ReceivedFile, onOpen: () -> Unit) {
+    val place = file.folder.uppercase()
+    ListRow(
+        name = file.name,
+        meta = if (file.where == null) {
+            "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)}"
+        } else {
+            "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)} · TAP TO OPEN"
+        },
+        nameColor = DepotColors.Ink,
+        onClick = if (file.where == null) null else onOpen,
+        leading = { RowTile { IconFile(DepotColors.Green, 18.dp) } },
     )
 }
 

@@ -51,6 +51,25 @@ class MainActivity : ComponentActivity() {
         uri?.let { viewModel.onFilesSelected(listOf(it)) }
     }
 
+    /**
+     * Hands a received file (§5.10) to whatever app the phone would have
+     * used for it anyway.
+     *
+     * Depot does not open other people's files itself — a file server
+     * that is also a viewer is a much larger attack surface for no gain,
+     * and the phone already knows what to do with a PDF. The read grant
+     * is passed along for the one URI and nothing else.
+     */
+    private fun openReceived(where: String) {
+        val uri = runCatching { Uri.parse(where) }.getOrNull() ?: return
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, contentResolver.getType(uri) ?: "*/*")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // No viewer for this type is an ordinary situation, not an error
+        // worth crashing over: the file is on the phone either way.
+        runCatching { startActivity(view) }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -99,6 +118,7 @@ class MainActivity : ComponentActivity() {
                         onToggleListening = viewModel::toggleListening,
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
                         onRemoveFile = viewModel::onRemoveOfferedFile,
+                        onOpenReceived = { file -> file.where?.let(::openReceived) },
                         onAddFolder = { pickFolder.launch(null) },
                         onToggleGrant = viewModel::onToggleGrant,
                         onToggleGrantWritable = viewModel::onToggleGrantWritable,

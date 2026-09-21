@@ -473,14 +473,57 @@ await client.waitForFunction(
 await client.locator('.crumb-link').first().click()
 await client.waitForSelector('.ftable', { timeout: 15000 })
 const offeredAtRoot = await client.locator('.uprow').count()
-log(`upload control at the root: ${offeredAtRoot}`,
+log(`in-folder upload control at the root: ${offeredAtRoot}`,
   offeredAtRoot === 0 ? '✓ not offered where it is not allowed' : '✗ OFFERED EVERYWHERE')
+
+// --- sending without having to find the folder first -----------------
+// The control above appears only once you are standing in a folder the
+// Depot accepts into, which meant sending existed and could not be
+// found. This one is on the first screen and names where things go.
+writeFileSync('/tmp/send-a.txt', 'first of two sent up\n'.repeat(40))
+writeFileSync('/tmp/send-b.txt', 'second of two sent up\n'.repeat(55))
+
+const sendPanel = await client.evaluate(() => {
+  const box = document.querySelector('.sendbox')
+  return {
+    present: !!box,
+    says: box?.innerText.replace(/\s+/g, ' ').slice(0, 80) ?? '',
+  }
+})
+log('send panel at the root:', JSON.stringify(sendPanel),
+  sendPanel.present && sendPanel.says.includes('Inbox')
+    ? '✓ offered, and names where things land'
+    : '✗ NO WAY TO SEND WITHOUT BROWSING')
+
+await client.locator('.sendbox .upbtn input').setInputFiles(['/tmp/send-a.txt', '/tmp/send-b.txt'])
+// Both, one after the other: they share one channel, so they queue.
+await client.waitForFunction(
+  () => {
+    const rows = [...document.querySelectorAll('.out-row')]
+    return rows.length === 2 && rows.every((r) => r.classList.contains('out-sent'))
+  },
+  null,
+  { timeout: 90000 },
+)
+const outbox = await client.locator('.out-row').allInnerTexts()
+log('outbox after sending two at once:', JSON.stringify(outbox.map((t) => t.replace(/\s+/g, ' '))))
+
+const bothOnDepot = await depot.locator('.inbox-list li').allInnerTexts()
+log('the Depot holds:', JSON.stringify(bothOnDepot),
+  bothOnDepot.some((t) => t.includes('send-a.txt')) && bothOnDepot.some((t) => t.includes('send-b.txt'))
+    ? '✓ both arrived'
+    : '✗ NOT BOTH STORED')
+
+// The point of keeping them listed: what you sent stays on screen.
+const stillListed = await client.locator('.out-row').count()
+log(`outbox still shows ${stillListed} file(s) after both finished`,
+  stillListed === 2 ? '✓ kept for the session' : '✗ CLEARED ITSELF')
 
 await client.locator('.fr-open').filter({ hasText: 'Inbox' }).first().click()
 await client.waitForSelector('.uprow', { timeout: 15000 })
 log('inside Inbox, the control appears ✓')
 
-await client.locator('.upbtn input').setInputFiles('/tmp/upload.txt')
+await client.locator('.uprow .upbtn input').setInputFiles('/tmp/upload.txt')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.log-line')].some((l) => l.textContent.includes('sent to Inbox')),
   null,
@@ -506,15 +549,21 @@ log('still in the folder afterwards:', JSON.stringify(afterFirst),
   afterFirst.uprow === 1 && afterFirst.crumb?.includes('Inbox') ? '✓' : '✗ THROWN BACK TO THE ROOT')
 
 // Send it again: the Depot must not overwrite.
-await client.locator('.upbtn input').setInputFiles('/tmp/upload.txt')
+await client.locator('.uprow .upbtn input').setInputFiles('/tmp/upload.txt')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.log-line')].some((l) => l.textContent.includes('that name was taken')),
   null,
   { timeout: 60000 },
 )
 const afterSecond = await depot.locator('.inbox-list li').allInnerTexts()
-log('after sending the same name twice:', JSON.stringify(afterSecond),
-  afterSecond.length === 2 ? '✓ kept both, overwrote neither' : '✗ OVERWROTE')
+// By name rather than by count: other steps have put files here too,
+// and what is under test is that the second upload.txt did not land on
+// top of the first.
+const uploads = afterSecond.filter((t) => t.startsWith('upload'))
+log('after sending the same name twice:', JSON.stringify(uploads),
+  uploads.length === 2 && uploads.some((t) => t.includes('(1)'))
+    ? '✓ kept both, overwrote neither'
+    : '✗ OVERWROTE')
 
 // And the Client can read back what it just sent.
 await client.waitForFunction(
