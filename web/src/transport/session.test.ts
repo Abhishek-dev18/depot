@@ -6,6 +6,7 @@ import { cdcParamsForAvg } from './chunkSize'
 import {
   openClientSession,
   runFileSender,
+  offeredFilesSource,
   singleFileSource,
   type DepotSource,
   type OfferedFile,
@@ -35,15 +36,34 @@ class FakeChannel extends EventTarget {
   }
 }
 
-function linkedChannels(): { client: DataChannels; depot: DataChannels } {
-  const make = () => {
-    const a = new FakeChannel()
+/**
+ * A channel that swallows the first thing written to it.
+ *
+ * Used to lose exactly one message — the Client's CAPS, which is the
+ * first thing it says — without touching anything else about the link.
+ */
+class LosesItsFirstMessage extends FakeChannel {
+  private swallowed = false
+
+  override send(data: Uint8Array): void {
+    if (!this.swallowed) {
+      this.swallowed = true
+      return
+    }
+    super.send(data)
+  }
+}
+
+function linkedChannels(
+  options: { clientCtl?: () => FakeChannel } = {},
+): { client: DataChannels; depot: DataChannels } {
+  const make = (a: FakeChannel = new FakeChannel()) => {
     const b = new FakeChannel()
     a.peer = b
     b.peer = a
     return [a, b] as const
   }
-  const [clientCtl, depotCtl] = make()
+  const [clientCtl, depotCtl] = make(options.clientCtl?.())
   const [clientData, depotData] = make()
 
   // sampleNetwork() only iterates the report, so an empty one is a valid
@@ -519,4 +539,125 @@ describe('upload (protocol.md §5.10)', () => {
     expect(folder.files.size).toBe(0)
     sender.stop()
   }, 60_000)
+})
+
+describe('several files on offer at once (§5.9)', () => {
+  beforeEach(() => {
+    resetChunkCacheForTests()
+  })
+
+  it('lists every file, and adding one leaves the others alone', async () => {
+    // The bug this replaces: picking a second file un-shared the first,
+    // so sending two meant sending one and then losing it.
+    const files = [fileOf('one.bin', 4_000, 1), fileOf('two.bin', 5_000, 2)]
+    const { session, stop } = await connect(offeredFilesSource(() => files))
+
+    expect((await session.list('')).map((e) => e.name)).toEqual(['one.bin', 'two.bin'])
+
+    files.push(fileOf('three.bin', 6_000, 3))
+    expect((await session.list('')).map((e) => e.name)).toEqual(['one.bin', 'two.bin', 'three.bin'])
+    stop()
+  }, 20_000)
+
+  it('keeps each file its own handle, so a third does not disturb the first', async () => {
+    // A Client recognises what it holds by handle. If adding a file
+    // renumbered the others, everything already fetched would look like
+    // something else and be fetched again.
+    const files = [fileOf('one.bin', 4_000, 1)]
+    const source = offeredFilesSource(() => files)
+    const { session, stop } = await connect(source)
+
+    const before = (await session.list(''))[0].handle
+    files.push(fileOf('two.bin', 5_000, 2))
+    const after = (await session.list('')).find((e) => e.name === 'one.bin')!.handle
+    expect(after).toBe(before)
+    stop()
+  }, 20_000)
+
+  it('serves each of them by its own handle', async () => {
+    const files = [fileOf('one.bin', 4_000, 1), fileOf('two.bin', 5_000, 2)]
+    const { session, stop } = await connect(offeredFilesSource(() => files))
+
+    const listed = await session.list('')
+    for (const [i, entry] of listed.entries()) {
+      const got = await session.fetch(entry.handle)
+      expect(await bytesOf(got)).toEqual(Array.from(files[i].bytes))
+    }
+    stop()
+  }, 30_000)
+
+  it('still answers a Client that names no handle at all', async () => {
+    // §5.9's "whatever you are offering", from a Client that predates
+    // browsing. With several, the first is the only sensible answer.
+    const files = [fileOf('one.bin', 2_000, 7), fileOf('two.bin', 2_000, 8)]
+    const { session, stop } = await connect(offeredFilesSource(() => files))
+    const got = await session.fetch(undefined)
+    expect(await bytesOf(got)).toEqual(Array.from(files[0].bytes))
+    stop()
+  }, 20_000)
+
+  it('stops serving one that has been removed', async () => {
+    const files = [fileOf('one.bin', 3_000, 4), fileOf('two.bin', 3_000, 5)]
+    const { session, stop } = await connect(offeredFilesSource(() => files))
+    const listed = await session.list('')
+    const goneHandle = listed[1].handle
+
+    files.splice(1, 1)
+    await expect(session.fetch(goneHandle)).rejects.toThrow(/no such file/)
+    expect((await session.list('')).map((e) => e.name)).toEqual(['one.bin'])
+    stop()
+  }, 20_000)
+})
+
+/**
+ * protocol.md §5.4 — CAPS is a negotiation, not a gate.
+ *
+ * The Depot used to hand its caller a session only once the Client's
+ * CAPS had come back, and to reject the Client when it had not. But the
+ * ctl handler is already answering LIST by then, so a CAPS that went
+ * missing produced a Depot that browsed perfectly and was, as far as the
+ * listener was concerned, not connected to anyone: SHARED_CHANGED went
+ * nowhere, and a file shared afterwards showed up only on a reload.
+ */
+describe('a Client whose CAPS never arrives', () => {
+  it('is still a session, and still hears that the shared set changed', async () => {
+    const k = keys()
+    let offered: OfferedFile | null = null
+    const { client, depot } = linkedChannels({ clientCtl: () => new LosesItsFirstMessage() })
+
+    const [sender, session] = await Promise.all([
+      runFileSender(depot, k, singleFileSource(() => offered), () => {}),
+      openClientSession(client, k),
+    ])
+
+    expect(await session.list('')).toEqual([])
+
+    const announced = new Promise<void>((resolve) => {
+      session.onChanged(resolve)
+    })
+    offered = fileOf('arrived-late.bin', 3_000, 17)
+    sender.notifyChanged()
+    await announced
+
+    expect((await session.list('')).map((e) => e.name)).toEqual(['arrived-late.bin'])
+    session.close()
+    sender.stop()
+  })
+
+  it('can still fetch, at the chunk size a silent peer is assumed to accept', async () => {
+    const k = keys()
+    const file = fileOf('quiet.bin', 200_000, 3)
+    const { client, depot } = linkedChannels({ clientCtl: () => new LosesItsFirstMessage() })
+
+    const [sender, session] = await Promise.all([
+      runFileSender(depot, k, singleFileSource(() => file), () => {}),
+      openClientSession(client, k),
+    ])
+
+    const entries = await session.list('')
+    const got = await session.fetch(entries[0].handle)
+    expect(await bytesOf(got)).toEqual(Array.from(file.bytes))
+    session.close()
+    sender.stop()
+  })
 })

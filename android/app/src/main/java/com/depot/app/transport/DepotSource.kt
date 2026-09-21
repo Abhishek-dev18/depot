@@ -96,7 +96,14 @@ private data class Location(val treeUri: Uri, val documentId: String, val isDire
  */
 class AndroidDepotSource(
     private val context: Context,
-    private val offered: () -> OfferedFile?,
+    /**
+     * The files picked directly, in the order they were added.
+     *
+     * A list rather than one file: replacing the offer every time meant
+     * sending a second file was a matter of un-sharing the first, and a
+     * Client that had already fetched the first found it gone.
+     */
+    private val offered: () -> List<OfferedFile>,
 ) : DepotSource {
 
     private val handles = ConcurrentHashMap<String, Location>()
@@ -160,17 +167,17 @@ class AndroidDepotSource(
             )
         }
 
-        // The single picked file, if there is one, sits alongside the
-        // folders rather than replacing them.
-        val file = offered()
-        if (file == null) return roots
-        return roots + DirEntry(
-            handle = offeredHandleFor(file),
-            name = file.name,
-            isDirectory = false,
-            size = file.bytes.size.toLong(),
-            mime = file.mime,
-        )
+        // The picked files sit alongside the folders rather than
+        // replacing them, in the order they were added.
+        return roots + offered().map { file ->
+            DirEntry(
+                handle = offeredHandleFor(file),
+                name = file.name,
+                isDirectory = false,
+                size = file.bytes.size.toLong(),
+                mime = file.mime,
+            )
+        }
     }
 
     private fun childrenUri(treeUri: Uri, documentId: String): Uri =
@@ -241,13 +248,12 @@ class AndroidDepotSource(
     }
 
     override fun open(handle: String?): ServableFile? {
-        // A null handle, and the bare constant behind it, both mean
-        // "whatever you are offering" — they resolve live, so they can
-        // never be stale. A minted offered-handle has to match the file
-        // that is actually picked now.
-        if (handle == null || handle == offeredHandle) return offered()?.servable()
-        val file = offered()
-        if (file != null && handle == offeredHandleFor(file)) return file.servable()
+        val files = offered()
+        // A null handle, and the bare constant behind it, are §5.9's
+        // "whatever you are offering" — which is the first of them, since
+        // a Client old enough to send no handle has no way to say which.
+        if (handle == null || handle == offeredHandle) return files.firstOrNull()?.servable()
+        files.firstOrNull { offeredHandleFor(it) == handle }?.let { return it.servable() }
         val location = handles[handle] ?: return null
         if (location.isDirectory) return null
         return describeDocument(location)

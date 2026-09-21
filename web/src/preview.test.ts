@@ -130,6 +130,23 @@ describe('keyFor — what counts as the same file across sessions', () => {
     expect(keyFor(vague)).not.toBe(keyFor(file()))
   })
 
+  it('changes if the name does, which is why it must come from the listing', () => {
+    // The whole scheme rests on a key being computable from a listing
+    // row, before anything has been fetched — that is how the browser
+    // decides it already holds a file.
+    //
+    // The store used to be keyed from the manifest's name and the row's
+    // size. A Depot whose two names differ at all — a trailing space is
+    // enough, and a provider that reports one display name and serves
+    // another is ordinary — then wrote a key the next listing could
+    // never reproduce: every click fetched again, and RECEIVED grew
+    // another copy. These two must differ, or that mismatch would be
+    // invisible instead of merely wrong.
+    const row = { name: 'photo.jpg', size: 127_000, modifiedAt: 1700 }
+    expect(keyFor({ ...row, name: 'photo.jpg ' })).not.toBe(keyFor(row))
+    expect(keyFor({ ...row, name: 'Photo.jpg' })).not.toBe(keyFor(row))
+  })
+
   it('does not mistake a zero for a missing figure', () => {
     // An empty file has size 0, and `size || '?'` would write that as
     // "not reported" — making every empty file look like every other.

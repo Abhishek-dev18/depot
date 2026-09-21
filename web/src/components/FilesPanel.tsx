@@ -198,7 +198,15 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         })
         const url = URL.createObjectURL(file.blob)
         urlsRef.current.push(url)
-        const key = keyFor({ name: file.name, size: entry.size ?? file.size, modifiedAt: entry.modifiedAt })
+        // Keyed from the listing row, never from the manifest.
+        //
+        // The key's whole job is to be computable before anything has
+        // been fetched, so that a listing can be matched against what is
+        // already held. Mixing in the manifest's name meant a Depot
+        // whose two names differ by so much as a space stored a key that
+        // could never be looked up again — every click a fresh transfer,
+        // and a RECEIVED list that grew a duplicate each time.
+        const key = keyFor(entry)
         const persisted = await putCachedFile({
           key,
           name: file.name,

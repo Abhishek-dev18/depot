@@ -135,6 +135,15 @@ const OUR_CAPS: CapsMessage = {
   features: ['cdc', 'browse', 'upload'],
 }
 
+/**
+ * What a peer that never said is assumed to accept: §5.5's lowest tier.
+ *
+ * Only reached when CAPS does not come back at all. Guessing low costs
+ * a little efficiency; guessing high sends a frame the peer is entitled
+ * to reject.
+ */
+const MIN_CAPS_CHUNK_SIZE = 64 * 1024
+
 // The ASCII-only utf8() in crypto/transcript.ts cannot carry a file name.
 // Copying into a fresh Uint8Array keeps libsodium's strict same-realm type
 // check happy under jsdom, which is why that encoder avoids TextEncoder.
@@ -403,6 +412,72 @@ export function memoryInbox(
 
 const INBOX_HANDLE = 'inbox'
 
+/**
+ * Several picked files, which is what a Depot actually offers.
+ *
+ * Alongside singleFileSource rather than replacing it: that one is the
+ * pre-browsing shape and its tests pin the behaviour a Client with no
+ * handle at all relies on.
+ *
+ * The handle names the file, as everywhere else — so adding a second
+ * file leaves the first one's identity alone, and a Client that already
+ * fetched it still recognises what it holds.
+ */
+export function offeredFilesSource(
+  getFiles: () => OfferedFile[],
+  inbox: ReturnType<typeof memoryInbox> | null = null,
+): DepotSource {
+  const handleFor = (file: OfferedFile) => `offered:${file.bytes.length}:${file.name}`
+  return {
+    list: (handle) => {
+      if (handle === INBOX_HANDLE && inbox) {
+        return [...inbox.files.entries()].map(([name, entry]) => ({
+          handle: `inbox:${entry.bytes.length}:${name}`,
+          name,
+          kind: 'file' as const,
+          size: entry.bytes.length,
+          modifiedAt: entry.at,
+        }))
+      }
+      if (handle !== '') return []
+      const rows: DirEntry[] = []
+      if (inbox) {
+        rows.push({
+          handle: INBOX_HANDLE,
+          name: 'Inbox',
+          kind: 'dir',
+          count: inbox.files.size,
+          writable: true,
+        })
+      }
+      for (const file of getFiles()) {
+        rows.push({
+          handle: handleFor(file),
+          name: file.name,
+          kind: 'file',
+          size: file.bytes.length,
+          mime: file.mime,
+        })
+      }
+      return rows
+    },
+    writable: (handle) => (handle === INBOX_HANDLE ? (inbox?.target ?? null) : null),
+    open: (handle) => {
+      if (inbox && handle?.startsWith('inbox:')) {
+        const name = handle.slice(handle.indexOf(':', 'inbox:'.length) + 1)
+        const entry = inbox.files.get(name)
+        return entry ? { name, bytes: entry.bytes } : null
+      }
+      const files = getFiles()
+      // undefined is §5.9's "whatever you are currently offering", which
+      // with several is the first — a Client old enough to send no
+      // handle has no way to say which.
+      if (handle === undefined) return files[0] ?? null
+      return files.find((f) => handleFor(f) === handle) ?? null
+    },
+  }
+}
+
 export function singleFileSource(
   getFile: () => OfferedFile | null,
   /**
@@ -504,7 +579,11 @@ export async function runFileSender(
 
   const transfers = new Map<number, { manifest: Manifest; bytes: Uint8Array }>()
   let nextTransferId = 1
-  let maxChunkSize = OUR_CAPS.maxChunkSize
+  // Starts at the floor and is raised by CAPS, rather than starting at
+  // our own ceiling: until the peer has said what it accepts, the only
+  // safe assumption is the least it could have said. Costs nothing in
+  // practice — the adaptive sizer (§5.5) starts at the same tier.
+  let maxChunkSize = MIN_CAPS_CHUNK_SIZE
 
   const statsTimer = setInterval(() => {
     void sampleNetwork(channels.pc).then((sample) => {
@@ -520,8 +599,29 @@ export async function runFileSender(
     void handleCtl(msg)
   })
 
-  const peerCaps = await exchangeCaps(ctl)
-  maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize)
+  /**
+   * CAPS is exchanged, but this session does not wait on it to exist.
+   *
+   * It used to: the caller only learned of a Client once CAPS had come
+   * back, so a CAPS that was late or lost threw, and the Client was told
+   * REJECTED. The handler above is already answering its LIST by then,
+   * though, so what the user saw was a Depot that browsed perfectly and
+   * never pushed SHARED_CHANGED again — a file shared afterwards
+   * appeared only on a reload, which is exactly the bug this was
+   * supposed to have fixed.
+   *
+   * The one thing CAPS decides is how big a chunk may be, and that
+   * needs no waiting: the ceiling starts at the lowest tier and CAPS
+   * only ever raises it.
+   */
+  void exchangeCaps(ctl)
+    .then((peerCaps) => {
+      maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize)
+    })
+    .catch(() => {
+      // Nothing to do: the ceiling starts at §5.5's lowest tier, which
+      // is what a peer that has said nothing is assumed to accept.
+    })
 
   /** In-flight uploads, by the id this Depot issued. */
   const uploads = new Map<

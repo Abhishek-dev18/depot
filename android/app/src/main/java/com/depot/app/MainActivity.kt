@@ -48,7 +48,7 @@ class MainActivity : ComponentActivity() {
     private fun offerSharedFile(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
         val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-        uri?.let(viewModel::onFileSelected)
+        uri?.let { viewModel.onFilesSelected(listOf(it)) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,9 +79,11 @@ class MainActivity : ComponentActivity() {
                 // read without holding any broad storage permission, which
                 // is the right shape for a Depot: the user picks exactly
                 // what is shared, nothing more.
+                // Several at a time, and each pick adds to what is
+                // already on offer rather than replacing it.
                 val pickFile = rememberLauncherForActivityResult(
-                    ActivityResultContracts.OpenDocument(),
-                ) { uri -> uri?.let(viewModel::onFileSelected) }
+                    ActivityResultContracts.OpenMultipleDocuments(),
+                ) { uris -> viewModel.onFilesSelected(uris) }
 
                 // A whole folder, so a Client has something to browse
                 // (protocol.md §5.9). The tree permission is taken
@@ -96,6 +98,7 @@ class MainActivity : ComponentActivity() {
                         state = state,
                         onToggleListening = viewModel::toggleListening,
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
+                        onRemoveFile = viewModel::onRemoveOfferedFile,
                         onAddFolder = { pickFolder.launch(null) },
                         onToggleGrant = viewModel::onToggleGrant,
                         onToggleGrantWritable = viewModel::onToggleGrantWritable,

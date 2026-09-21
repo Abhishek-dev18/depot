@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.depot.app.ui.components.AppBar
 import com.depot.app.ui.components.Cta
+import com.depot.app.service.OfferedSummary
 import com.depot.app.ui.components.GrantSwitch
 import com.depot.app.ui.components.IcoButton
 import com.depot.app.ui.components.IconBack
@@ -43,13 +44,13 @@ import com.depot.app.ui.theme.DepotType
 @Composable
 fun GrantsScreen(
     grants: List<GrantView>,
-    offeredFileName: String?,
-    offeredFileSize: Int,
+    offeredFiles: List<OfferedSummary>,
     onAddFolder: () -> Unit,
     onToggle: (GrantView, Boolean) -> Unit,
     onToggleWritable: (GrantView, Boolean) -> Unit,
     onForget: (GrantView) -> Unit,
     onPickFile: () -> Unit,
+    onRemoveFile: (OfferedSummary) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -68,7 +69,7 @@ fun GrantsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp),
         ) {
-            if (grants.isEmpty() && offeredFileName == null) {
+            if (grants.isEmpty() && offeredFiles.isEmpty()) {
                 SectionLabel("NOTHING SHARED")
                 Text(
                     "A Client that connects right now would see an empty Depot. " +
@@ -138,25 +139,29 @@ fun GrantsScreen(
                 }
             }
 
-            SectionLabel("SINGLE FILE")
+            SectionLabel(if (offeredFiles.isEmpty()) "SINGLE FILES" else "FILES")
+            // Each picked file gets its own row, so removing one does not
+            // mean un-sharing the rest.
+            for (file in offeredFiles) {
+                ListRow(
+                    name = file.name,
+                    meta = "${formatBytes(file.size.toLong())} · SHARED ON ITS OWN",
+                    nameColor = DepotColors.Ink,
+                    onClick = { onRemoveFile(file) },
+                    leading = { RowTile { IconGrant(DepotColors.Amber, 18.dp) } },
+                    trailing = { GrantSwitch(on = true) },
+                )
+            }
             ListRow(
-                name = offeredFileName ?: "Offer one file instead",
-                meta = if (offeredFileName == null) {
+                name = if (offeredFiles.isEmpty()) "Offer files instead" else "Add more files",
+                meta = if (offeredFiles.isEmpty()) {
                     "WITHOUT GRANTING A WHOLE FOLDER"
                 } else {
-                    "${formatBytes(offeredFileSize.toLong())} · SHARED ON ITS OWN"
+                    "PICK SEVERAL AT ONCE · ADDS TO THE LIST ABOVE"
                 },
-                nameColor = if (offeredFileName == null) DepotColors.Ink2 else DepotColors.Ink,
+                nameColor = DepotColors.Ink2,
                 onClick = onPickFile,
-                leading = {
-                    RowTile {
-                        IconGrant(
-                            if (offeredFileName == null) DepotColors.Ink3 else DepotColors.Amber,
-                            18.dp,
-                        )
-                    }
-                },
-                trailing = { GrantSwitch(on = offeredFileName != null) },
+                leading = { RowTile { IconGrant(DepotColors.Ink3, 18.dp) } },
             )
 
             SectionLabel("NOT SHARED")

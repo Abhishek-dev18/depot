@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.8 (draft)
+**Version:** 0.9 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -422,6 +422,17 @@ The intersection governs the session. This message is what allows new transports
 compression algorithms and features to be added later without breaking older
 clients.
 
+**A Depot MUST NOT wait for the Client's `CAPS` before treating the session as
+live.** It sends its own, starts answering, and applies the Client's when it
+arrives; until then it assumes the peer accepts no more than the smallest chunk
+size in §5.5 — never more than it might have asked for. Gating on `CAPS` looks
+safer and is not: the ctl handler is already answering `LIST` by then, so a
+`CAPS` that is late or lost produces a Depot that browses perfectly and is, as
+far as its own bookkeeping knows, connected to nobody — §5.9 notices go
+nowhere, and a file shared afterwards appears only when the Client is reloaded.
+A Client has nothing to serve and MAY treat the Depot's `CAPS` as the point its
+session opens.
+
 ### 5.5 Adaptive chunk sizing
 
 | Link quality | Chunk size |
@@ -537,7 +548,10 @@ An empty `handle` lists the grants themselves — the folders the user has
 chosen to share. Any other handle lists that directory's children.
 `REQUEST_FILE` (§5.8) gains an optional `handle` naming which file to send;
 omitting it keeps the older meaning, "whatever the Depot is currently
-offering", so a Client that predates this section still works.
+offering", so a Client that predates this section still works. A Depot may
+offer several files at once outside any folder, each listed as its own entry
+with its own handle; a handle-less `REQUEST_FILE` then means the first of
+them, since a Client old enough to send no handle has no way to say which.
 
 **Handles are opaque and minted per session.** They are not paths, not
 document IDs and not anything the Client can construct — the Depot keeps a
@@ -800,6 +814,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.9 | 2026-09-21 | §5.4: forbid waiting for the peer's `CAPS` before treating the session as live, and fix the assumed chunk size for a peer that has said nothing to §5.5's floor. Both Depots gated on it, so a lost `CAPS` produced a session that answered `LIST` but was recorded as nobody — `SHARED_CHANGED` went nowhere and a newly shared file appeared only on a reload. §5.9: say that several files may be offered at once outside any folder, and what a handle-less `REQUEST_FILE` means when there are. |
 | 0.8 | 2026-09-20 | Add §5.10 upload — `PUT` / `PUT_OK` / `PUT_DONE`, the one direction in which a Client causes the Depot to write. Gated on a per-grant writable flag that defaults to off, because granting a folder to read from is not consent to have things put in it. Never overwrites; verifies before publishing. |
 | 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |
 | 0.3 | 2026-09-16 | Add §4.2 REJECTED: a Depot refusing a reconnection now says why, so a revoked or unpaired device sees the reason instead of an unexplained timeout. |

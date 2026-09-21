@@ -35,6 +35,21 @@ const log = (...a) => console.log('[e2e]', ...a)
  */
 const shared = () => client.locator('.fr:not(.fr-note)').filter({ hasNotText: 'Inbox' })
 
+/**
+ * Offers exactly these files and nothing else.
+ *
+ * Picking is additive now — that is the whole point of the multi-file
+ * work — so a step that wants "the Depot is sharing this one thing"
+ * has to say so, rather than relying on a new pick wiping the last.
+ */
+const offerOnly = async (paths) => {
+  const stops = depot.locator('.offer-list .linkish')
+  for (let n = await stops.count(); n > 0; n = await stops.count()) {
+    await stops.first().click()
+  }
+  await depot.locator('input[type=file]').setInputFiles(paths)
+}
+
 // Fixtures, written here so the script needs nothing but a server.
 // The PNG is a 1x1 red pixel; the point is that it decodes, not what it shows.
 writeFileSync('/tmp/sample.txt', 'the quick brown fox\n'.repeat(400))
@@ -49,6 +64,8 @@ writeFileSync('/tmp/sample.pdf', minimalPdf('DEPOT PDF'))
 // A name that says JPEG over bytes that are not one, to drive the
 // failure path: a media element that cannot decode renders nothing
 // at all, which is indistinguishable from a preview that never came.
+writeFileSync('/tmp/one.txt', 'first of several\n'.repeat(60))
+writeFileSync('/tmp/two.txt', 'second of several\n'.repeat(80))
 writeFileSync('/tmp/upload.txt', 'sent from the browser to the phone\n'.repeat(120))
 writeFileSync('/tmp/fetchonly.txt', 'fetched without opening\n'.repeat(50))
 // Over MAX_PREVIEW_SIZE, so the preview must refuse before it starts.
@@ -85,6 +102,31 @@ const client = await ctx.newPage()
 const depot = await ctx.newPage()
 client.on('pageerror', (e) => log('client pageerror:', e.message))
 depot.on('pageerror', (e) => log('depot pageerror:', e.message))
+
+/**
+ * What both sides thought was going on when a step gave up.
+ *
+ * A bare "waitForFunction timed out" names the line and nothing else,
+ * which on a two-tab protocol test is the least useful half of the
+ * story: the question is always whether the Depot never sent it or the
+ * Client never showed it.
+ */
+process.on('uncaughtException', (err) => {
+  const tail = (page, sel, n) =>
+    page.evaluate(
+      ([s, k]) => [...document.querySelectorAll(s)].slice(-k).map((el) => el.textContent.trim()),
+      [sel, n],
+    ).catch(() => ['(unreadable)'])
+  ;(async () => {
+    log('FAILED:', err.message.split('\n')[0])
+    log('  client rows:  ', JSON.stringify(await tail(client, '.fr:not(.fr-note) .fn', 20)))
+    log('  depot offering:', JSON.stringify(await tail(depot, '.offer-list li', 20)))
+    log('  depot log:    ', JSON.stringify(await tail(depot, '.log-line', 40)))
+    log('  client log:   ', JSON.stringify(await tail(client, '.log-line', 40)))
+    await client.screenshot({ path: '/tmp/failure-client.png' }).catch(() => {})
+    await depot.screenshot({ path: '/tmp/failure-depot.png' }).catch(() => {})
+  })().finally(() => process.exit(1))
+})
 
 await client.goto(`${BASE}/`, { waitUntil: 'networkidle' })
 await depot.goto(`${BASE}/?role=depot`, { waitUntil: 'networkidle' })
@@ -162,7 +204,7 @@ log('and it still reconnects on its own afterwards ✓')
 
 // --- share a file at a Client that is already connected -------------
 // The reported bug: this only appeared after reloading the browser.
-await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
+await offerOnly('/tmp/sample.txt')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'sample.txt'),
   null,
@@ -212,7 +254,7 @@ log('Escape closed it ✓')
 // --- swapping the offered file invalidates the held copy -------------
 // Same slot on the Depot, different bytes. The browser must not go on
 // showing what it happens to be holding.
-await depot.locator('input[type=file]').setInputFiles('/tmp/sample.png')
+await offerOnly('/tmp/sample.png')
 await client.waitForFunction(
   () => {
     return [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) =>
@@ -289,7 +331,7 @@ await client.waitForSelector('.ftable', { timeout: 10000 })
 // FETCH brings it over and says nothing more; the name brings it over
 // and opens it. Below, PREVIEW stays in the browser and DOWNLOAD is the
 // only thing that writes to the machine.
-await depot.locator('input[type=file]').setInputFiles('/tmp/fetchonly.txt')
+await offerOnly('/tmp/fetchonly.txt')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'fetchonly.txt'),
   null,
@@ -319,7 +361,7 @@ await client.keyboard.press('Escape')
 await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
 
 // --- too large to draw: shadowed, and it says why --------------------
-await depot.locator('input[type=file]').setInputFiles('/tmp/huge.txt')
+await offerOnly('/tmp/huge.txt')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'huge.txt'),
   null,
@@ -368,7 +410,7 @@ log('clicking the shadowed PREVIEW still explains itself ✓')
 await client.keyboard.press('Escape')
 
 // --- a preview that cannot decode must say so ------------------------
-await depot.locator('input[type=file]').setInputFiles('/tmp/broken.jpg')
+await offerOnly('/tmp/broken.jpg')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent.endsWith('.jpg')),
   null,
@@ -394,7 +436,7 @@ await client.keyboard.press('Escape')
 // --- a pdf, the one kind that needs a frame --------------------------
 // Worth its own step: the frame carries no sandbox (see preview.ts), and
 // that decision is only defensible if it is the one that renders.
-await depot.locator('input[type=file]').setInputFiles('/tmp/sample.pdf')
+await offerOnly('/tmp/sample.pdf')
 await client.waitForFunction(
   () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent.endsWith('.pdf')),
   null,
@@ -414,7 +456,7 @@ log('pdf frame:', JSON.stringify(pdfPixels), `screenshot ${shot.length} bytes ->
 await client.keyboard.press('Escape')
 
 // Put the text file back, so the rest of the run is unchanged.
-await depot.locator('input[type=file]').setInputFiles('/tmp/sample.txt')
+await offerOnly('/tmp/sample.txt')
 await client.waitForFunction(
   () => {
     return [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some(
@@ -489,6 +531,62 @@ await client.screenshot({ path: '/tmp/client-upload.png' })
 await client.keyboard.press('Escape')
 await client.locator('.crumb-link').first().click()
 await client.waitForSelector('.ftable', { timeout: 15000 })
+
+// --- several files at once, and adding one keeps the rest ------------
+// Picking a second file used to un-share the first, so sending two meant
+// sending one and then losing it.
+await offerOnly(['/tmp/one.txt', '/tmp/two.txt'])
+await client.waitForFunction(
+  () => {
+    const names = [...document.querySelectorAll('.fr:not(.fr-note) .fn')].map((n) => n.textContent)
+    return names.includes('one.txt') && names.includes('two.txt')
+  },
+  null,
+  { timeout: 20000 },
+)
+log('two files picked at once both appear ✓')
+
+// Fetch the first, then add a third: the first must stay held, which
+// means its handle did not move under it.
+await client.locator('.fr-open').filter({ hasText: 'one.txt' }).first().click()
+await client.waitForSelector('.pv', { timeout: 40000 })
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
+const fetchesAfterFirst = await fetches()
+
+await depot.locator('input[type=file]').setInputFiles('/tmp/sample.pdf')
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].some((n) => n.textContent === 'sample.pdf'),
+  null,
+  { timeout: 20000 },
+)
+const stillHeld = await client.evaluate(() =>
+  [...document.querySelectorAll('.fr:not(.fr-note)')]
+    .filter((r) => r.textContent.includes('one.txt'))
+    .some((r) => r.querySelector('.held') !== null),
+)
+log('after adding a third file, one.txt is still marked HELD:', stillHeld, stillHeld ? '✓' : '✗ ITS HANDLE MOVED')
+
+// And opening it again costs nothing, which is the point of that.
+await client.locator('.fr-open').filter({ hasText: 'one.txt' }).first().click()
+await client.waitForSelector('.pv', { timeout: 15000 })
+log(`reopened it: fetches ${fetchesAfterFirst} -> ${await fetches()}`,
+  (await fetches()) === fetchesAfterFirst ? '✓ nothing re-downloaded' : '✗ FETCHED AGAIN')
+await client.keyboard.press('Escape')
+await client.waitForSelector('.pv', { state: 'detached', timeout: 5000 })
+
+// Removing one leaves the others.
+await depot.locator('.offer-list .linkish').first().click()
+await client.waitForFunction(
+  () => [...document.querySelectorAll('.fr:not(.fr-note) .fn')].every((n) => n.textContent !== 'one.txt'),
+  null,
+  { timeout: 20000 },
+)
+const remaining = await client.evaluate(() =>
+  [...document.querySelectorAll('.fr:not(.fr-note) .fn')].map((n) => n.textContent),
+)
+log('after removing one.txt:', JSON.stringify(remaining),
+  remaining.includes('two.txt') && remaining.includes('sample.pdf') ? '✓ the rest stayed' : '✗ TOOK OTHERS WITH IT')
 
 // --- the Depot goes away, then comes back ---------------------------
 // The other reported bug: turning the phone's terminal off and on again

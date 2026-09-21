@@ -12,6 +12,7 @@ import com.depot.app.pairing.QrPayload
 import com.depot.app.pairing.runDepotPairing
 import com.depot.app.service.DepotService
 import com.depot.app.service.DepotSession
+import com.depot.app.service.OfferedSummary
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.Grant
@@ -70,8 +71,7 @@ data class DepotUiState(
     val bytesSent: Long = 0,
     val bytesTotal: Long = 0,
     val movedToday: Long = 0,
-    val offeredFileName: String? = null,
-    val offeredFileSize: Int = 0,
+    val offeredFiles: List<OfferedSummary> = emptyList(),
     val log: List<String> = emptyList(),
 )
 
@@ -122,8 +122,7 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
                         bytesSent = session.bytesSent,
                         bytesTotal = session.bytesTotal,
                         movedToday = session.movedToday,
-                        offeredFileName = session.offeredFileName,
-                        offeredFileSize = session.offeredFileSize,
+                        offeredFiles = session.offeredFiles,
                         log = linkLog + session.log,
                         error = it.error ?: session.error,
                     )
@@ -258,41 +257,77 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         Settings.setTurn(getApplication(), turn)
     }
 
-    fun onFileSelected(uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val resolver = getApplication<Application>().contentResolver
-                val name = resolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
-                } ?: "file"
-                // Unlike a granted folder, which is streamed, a single
-                // offered file is held in memory so it survives the picker's
-                // permission grant expiring. That puts a ceiling on it: a
-                // whole video would take the process down, and a Depot that
-                // dies is worse than one that says no.
-                val ceiling = Runtime.getRuntime().maxMemory() / 4
-                val size = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
-                    val index = c.getColumnIndex(OpenableColumns.SIZE)
-                    if (index >= 0 && c.moveToFirst() && !c.isNull(index)) c.getLong(index) else -1L
-                } ?: -1L
-                if (size > ceiling) {
-                    throw IllegalStateException(
-                        "$name is ${size / (1024 * 1024)} MB — too large to offer on its own. " +
-                            "Share the folder it is in instead; folders are streamed.",
-                    )
-                }
+    /** Stops offering one file, leaving the others alone. */
+    fun onRemoveOfferedFile(file: OfferedSummary) {
+        DepotSession.removeOfferedFile(file.name, file.size)
+    }
 
-                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: throw IllegalStateException("could not open the selected file")
-                // The provider's own type, passed on so the browser can
-                // preview a file whose display name carries no extension
-                // — which is what Photos and Drive hand back.
-                DepotSession.setOfferedFile(OfferedFile(name, bytes, resolver.getType(uri)))
-            } catch (e: Exception) {
-                DepotSession.reportError(e.message ?: e.toString())
+    /**
+     * Adds every file the picker returned.
+     *
+     * One that cannot be read does not stop the rest: picking five and
+     * getting none because the third was on a disconnected provider is
+     * the worst of the available behaviours.
+     */
+    fun onFilesSelected(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            // The ceiling is on everything on offer at once, not on each
+            // file: picked files are held in memory, so five that each
+            // fit can still be four too many.
+            val ceiling = Runtime.getRuntime().maxMemory() / 4
+            var held = DepotSession.offeredBytes()
+            val loaded = ArrayList<OfferedFile>(uris.size)
+            val failures = ArrayList<String>()
+            for (uri in uris) {
+                try {
+                    val file = readOffered(uri, ceiling - held)
+                    loaded += file
+                    held += file.bytes.size
+                } catch (e: Exception) {
+                    failures += e.message ?: e.toString()
+                }
             }
+            if (loaded.isNotEmpty()) DepotSession.addOfferedFiles(loaded)
+            for (message in failures) DepotSession.reportError(message)
         }
+    }
+
+    /**
+     * Reads one picked file into memory, or throws saying why not.
+     *
+     * [room] is what is left of the in-memory budget once everything
+     * already on offer is counted.
+     */
+    private fun readOffered(uri: Uri, room: Long): OfferedFile {
+        val resolver = getApplication<Application>().contentResolver
+        val name = resolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+        } ?: "file"
+
+        // Unlike a granted folder, which is streamed, a picked file is
+        // held in memory so it survives the picker's permission grant
+        // expiring. That puts a ceiling on it: a whole video would take
+        // the process down, and a Depot that dies is worse than one that
+        // says no.
+        val size = resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            val index = c.getColumnIndex(OpenableColumns.SIZE)
+            if (index >= 0 && c.moveToFirst() && !c.isNull(index)) c.getLong(index) else -1L
+        } ?: -1L
+        if (size > room) {
+            throw IllegalStateException(
+                "$name is ${size / (1024 * 1024)} MB — more than is left for files offered on " +
+                    "their own. Remove one, or share the folder it is in instead; folders are streamed.",
+            )
+        }
+
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("could not open $name")
+        // The provider's own type, passed on so the browser can preview a
+        // file whose display name carries no extension — which is what
+        // Photos and Drive hand back.
+        return OfferedFile(name, bytes, resolver.getType(uri))
     }
 
     /**
