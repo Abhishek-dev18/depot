@@ -568,6 +568,16 @@ export interface RunningSender {
 /** How many manifests a sender keeps answerable at once. */
 const MAX_LIVE_TRANSFERS = 8
 
+/**
+ * How long a download may hear nothing before it is given up on.
+ *
+ * A gap, not a total: see the receive loop. Matched to §5.10's upload
+ * stall window, doubled, because the Depot reads a file off storage
+ * before the first chunk of a fresh transfer goes out.
+ */
+const DOWNLOAD_STALL_MS = (): number =>
+  (globalThis as { DEPOT_DOWNLOAD_STALL_MS?: number }).DEPOT_DOWNLOAD_STALL_MS ?? 60_000
+
 export async function runFileSender(
   channels: DataChannels,
   keys: SessionKeys,
@@ -1217,12 +1227,38 @@ async function receiveFile(
     let pending: Array<[string, Uint8Array]> = []
 
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        channels.data.removeEventListener('message', onMessage)
-        // Whatever arrived is already cached, so the next attempt starts
-        // from here rather than from nothing.
-        void putChunks(pending).finally(() => reject(new Error('timed out receiving all chunks')))
-      }, 120_000)
+      /*
+       * A stall timer, not a deadline for the whole file.
+       *
+       * This was a single 120s timeout armed when the transfer started
+       * and never touched again, which made it a cap on how long a file
+       * may take rather than a check that anything is still arriving. On
+       * a LAN nothing reaches it. On mobile data it is about 15 MB: a
+       * video transferring perfectly well at a steady rate was killed
+       * part-way through and reported as a timeout.
+       *
+       * The upload direction (§5.10) already had this right — each chunk
+       * resets the window there — so this is the same rule pointed the
+       * other way.
+       */
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const stillWaiting = () => {
+        clearTimeout(timer)
+        timer = setTimeout(() => {
+          channels.data.removeEventListener('message', onMessage)
+          // Whatever arrived is already cached, so the next attempt
+          // starts from here rather than from nothing.
+          void putChunks(pending).finally(() =>
+            reject(
+              new Error(
+                `nothing arrived for ${Math.round(DOWNLOAD_STALL_MS() / 1000)}s with ` +
+                  `${outstanding.size} of ${manifest.chunkCount} chunk(s) still to come`,
+              ),
+            ),
+          )
+        }, DOWNLOAD_STALL_MS())
+      }
+      stillWaiting()
 
       function finish() {
         clearTimeout(timer)
@@ -1248,6 +1284,9 @@ async function receiveFile(
 
             outstanding.delete(decoded.chunkIndex)
             pending.push([info.hash, plaintext])
+            // Something arrived, so the link is alive: start the window
+            // again rather than counting down towards a file's size.
+            stillWaiting()
             bytesReceived += info.length
             onEvent({
               type: 'chunk-received',

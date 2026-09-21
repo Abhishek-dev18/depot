@@ -47,6 +47,14 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     trailRef.current = trail
   }, [trail])
 
+  // Same reason as the trail above: fetchFile runs outside a render and
+  // needs to know what is already held without listing `received` as a
+  // dependency, which would rebuild it on every arrival.
+  const receivedRef = useRef<HeldFile[]>([])
+  useEffect(() => {
+    receivedRef.current = received
+  }, [received])
+
   const urlsRef = useRef<string[]>([])
   useEffect(
     () => () => {
@@ -229,14 +237,18 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
         // A re-fetch replaces the copy it supersedes rather than sitting
         // beside it: two rows with one name and different bytes is a
         // question nobody can answer from the outside.
-        setReceived((prev) => {
-          const previous = prev.find((f) => f.key === key)
-          if (previous) {
-            URL.revokeObjectURL(previous.url)
-            urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
-          }
-          return [held, ...prev.filter((f) => f.key !== key)]
-        })
+        // Handing back the superseded copy's save URL happens here and
+        // not inside the updater below. React may call an updater more
+        // than once and does so in development on purpose, to catch one
+        // that is doing something other than working out the next state
+        // — which is how the preview came to be pointed at a handle that
+        // had already been given back.
+        const previous = receivedRef.current.find((f) => f.key === key)
+        if (previous) {
+          URL.revokeObjectURL(previous.url)
+          urlsRef.current = urlsRef.current.filter((u) => u !== previous.url)
+        }
+        setReceived((prev) => [held, ...prev.filter((f) => f.key !== key)])
         log(
           persisted
             ? `${file.name} verified against the manifest and whole-file hash, and kept`
