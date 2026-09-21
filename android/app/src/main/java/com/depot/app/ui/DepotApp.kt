@@ -19,6 +19,7 @@ import com.depot.app.storage.TurnSettings
 import com.depot.app.ui.components.BottomSheet
 import com.depot.app.ui.components.FailState
 import com.depot.app.ui.components.SheetButton
+import com.depot.app.service.OfferedSummary
 import com.depot.app.ui.theme.DepotColors
 
 /**
@@ -35,6 +36,7 @@ fun DepotApp(
     state: DepotUiState,
     onToggleListening: () -> Unit,
     onPickFile: () -> Unit,
+    onRemoveFile: (OfferedSummary) -> Unit,
     onAddFolder: () -> Unit,
     onToggleGrant: (GrantView, Boolean) -> Unit,
     onToggleGrantWritable: (GrantView, Boolean) -> Unit,
@@ -107,13 +109,13 @@ fun DepotApp(
         } else if (grantsOpen) {
             GrantsScreen(
                 grants = state.grants,
-                offeredFileName = state.offeredFileName,
-                offeredFileSize = state.offeredFileSize,
+                offeredFiles = state.offeredFiles,
                 onAddFolder = onAddFolder,
                 onToggle = onToggleGrant,
                 onToggleWritable = onToggleGrantWritable,
                 onForget = onForgetGrant,
                 onPickFile = onPickFile,
+                onRemoveFile = onRemoveFile,
                 onBack = { grantsOpen = false },
             )
         } else if (settingsOpen) {

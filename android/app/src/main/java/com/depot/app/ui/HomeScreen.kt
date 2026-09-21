@@ -184,7 +184,11 @@ private fun StatusHeroCard(state: DepotUiState, onClick: () -> Unit) {
         ) {
             HeroStat(
                 label = "SHARED",
-                value = if (state.offeredFileName == null) "—" else formatBytes(state.offeredFileSize.toLong()),
+                value = if (state.offeredFiles.isEmpty()) {
+                    "—"
+                } else {
+                    formatBytes(state.offeredFiles.sumOf { it.size.toLong() })
+                },
                 modifier = Modifier.weight(1f),
             )
             HeroStat(
@@ -211,7 +215,7 @@ private fun StatusHeroCard(state: DepotUiState, onClick: () -> Unit) {
 private fun TransferCard(state: DepotUiState) {
     // The clock advances with each progress report rather than on a timer:
     // progress is the only thing that changes the numbers anyway.
-    val startedAt = remember(state.bytesTotal, state.offeredFileName) { System.currentTimeMillis() }
+    val startedAt = remember(state.bytesTotal, state.offeredFiles.size) { System.currentTimeMillis() }
     val now = remember(state.bytesSent) { System.currentTimeMillis() }
     val elapsed = (now - startedAt).coerceAtLeast(1L)
     val rate = state.bytesSent * 1000.0 / elapsed
@@ -229,7 +233,7 @@ private fun TransferCard(state: DepotUiState) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                state.offeredFileName ?: "Transferring",
+                state.offeredFiles.firstOrNull()?.name ?: "Transferring",
                 style = DepotType.RowName.copy(fontSize = 15.sp),
                 color = DepotColors.Ink,
                 maxLines = 1,
@@ -314,17 +318,25 @@ fun RouteBadge(type: ConnectionType, modifier: Modifier = Modifier) {
 @Composable
 private fun SharedSummaryRow(state: DepotUiState, onOpen: () -> Unit) {
     val folders = state.grants.count { it.grant.enabled }
-    val file = state.offeredFileName
-    val sharing = folders > 0 || file != null
+    val files = state.offeredFiles
+    val fileBytes = files.sumOf { it.size.toLong() }
+    val sharing = folders > 0 || files.isNotEmpty()
 
     val meta = when {
         !sharing -> "A CLIENT WOULD SEE AN EMPTY DEPOT"
-        folders == 0 -> "ONE FILE · ${formatBytes(state.offeredFileSize.toLong())}"
+        folders == 0 -> {
+            val count = if (files.size == 1) "ONE FILE" else "${files.size} FILES"
+            "$count · ${formatBytes(fileBytes)}"
+        }
         else -> {
             val bytes = state.grants.filter { it.grant.enabled }.sumOf { it.bytes ?: 0L }
             val folderText = if (folders == 1) "1 FOLDER" else "$folders FOLDERS"
-            val fileText = if (file == null) "" else " + 1 FILE"
-            "$folderText$fileText · ${formatBytes(bytes + (file?.let { state.offeredFileSize.toLong() } ?: 0L))}"
+            val fileText = when (files.size) {
+                0 -> ""
+                1 -> " + 1 FILE"
+                else -> " + ${files.size} FILES"
+            }
+            "$folderText$fileText · ${formatBytes(bytes + fileBytes)}"
         }
     }
 
@@ -349,20 +361,25 @@ private fun SharedSummaryRow(state: DepotUiState, onOpen: () -> Unit) {
  */
 @Composable
 private fun SingleFileRow(state: DepotUiState, onPickFile: () -> Unit) {
-    val name = state.offeredFileName
+    val files = state.offeredFiles
+    val total = files.sumOf { it.size.toLong() }
     ListRow(
-        name = name ?: "Share a single file",
-        meta = if (name == null) {
+        name = when (files.size) {
+            0 -> "Share files"
+            1 -> files[0].name
+            else -> "${files.size} files shared"
+        },
+        meta = if (files.isEmpty()) {
             "WITHOUT GRANTING A WHOLE FOLDER"
         } else {
-            "${formatBytes(state.offeredFileSize.toLong())} · SHARED ON ITS OWN"
+            "${formatBytes(total)} · TAP TO ADD MORE"
         },
-        nameColor = if (name == null) DepotColors.Ink2 else DepotColors.Ink,
+        nameColor = if (files.isEmpty()) DepotColors.Ink2 else DepotColors.Ink,
         onClick = onPickFile,
         leading = {
-            RowTile { IconFile(if (name == null) DepotColors.Ink3 else DepotColors.Amber, 18.dp) }
+            RowTile { IconFile(if (files.isEmpty()) DepotColors.Ink3 else DepotColors.Amber, 18.dp) }
         },
-        trailing = { GrantSwitch(on = name != null) },
+        trailing = { GrantSwitch(on = files.isNotEmpty()) },
     )
 }
 

@@ -7,6 +7,7 @@ import { reconnectTranscript, signReconnectResponse } from '../crypto/reconnect'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing, savePairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
+import type { Envelope } from '../signal/envelope'
 import { ReasonDepotOffline, TypeError as SignalError } from '../signal/envelope'
 import { TypeRejected, throwIfRejected } from './rejection'
 import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
@@ -46,6 +47,40 @@ interface ChallengePayload {
 }
 
 /**
+ * How long to give the Depot to answer a step of §4.
+ *
+ * Fifteen seconds was too short and the failure it produced was a lie. A
+ * phone that has just been switched on is cold: the service starts, the
+ * socket connects, and only then does it build a peer connection and
+ * gather candidates. It answers — later than this used to wait.
+ *
+ * What the user saw was "your network wouldn't allow a link", which sent
+ * them to move devices onto the same Wi-Fi to fix a phone that was
+ * merely still waking up.
+ */
+const STEP_TIMEOUT_MS = 40_000
+
+/**
+ * Waits for one step, and says which step it was if it does not come.
+ *
+ * "timed out waiting for signal message" names nothing. A timeout here
+ * means the Depot is registered — Signal answered, or the request would
+ * have been refused outright — and did not reply, which is a different
+ * problem from having no route to it and has a different answer.
+ */
+async function waitForStep(
+  client: SignalClient,
+  predicate: (e: Envelope) => boolean,
+  whatFailed: string,
+): Promise<Envelope> {
+  try {
+    return await client.waitFor(predicate, STEP_TIMEOUT_MS)
+  } catch {
+    throw new Error(`${whatFailed} within ${Math.round(STEP_TIMEOUT_MS / 1000)}s`)
+  }
+}
+
+/**
  * Client side of protocol.md §4 and §5. Proves possession of
  * ClientIdentity's private key (§4), then negotiates a WebRTC data channel
  * over the same signal relay and hands back an open session the caller can
@@ -82,9 +117,10 @@ export async function runClientReconnect(
     })
 
     cb.onStatus('awaiting challenge')
-    const challenge = await client.waitFor(
+    const challenge = await waitForStep(
+      client,
       (e) => e.type === 'CHALLENGE' || e.type === TypeRejected || e.type === SignalError,
-      15_000,
+      'the Depot is registered but did not answer the reconnection request',
     )
     if (challenge.type === SignalError) {
       if (challenge.reason === ReasonDepotOffline) {
@@ -110,9 +146,10 @@ export async function runClientReconnect(
     cb.onStatus('sending signed response')
     client.relay('RESPONSE', { sig })
 
-    const ok = await client.waitFor(
+    const ok = await waitForStep(
+      client,
       (e) => e.type === 'SESSION_OK' || e.type === TypeRejected || e.type === SignalError,
-      15_000,
+      'the Depot did not accept the signed response',
     )
     if (ok.type === SignalError) {
       if (ok.reason === ReasonDepotOffline) {

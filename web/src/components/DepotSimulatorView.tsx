@@ -3,7 +3,7 @@ import { useLog } from '../hooks/useLog'
 import { runDepotPairing } from '../pairing/depotPairing'
 import { runDepotReconnectListener, type DepotReconnectListener } from '../pairing/depotReconnect'
 import { listDevices, revokeDevice, type DeviceRecord } from '../storage/devices'
-import { memoryInbox, singleFileSource, type OfferedFile } from '../transport/transferSession'
+import { memoryInbox, offeredFilesSource, type OfferedFile } from '../transport/transferSession'
 import type { ConnectionType, TurnConfig } from '../transport/webrtc'
 import { Badge } from './Badge'
 import { Card } from './Card'
@@ -28,8 +28,9 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
   const [devices, setDevices] = useState<DeviceRecord[]>([])
   const [listener, setListener] = useState<DepotReconnectListener | null>(null)
   const listenerRef = useRef<DepotReconnectListener | null>(null)
-  const [offeredFile, setOfferedFile] = useState<{ name: string; size: number } | null>(null)
-  const offeredFileRef = useRef<OfferedFile | null>(null)
+  // A list, because picking a second file should not un-share the first.
+  const [offeredFiles, setOfferedFiles] = useState<Array<{ name: string; size: number }>>([])
+  const offeredFilesRef = useRef<OfferedFile[]>([])
 
   // §5.10 — a folder this simulated Depot will accept uploads into, so
   // the direction that writes is exercisable in two browser tabs.
@@ -82,14 +83,37 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
     setBusy(false)
   }
 
-  const chooseFile = async (fileList: FileList | null) => {
-    const file = fileList?.[0]
-    if (!file) return
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    offeredFileRef.current = { name: file.name, bytes, mime: file.type || undefined }
-    setOfferedFile({ name: file.name, size: bytes.length })
-    push(`offering ${file.name} (${bytes.length.toLocaleString()} bytes)`)
+  /**
+   * Adds every file picked, rather than replacing what is on offer.
+   *
+   * The same name and length is treated as the same file, so picking a
+   * folder twice does not produce two of everything.
+   */
+  const chooseFiles = async (fileList: FileList | null) => {
+    const picked = [...(fileList ?? [])]
+    if (picked.length === 0) return
+    const loaded: OfferedFile[] = []
+    for (const file of picked) {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const already = offeredFilesRef.current.some(
+        (f) => f.name === file.name && f.bytes.length === bytes.length,
+      )
+      if (!already) loaded.push({ name: file.name, bytes, mime: file.type || undefined })
+    }
+    if (loaded.length === 0) return
+    offeredFilesRef.current = [...offeredFilesRef.current, ...loaded]
+    setOfferedFiles(offeredFilesRef.current.map((f) => ({ name: f.name, size: f.bytes.length })))
+    for (const f of loaded) push(`offering ${f.name} (${f.bytes.length.toLocaleString()} bytes)`)
     // §5.9: anyone already connected is now looking at a stale listing.
+    listenerRef.current?.notifySharedChanged()
+  }
+
+  const stopOffering = (name: string, size: number) => {
+    offeredFilesRef.current = offeredFilesRef.current.filter(
+      (f) => !(f.name === name && f.bytes.length === size),
+    )
+    setOfferedFiles(offeredFilesRef.current.map((f) => ({ name: f.name, size: f.bytes.length })))
+    push(`stopped offering ${name}`)
     listenerRef.current?.notifySharedChanged()
   }
 
@@ -97,7 +121,7 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
     if (listenerRef.current) return
     const l = await runDepotReconnectListener(
       signalUrl,
-      singleFileSource(() => offeredFileRef.current, inbox),
+      offeredFilesSource(() => offeredFilesRef.current, inbox),
       turnConfig,
       {
       onStatus: push,
@@ -170,13 +194,29 @@ export function DepotSimulatorView({ signalUrl, turnConfig }: { signalUrl: strin
 
       <Card title="File to offer" subtitle="Whatever is selected here is what a reconnecting Client receives." icon={<FolderIcon />}>
         <label className="file-picker">
-          <input type="file" onChange={(e) => void chooseFile(e.target.files)} />
-          <span>{offeredFile ? 'Choose a different file' : 'Choose a file'}</span>
+          <input
+            type="file"
+            multiple
+            onChange={(e) => {
+              void chooseFiles(e.target.files)
+              // Cleared so the same file can be picked again after it
+              // has been removed.
+              e.target.value = ''
+            }}
+          />
+          <span>{offeredFiles.length === 0 ? 'Choose files' : 'Add more files'}</span>
         </label>
-        {offeredFile && (
-          <p className="hint">
-            Offering <strong>{offeredFile.name}</strong> ({offeredFile.size.toLocaleString()} bytes)
-          </p>
+        {offeredFiles.length > 0 && (
+          <ul className="offer-list">
+            {offeredFiles.map((f) => (
+              <li key={`${f.name}:${f.size}`}>
+                {f.name} ({f.size.toLocaleString()} bytes){' '}
+                <button className="linkish" onClick={() => stopOffering(f.name, f.size)}>
+                  stop
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
 
         {/*

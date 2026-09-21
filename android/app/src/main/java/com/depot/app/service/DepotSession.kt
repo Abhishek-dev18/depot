@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+/** One file on offer, as the screens need to show it. */
+data class OfferedSummary(val name: String, val size: Int)
+
 data class SessionState(
     val listeningAs: String? = null,
     /** When registration succeeded, for the hero's UPTIME cell. */
@@ -41,8 +44,8 @@ data class SessionState(
     val bytesTotal: Long = 0,
     /** Bytes this Depot has put on the wire today, across sessions. */
     val movedToday: Long = 0,
-    val offeredFileName: String? = null,
-    val offeredFileSize: Int = 0,
+    /** The files picked directly, in the order they were added. */
+    val offeredFiles: List<OfferedSummary> = emptyList(),
     val log: List<String> = emptyList(),
     val error: String? = null,
 )
@@ -70,7 +73,11 @@ object DepotSession {
     /** What the user asked for, as distinct from what is currently true. */
     @Volatile
     private var wantListening = false
-    private var offered: OfferedFile? = null
+    /**
+     * CopyOnWrite because the listing is read on a WebRTC thread while
+     * the picker adds to it on the main one.
+     */
+    private val offered = java.util.concurrent.CopyOnWriteArrayList<OfferedFile>()
 
     /** Last progress figure seen per Client, for the running total below. */
     private val lastProgress = HashMap<String, Long>()
@@ -80,13 +87,45 @@ object DepotSession {
 
     val isListening: Boolean get() = wantListening
 
-    fun setOfferedFile(file: OfferedFile) {
-        offered = file
+    /**
+     * Adds to what is on offer rather than replacing it.
+     *
+     * Picking a second file used to un-share the first, which is not
+     * what anyone means by picking a second file — and a Client that had
+     * fetched the first then found it gone from the listing.
+     *
+     * Already-offered files are skipped rather than duplicated: the same
+     * name and length is the same file as far as anything here can tell,
+     * and two identical rows are a worse answer than one.
+     */
+    fun addOfferedFiles(files: List<OfferedFile>) {
+        if (files.isEmpty()) return
+        val added = files.filterNot { candidate ->
+            offered.any { it.name == candidate.name && it.bytes.size == candidate.bytes.size }
+        }
+        if (added.isEmpty()) return
+        offered.addAll(added)
         _state.update {
             it.copy(
-                offeredFileName = file.name,
-                offeredFileSize = file.bytes.size,
-                log = it.log + "offering ${file.name} (${file.bytes.size} bytes)",
+                offeredFiles = offered.map { f -> OfferedSummary(f.name, f.bytes.size) },
+                log = it.log + added.map { f -> "offering ${f.name} (${f.bytes.size} bytes)" },
+            )
+        }
+        notifySharedChanged()
+    }
+
+    /** How much memory the files on offer are already holding. */
+    fun offeredBytes(): Long = offered.sumOf { it.bytes.size.toLong() }
+
+    /** Stops offering one of them, without touching the rest. */
+    fun removeOfferedFile(name: String, size: Int) {
+        val doomed = offered.filter { it.name == name && it.bytes.size == size }
+        if (doomed.isEmpty()) return
+        offered.removeAll(doomed)
+        _state.update {
+            it.copy(
+                offeredFiles = offered.map { f -> OfferedSummary(f.name, f.bytes.size) },
+                log = it.log + "stopped offering $name",
             )
         }
         notifySharedChanged()
@@ -195,7 +234,7 @@ object DepotSession {
                         // TURN server with an empty address.
                         if (t.url.isBlank()) null else TurnConfig(t.url, t.username, t.credential)
                     },
-                    source = AndroidDepotSource(app) { offered },
+                    source = AndroidDepotSource(app) { offered.toList() },
                     cb = callbacks { reason -> dropped.complete(reason) },
                 )
                 // Registered, so whatever was wrong before has cleared.

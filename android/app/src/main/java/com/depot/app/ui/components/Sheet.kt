@@ -3,11 +3,14 @@ package com.depot.app.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,7 +56,23 @@ fun BottomSheet(
                 // Taps inside the sheet are the sheet's own; without this
                 // they fall through to the scrim and dismiss it.
                 .pointerInput(Unit) { detectTapGestures { } }
+                // navigationBarsPadding() alone was not enough. The
+                // activity asks for adjustResize, but enableEdgeToEdge()
+                // makes that a no-op — an edge-to-edge window is told
+                // where the keyboard is and has to move itself. Until
+                // this, the keyboard opened straight over whatever field
+                // had just been tapped.
+                //
+                // Chained rather than combined: each of these consumes
+                // what it applies, so the second pads by what is left
+                // rather than by the whole IME inset again.
                 .navigationBarsPadding()
+                .imePadding()
+                // A sheet with the keyboard up has little room left, and
+                // the button it is asking you to press is at the bottom
+                // of it. Scrolling keeps that reachable instead of
+                // pushing it off the screen.
+                .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 22.dp),
             content = content,
         )

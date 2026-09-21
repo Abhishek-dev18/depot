@@ -1922,7 +1922,8 @@ code {
   word-break: break-word;
 }
 
-.inbox-list {
+.inbox-list,
+.offer-list {
   margin: 8px 0 0;
   padding-left: 18px;
   font-family: var(--mono);
@@ -1967,4 +1968,17 @@ code {
 }
 .xh-up .xt {
   color: var(--amber);
+}
+
+.linkish {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--red);
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.linkish:hover {
+  text-decoration: underline;
 }

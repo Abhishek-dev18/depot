@@ -10,7 +10,6 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -161,7 +160,18 @@ class FileSender(
 
     private val uploads = java.util.concurrent.ConcurrentHashMap<Int, Upload>()
     private val nextUploadId = java.util.concurrent.atomic.AtomicInteger(1)
-    private val peerCaps = CompletableDeferred<JSONObject>()
+    /**
+     * What the peer said it accepts, or the floor until it says.
+     *
+     * Awaiting CAPS before answering REQUEST_FILE meant a CAPS that
+     * never arrived hung the first fetch for ever with nothing on
+     * screen to explain it. Starting at §5.5's lowest tier and letting
+     * CAPS raise the ceiling costs nothing — the adaptive sizer starts
+     * at that tier anyway — and can only ever send less than the peer
+     * is willing to take.
+     */
+    @Volatile
+    private var peerMaxChunkSize = 64 * 1024
     private val chunkSizer = AdaptiveChunkSize()
     private var sampler: Job? = null
 
@@ -219,7 +229,7 @@ class FileSender(
         val type = msg.optString("type")
         try {
             when (type) {
-                "CAPS" -> if (!peerCaps.isCompleted) peerCaps.complete(msg)
+                "CAPS" -> peerMaxChunkSize = msg.optInt("maxChunkSize", 64 * 1024)
                 "LIST" -> handleList(msg)
                 "REQUEST_FILE" -> handleRequestFile(msg)
                 "NEED" -> handleNeed(msg)
@@ -271,12 +281,8 @@ class FileSender(
             return
         }
         val transferId = nextTransferId.getAndIncrement()
-        // CAPS is exchanged before any REQUEST_FILE, but awaiting rather
-        // than assuming means a reordered peer stalls instead of crashing.
-        val maxChunkSize = minOf(
-            OUR_CAPS.getInt("maxChunkSize"),
-            peerCaps.await().optInt("maxChunkSize", 1024 * 1024),
-        )
+        // CAPS bounds this, and is never waited for: see peerMaxChunkSize.
+        val maxChunkSize = minOf(OUR_CAPS.getInt("maxChunkSize"), peerMaxChunkSize)
         // §5.5 picks the target size; CAPS bounds it. The manifest
         // carries the real lengths either way, so the two sides never have
         // to agree about sizing — only about what was actually sent.

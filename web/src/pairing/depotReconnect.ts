@@ -168,6 +168,12 @@ async function handleIncoming(
     const keys = await deriveKeys(shared, transcript)
 
     const channels = await negotiateAsAnswerer(client, clientId, turn)
+    // A Client that reloads its tab comes back as the same ClientId on a
+    // second connection. Replacing the entry without closing the first
+    // one left the dead session's sender in the map, so §5.9 notices
+    // went to a channel nobody was listening on and the live tab only
+    // learned of a new file when it was reloaded again.
+    activeConnections.get(clientId)?.()
     activeConnections.set(clientId, channels.close)
     cb.onClientConnected({ clientId, connectionType: channels.connectionType })
 
@@ -184,10 +190,25 @@ async function handleIncoming(
     }
     const sender = await runFileSender(channels, { kC2D: keys.kC2D, kD2C: keys.kD2C }, source, onSenderEvent)
     senders.set(clientId, sender)
-    activeConnections.set(clientId, () => {
-      senders.delete(clientId)
+    const closeThis = () => {
+      // Only if this connection is still the current one: a newer tab
+      // may have taken the slot while this one was dying.
+      if (senders.get(clientId) === sender) senders.delete(clientId)
       sender.stop()
       channels.close()
+    }
+    activeConnections.set(clientId, closeThis)
+    // A Client that closes its laptop lid never says goodbye. Without
+    // this the map keeps growing and every SHARED_CHANGED is also sent
+    // to every session that has ever existed.
+    channels.pc.addEventListener('connectionstatechange', () => {
+      // 'disconnected' is deliberately not here: ICE reports it for a
+      // blip that often recovers, and tearing the session down over one
+      // is how a Client that was about to come back gets dropped.
+      const state = channels.pc.connectionState
+      if (state !== 'failed' && state !== 'closed') return
+      if (activeConnections.get(clientId) === closeThis) activeConnections.delete(clientId)
+      closeThis()
     })
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,6 +63,12 @@ fun SettingsScreen(
         Column(
             Modifier
                 .weight(1f)
+                // Outside the scroll, so the keyboard shrinks the area
+                // being scrolled rather than covering the bottom of it:
+                // the TURN fields sit low enough to be hidden otherwise,
+                // and this window is edge-to-edge, which makes the
+                // manifest's adjustResize a no-op.
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp),
         ) {
