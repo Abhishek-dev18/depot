@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { formatBytes } from '../format'
 import type { HeldFile } from '../heldFiles'
 import { TEXT_PREVIEW_LIMIT, describePreview, retype } from '../preview'
@@ -29,21 +29,47 @@ export function PreviewOverlay({ file, onClose, onRefetch }: Props) {
   const [unreadable, setUnreadable] = useState(false)
   const closeRef = useRef<HTMLButtonElement>(null)
 
-  // Derived from the file, not stored: an object URL is a handle the
-  // render needs immediately, and putting it in state would mean one
-  // render with nothing to show followed by another with the picture.
-  // The effect below exists only to give it back.
-  const url = useMemo(
-    () =>
-      preview.kind === 'none' || preview.kind === 'text'
-        ? null
-        : URL.createObjectURL(retype(file.blob, preview.mime)),
-    [file.blob, preview.kind, preview.mime],
-  )
+  // Created by the same effect that revokes it, and never during a
+  // render.
+  //
+  // It used to be a useMemo, on the reasoning that a render needs the
+  // handle immediately and state would cost a frame. The frame is real;
+  // the correctness is not negotiable. React may mount a component, tear
+  // it down and mount it again — StrictMode does exactly that on every
+  // mount in development — and a cleanup that revokes a URL the render
+  // phase created leaves the next mount holding a dead handle, because a
+  // memo whose dependencies have not changed has nothing to recompute.
+  //
+  // What that looks like from the outside is the whole reason this is
+  // written down: the panel opens, the <img> points at a revoked blob,
+  // its onError fires, and the user is told the bytes do not decode —
+  // about a file that decodes perfectly well, that was verified against
+  // the Depot's own hash on the way in, and that had displayed correctly
+  // a moment earlier.
+  const needsUrl = preview.kind !== 'none' && preview.kind !== 'text'
+  const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
-    if (url === null) return
-    return () => URL.revokeObjectURL(url)
-  }, [url])
+    if (!needsUrl) return
+    const created = URL.createObjectURL(retype(file.blob, preview.mime))
+    /* eslint-disable react-hooks/set-state-in-effect --
+       The rule is aimed at state derived from props, which belongs in
+       the render. This is the result of acquiring a resource that has to
+       be released again, and the acquisition and the release have to sit
+       in one effect or they will not stay paired — which is the bug this
+       replaced. One extra render on open is the price. */
+    setUrl(created)
+    // A new handle is a new attempt: a failure recorded against the one
+    // before it would keep the element off the screen for ever.
+    setFailed(null)
+    /* eslint-enable react-hooks/set-state-in-effect */
+    return () => {
+      URL.revokeObjectURL(created)
+      // Cleared as well as revoked: between a teardown and the mount
+      // that follows it, a render still holding the old string would
+      // point an element at a handle that no longer resolves.
+      setUrl(null)
+    }
+  }, [file.blob, needsUrl, preview.mime])
 
   // Whether it is worth reading at all is a fact about the file, so it is
   // worked out while rendering rather than discovered by an effect.
