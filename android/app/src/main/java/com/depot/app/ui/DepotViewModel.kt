@@ -14,6 +14,9 @@ import com.depot.app.service.DepotService
 import com.depot.app.service.DepotSession
 import com.depot.app.service.OfferedSummary
 import com.depot.app.service.ReceivedFile
+import com.depot.app.transport.Network
+import com.depot.app.transport.NetworkPreference
+import com.depot.app.transport.NetworkState
 import com.depot.app.storage.DeviceRecord
 import com.depot.app.storage.DeviceStore
 import com.depot.app.storage.Grant
@@ -75,6 +78,9 @@ data class DepotUiState(
     val offeredFiles: List<OfferedSummary> = emptyList(),
     val receivedFiles: List<ReceivedFile> = emptyList(),
     val receiving: String? = null,
+    /** What this phone is connected by, and whether bytes cost money. */
+    val network: NetworkState = NetworkState.Unknown,
+    val networkPreference: NetworkPreference = NetworkPreference.AUTO,
     val log: List<String> = emptyList(),
 )
 
@@ -107,6 +113,31 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         // What earlier runs received is still on disk; without this the
         // list would look empty until something new arrived.
         DepotSession.loadInbox(getApplication())
+        refreshNetwork()
+    }
+
+    /**
+     * Re-reads the connection.
+     *
+     * Called when the screen appears and when the preference changes
+     * rather than watched continuously: this is shown to the user and
+     * read again whenever CAPS goes out, so a callback for every network
+     * event would buy nothing but wakeups.
+     */
+    fun refreshNetwork() {
+        val app = getApplication<Application>()
+        val preference = Settings.network(app)
+        _state.update {
+            it.copy(
+                network = Network.effective(app, preference),
+                networkPreference = preference,
+            )
+        }
+    }
+
+    fun onNetworkPreference(preference: NetworkPreference) {
+        Settings.setNetwork(getApplication(), preference)
+        refreshNetwork()
     }
 
     /**

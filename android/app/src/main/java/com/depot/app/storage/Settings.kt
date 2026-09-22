@@ -1,6 +1,7 @@
 package com.depot.app.storage
 
 import android.content.Context
+import com.depot.app.transport.NetworkPreference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -25,6 +26,7 @@ object Settings {
     private const val KEY_TURN_URL = "turnUrl"
     private const val KEY_TURN_USER = "turnUsername"
     private const val KEY_TURN_CREDENTIAL = "turnCredential"
+    private const val KEY_NETWORK = "networkPreference"
     private const val KEY_MOVED_DAY = "movedDay"
     private const val KEY_MOVED_BYTES = "movedBytes"
 
@@ -48,6 +50,23 @@ object Settings {
             username = p.getString(KEY_TURN_USER, "") ?: "",
             credential = p.getString(KEY_TURN_CREDENTIAL, "") ?: "",
         )
+    }
+
+    /**
+     * What the user said about this connection, if anything.
+     *
+     * AUTO is the answer for almost everyone: the phone can see which
+     * network it is on. The override is for when that reading is wrong
+     * — a hotspot the system has not been told is metered, say — not
+     * for deciding this by hand every time.
+     */
+    fun network(context: Context): NetworkPreference =
+        runCatching {
+            NetworkPreference.valueOf(prefs(context).getString(KEY_NETWORK, null) ?: "AUTO")
+        }.getOrDefault(NetworkPreference.AUTO)
+
+    fun setNetwork(context: Context, preference: NetworkPreference) {
+        prefs(context).edit().putString(KEY_NETWORK, preference.name).apply()
     }
 
     fun setTurn(context: Context, turn: TurnSettings) {

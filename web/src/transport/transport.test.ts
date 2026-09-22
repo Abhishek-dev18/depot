@@ -250,6 +250,16 @@ describe('compression (protocol.md §5.6)', () => {
       expect(shouldCompress(compressible, fastLan)).toBe(false)
     })
 
+    it('compresses for a peer that pays by the byte, however fast the link', () => {
+      // A different question, not a different answer to the same one.
+      // The speed test weighs processor time against wire time; on a
+      // metered plan the wire costs money as well, and the processor
+      // does not. §5.4 carries the flag because only the phone knows.
+      const fastLan = (400 * 1_000_000) / 8
+      expect(shouldCompress(compressible, fastLan, true)).toBe(true)
+      expect(shouldCompress(compressible, fastLan, false)).toBe(false)
+    })
+
     it('still refuses high-entropy data however slow the link', async () => {
       // The entropy gate is the cheap one and stays first: a photograph
       // does not become compressible because the network is poor.

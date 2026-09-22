@@ -17,6 +17,15 @@ export interface SessionKeys {
 
 /** protocol.md §5.4 CAPS — the intersection governs the session. */
 interface CapsMessage {
+  /**
+   * What the peer is connected by, and whether it pays for the bytes.
+   *
+   * Advisory, and only one side can know it: a browser has no way to
+   * find out whether the phone it is talking to is on a metered plan.
+   * Absent from an older peer, which is why nothing depends on it.
+   */
+  network?: string
+  metered?: boolean
   type: 'CAPS'
   protocolVersion: number
   compression: string[]
@@ -645,9 +654,11 @@ export async function runFileSender(
    * only ever raises it.
    */
   const transportMax = maxChunkBytesFor(channels.pc)
+  let peerIsMetered = false
   void exchangeCaps(ctl, transportMax)
     .then((peerCaps) => {
       maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize, transportMax)
+      peerIsMetered = peerCaps.metered === true
     })
     .catch(() => {
       // Nothing to do: the ceiling starts at §5.5's lowest tier, which
@@ -905,7 +916,7 @@ export async function runFileSender(
         // LAN the codec is slower than the wire, and packing a chunk
         // costs more time than the smaller chunk saves. See
         // compression.ts for the arithmetic and the measurements.
-        if (shouldCompress(plaintext, linkSpeed.current())) {
+        if (shouldCompress(plaintext, linkSpeed.current(), peerIsMetered)) {
           const packed = await compress(plaintext)
           if (packed.length < plaintext.length) {
             payload = packed
@@ -1039,6 +1050,8 @@ export async function openClientSession(
   // §5.4: the smaller of the two, and the figure a manifest is checked
   // against. A Depot is free to send smaller chunks; one larger than
   // this is a disagreement about a number both sides just settled.
+  const peerIsMetered = peerCaps.metered === true
+  const uploadSpeed = new LinkSpeed()
   const negotiatedChunkSize = Math.min(
     OUR_CAPS.maxChunkSize,
     peerCaps.maxChunkSize || OUR_CAPS.maxChunkSize,
@@ -1175,7 +1188,10 @@ export async function openClientSession(
 
       let payload = plaintext
       let compressed = false
-      if (shouldCompress(plaintext)) {
+      // The direction where the peer's own answer matters most: these
+      // bytes land on the phone, so it is the phone's plan that pays for
+      // them. §5.6, with §5.4's advisory flag.
+      if (shouldCompress(plaintext, uploadSpeed.current(), peerIsMetered)) {
         const packed = await compress(plaintext)
         if (packed.length < plaintext.length) {
           payload = packed
@@ -1190,7 +1206,10 @@ export async function openClientSession(
         compressed,
       })
       await waitForDrain(channels.data)
+      const putOnWireAt = performance.now()
       channels.data.send(new Uint8Array(frame))
+      // Measured around the wait, not around the codec: see linkSpeed.ts.
+      uploadSpeed.sample(payload.length, performance.now() - putOnWireAt)
 
       bytesSent += info.length
       onEvent({

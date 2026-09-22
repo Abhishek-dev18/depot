@@ -1,6 +1,7 @@
 package com.depot.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,8 +25,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.depot.app.storage.TurnSettings
+import com.depot.app.transport.NetworkPreference
+import com.depot.app.transport.NetworkType
 import com.depot.app.ui.components.Cta
 import com.depot.app.ui.components.DepotTextField
+import com.depot.app.ui.components.ListRow
 import com.depot.app.ui.components.IconBack
 import com.depot.app.ui.components.AppBar
 import com.depot.app.ui.components.IcoButton
@@ -45,6 +49,7 @@ fun SettingsScreen(
     state: DepotUiState,
     onSignalUrlChange: (String) -> Unit,
     onTurnChange: (TurnSettings) -> Unit,
+    onNetworkPreference: (NetworkPreference) -> Unit,
     onToggleListening: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -94,6 +99,54 @@ fun SettingsScreen(
                 color = DepotColors.Ink3,
                 modifier = Modifier.padding(top = 9.dp),
             )
+
+            SectionLabel("CONNECTION")
+            Text(
+                "Detected, not asked for: this phone can see which network it is on, and a " +
+                    "setting you have to remember to change is wrong the moment you leave the " +
+                    "house. What it decides is whether bytes are worth compressing before they " +
+                    "are sent — on a plan you pay for by the byte, spending a little battery to " +
+                    "send fewer of them is the trade most people would want.",
+                style = DepotType.Body.copy(fontSize = 13.sp),
+                color = DepotColors.Ink3,
+                modifier = Modifier.padding(bottom = 10.dp),
+            )
+            ListRow(
+                name = when (state.network.type) {
+                    NetworkType.WIFI -> "Wi-Fi"
+                    NetworkType.CELLULAR -> "Mobile data"
+                    NetworkType.OTHER -> "Wired or tethered"
+                    NetworkType.UNKNOWN -> "Not connected"
+                },
+                meta = if (state.network.metered) {
+                    "METERED · BYTES ARE WORTH COMPRESSING"
+                } else {
+                    "UNMETERED · SPEED DECIDES"
+                },
+                nameColor = DepotColors.Ink,
+                metaColor = if (state.network.metered) DepotColors.Amber else DepotColors.Ink3,
+            )
+            // The override, for when the reading is wrong — a hotspot the
+            // system has not been told is metered, most often. It changes
+            // what is assumed about cost; it cannot move the phone onto a
+            // different network and does not pretend to.
+            Row(Modifier.padding(bottom = 6.dp)) {
+                for (option in NetworkPreference.entries) {
+                    val chosen = state.networkPreference == option
+                    Text(
+                        when (option) {
+                            NetworkPreference.AUTO -> "AUTO"
+                            NetworkPreference.WIFI -> "TREAT AS WI-FI"
+                            NetworkPreference.CELLULAR -> "TREAT AS MOBILE"
+                        },
+                        style = DepotType.Label,
+                        color = if (chosen) DepotColors.Amber else DepotColors.Ink3,
+                        modifier = Modifier
+                            .clickable { onNetworkPreference(option) }
+                            .padding(end = 16.dp, top = 6.dp, bottom = 10.dp),
+                    )
+                }
+            }
 
             SectionLabel("RELAY (OPTIONAL)")
             Text(

@@ -68,8 +68,25 @@ export function estimateEntropy(sample: Uint8Array): number {
  * threshold, and the first chunks of a transfer are precisely when there
  * is nothing to measure from.
  */
-export function shouldCompress(bytes: Uint8Array, observedBytesPerSecond?: number): boolean {
-  if (observedBytesPerSecond !== undefined && observedBytesPerSecond > COMPRESS_BELOW_BYTES_PER_SECOND) {
+export function shouldCompress(
+  bytes: Uint8Array,
+  observedBytesPerSecond?: number,
+  /**
+   * Whether the peer pays for the bytes it receives (§5.4).
+   *
+   * It changes the question rather than the answer. The speed test above
+   * asks which is cheaper, processor time or wire time; on a connection
+   * billed by the byte that is the wrong comparison, because the wire
+   * costs money as well as time and the processor does not. So a metered
+   * peer compresses whatever the link measures.
+   */
+  peerIsMetered = false,
+): boolean {
+  if (
+    !peerIsMetered &&
+    observedBytesPerSecond !== undefined &&
+    observedBytesPerSecond > COMPRESS_BELOW_BYTES_PER_SECOND
+  ) {
     return false
   }
   const sample = bytes.subarray(0, Math.min(ENTROPY_SAMPLE_SIZE, bytes.length))

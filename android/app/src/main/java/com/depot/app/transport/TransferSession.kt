@@ -170,6 +170,15 @@ class FileSender(
     private val source: DepotSource,
     private val scope: CoroutineScope,
     private val cb: TransferCallbacks,
+    /**
+     * What this phone is connected by, told to the Client in CAPS.
+     *
+     * Advisory, and only one side can know it: a browser has no way to
+     * find out whether the phone it is talking to is paying for every
+     * byte. Telling it lets the other direction make the same decision
+     * about compression this side already makes — see §5.6.
+     */
+    private val network: () -> NetworkState = { NetworkState.Unknown },
 ) {
     private val ctl = CtlCodec(channels.ctl, keys, isDepot = true)
     // Every ctl message is handled in its own coroutine, so everything
@@ -228,7 +237,14 @@ class FileSender(
             }
         })
 
-        ctl.send(OUR_CAPS)
+        // A fresh object each time: OUR_CAPS is shared and the network
+        // can change under a session that is already running.
+        val net = network()
+        ctl.send(
+            JSONObject(OUR_CAPS.toString())
+                .put("network", net.type.wireName())
+                .put("metered", net.metered),
+        )
 
         // protocol.md §5.5. Sampling on a timer rather than once per
         // transfer is what gives the EWMA anything to smooth: a single

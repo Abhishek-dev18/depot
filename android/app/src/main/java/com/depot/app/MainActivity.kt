@@ -168,6 +168,7 @@ class MainActivity : ComponentActivity() {
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
                         onRemoveFile = viewModel::onRemoveOfferedFile,
                         onOpenReceived = { file -> file.where?.let(::openReceived) },
+                        onNetworkPreference = viewModel::onNetworkPreference,
                         onSaveReceived = { file ->
                             saving = file
                             saveReceivedTo.launch(file.name)
