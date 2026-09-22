@@ -124,6 +124,12 @@ export function cdcParamsForAvg(
   ceiling = Number.POSITIVE_INFINITY,
 ): { minSize: number; avgSize: number; maxSize: number } {
   const maxSize = Math.min(avgSize * 4, ceiling)
-  const avg = Math.max(1, Math.min(avgSize, Math.floor(maxSize / 4)))
+  // Half the maximum rather than a quarter of it when the ceiling binds.
+  // The chunker's own spread is four times the average, so a quarter
+  // would be the figure that never truncates — but truncating the tail
+  // of the distribution costs almost nothing here (chunks are used for
+  // resuming one transfer, not for dedup across versions) and a quarter
+  // would double the number of messages for no gain anyone can measure.
+  const avg = Math.max(1, Math.min(avgSize, Math.floor(maxSize / 2)))
   return { minSize: Math.max(1, Math.floor(avg / 4)), avgSize: avg, maxSize }
 }

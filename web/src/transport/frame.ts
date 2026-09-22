@@ -19,6 +19,16 @@ export type DirectionByte = (typeof Direction)[keyof typeof Direction]
 
 const HEADER_LEN = 1 + 4 + 4 + 1
 
+/**
+ * What a chunk frame costs on top of the bytes it carries.
+ *
+ * The §5.3 header plus XChaCha20-Poly1305's authentication tag. It is
+ * exported because the transport has a hard limit on how large a single
+ * message may be, and the figure that has to fit under it is the frame,
+ * not the plaintext inside it.
+ */
+export const CHUNK_FRAME_OVERHEAD = HEADER_LEN + 16
+
 function u32be(n: number): Uint8Array {
   const out = new Uint8Array(4)
   new DataView(out.buffer).setUint32(0, n)
