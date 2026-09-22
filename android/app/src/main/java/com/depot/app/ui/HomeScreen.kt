@@ -310,7 +310,7 @@ private fun TransferCard(state: DepotUiState) {
                     .fillMaxWidth(fraction)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(2.dp))
-                    .background(DepotColors.Amber),
+                    .background(DepotColors.AmberFill),
             )
         }
 

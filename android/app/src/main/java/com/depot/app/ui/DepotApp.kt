@@ -23,6 +23,7 @@ import com.depot.app.service.OfferedSummary
 import com.depot.app.service.ReceivedFile
 import com.depot.app.transport.NetworkPreference
 import com.depot.app.ui.theme.DepotColors
+import com.depot.app.ui.theme.ThemePreference
 
 /**
  * The shell that holds the artifact's phone frames together.
@@ -41,6 +42,7 @@ fun DepotApp(
     onRemoveFile: (OfferedSummary) -> Unit,
     onOpenReceived: (ReceivedFile) -> Unit,
     onNetworkPreference: (NetworkPreference) -> Unit,
+    onThemePreference: (ThemePreference) -> Unit,
     onSaveReceived: (ReceivedFile) -> Unit,
     onRemoveReceived: (ReceivedFile) -> Unit,
     onClearReceived: () -> Unit,
@@ -131,6 +133,7 @@ fun DepotApp(
                 onSignalUrlChange = onSignalUrlChange,
                 onTurnChange = onTurnChange,
                 onNetworkPreference = onNetworkPreference,
+                onThemePreference = onThemePreference,
                 onToggleListening = onToggleListening,
                 onBack = { settingsOpen = false },
             )

@@ -2,6 +2,7 @@ package com.depot.app.storage
 
 import android.content.Context
 import com.depot.app.transport.NetworkPreference
+import com.depot.app.ui.theme.ThemePreference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -27,6 +28,7 @@ object Settings {
     private const val KEY_TURN_USER = "turnUsername"
     private const val KEY_TURN_CREDENTIAL = "turnCredential"
     private const val KEY_NETWORK = "networkPreference"
+    private const val KEY_THEME = "themePreference"
     private const val KEY_MOVED_DAY = "movedDay"
     private const val KEY_MOVED_BYTES = "movedBytes"
 
@@ -67,6 +69,16 @@ object Settings {
 
     fun setNetwork(context: Context, preference: NetworkPreference) {
         prefs(context).edit().putString(KEY_NETWORK, preference.name).apply()
+    }
+
+    /** Light, dark, or whatever the system says — the default. */
+    fun theme(context: Context): ThemePreference =
+        runCatching {
+            ThemePreference.valueOf(prefs(context).getString(KEY_THEME, null) ?: "SYSTEM")
+        }.getOrDefault(ThemePreference.SYSTEM)
+
+    fun setTheme(context: Context, preference: ThemePreference) {
+        prefs(context).edit().putString(KEY_THEME, preference.name).apply()
     }
 
     fun setTurn(context: Context, turn: TurnSettings) {

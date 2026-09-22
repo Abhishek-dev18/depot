@@ -1,12 +1,14 @@
 /**
  * Design tokens lifted directly from the "Depot — Interface Design" artifact
  * (the project's interface spec — https://claude.ai/artifact/CMxsYXcZNY8XTzkoSGYwPn):
- * a dark, amber-accented "freight terminal" aesthetic, deliberately dark-only
- * — there's no light variant in the spec, and a terminal/manifest metaphor
- * doesn't really have one. This file is also the reference for the Android
- * app's theme later: same hex values, same type pairing (Space Grotesk for
- * anything a person wrote or chose, IBM Plex Mono for anything the system
- * reports — IDs, sizes, timestamps, throughput, the SAS).
+ * a dark, amber-accented "freight terminal" aesthetic. Dark is the spec and
+ * the default; the light variant below keeps the same structure and accent,
+ * with each colour re-chosen for contrast on a light page rather than
+ * inverted. The Android app's DepotColors mirrors both, hex for hex.
+ * Type pairing: Space Grotesk for anything a person wrote or chose, IBM Plex
+ * Mono for anything the system reports — IDs, sizes, timestamps, the SAS.
+ *
+ * Which variant applies is <html data-theme>, set by src/theme.ts.
  */
 :root {
   --bg: #0c0d0f;
@@ -24,6 +26,19 @@
   --amber-bg-faint: rgba(255, 176, 32, 0.05);
   /* Amber text needs a dark foreground on amber fills, not the page bg. */
   --amber-on: #1a1203;
+  /*
+   * Amber as a solid fill (primary buttons, progress) rather than as text.
+   * The same as --amber here; on a light page amber text has to darken to
+   * stay legible, while a fill keeps the bright brand amber under dark text.
+   */
+  --amber-fill: #ffb020;
+  --green-fill: #3fcf8e;
+  --green-on: #062617;
+  --blue-line: rgba(91, 157, 255, 0.25);
+  --blue-bg: rgba(91, 157, 255, 0.1);
+  /* Behind dialogs and the preview. */
+  --scrim: rgba(8, 9, 11, 0.7);
+  --scrim-strong: rgba(8, 9, 11, 0.84);
   --green-line: rgba(63, 207, 142, 0.25);
   --red-line: rgba(242, 84, 91, 0.25);
   --green: #3fcf8e;
@@ -52,6 +67,47 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+ * Light. Every token is restated, so nothing dark leaks through. Contrast
+ * on white: ink 17.8, ink2 8.0, ink3 4.8, amber 4.9, green 4.8, red 5.3,
+ * blue 5.6 — text tokens all clear WCAG AA.
+ */
+:root[data-theme='light'] {
+  --bg: #f3f1ed;
+  --bg2: #f8f7f4;
+  --surface: #ffffff;
+  --surface2: #eeebe5;
+  --line: #dfdbd3;
+  --line2: #cbc6bc;
+  --ink: #16181d;
+  --ink2: #4a5160;
+  --ink3: #6b7282;
+  --amber: #a86000;
+  --amber-dim: #d9a54a;
+  --amber-bg: rgba(255, 176, 32, 0.16);
+  --amber-bg-faint: rgba(255, 176, 32, 0.08);
+  --amber-on: #1a1203;
+  --amber-fill: #ffb020;
+  --green-line: rgba(18, 130, 90, 0.3);
+  --red-line: rgba(200, 50, 58, 0.3);
+  --green: #12825a;
+  --green-bg: rgba(18, 130, 90, 0.1);
+  --green-fill: #3fcf8e;
+  --green-on: #062617;
+  --red: #c8323a;
+  --red-bg: rgba(200, 50, 58, 0.08);
+  --blue: #2563d0;
+  --blue-line: rgba(37, 99, 208, 0.3);
+  --blue-bg: rgba(37, 99, 208, 0.08);
+  --scrim: rgba(22, 24, 29, 0.45);
+  --scrim-strong: rgba(22, 24, 29, 0.62);
+
+  --shadow-sm: rgba(22, 24, 29, 0.08) 0 1px 2px, rgba(22, 24, 29, 0.05) 0 1px 1px;
+  --shadow: rgba(22, 24, 29, 0.14) 0 12px 34px -8px, rgba(22, 24, 29, 0.08) 0 4px 10px -4px;
+
+  color-scheme: light;
 }
 
 * {

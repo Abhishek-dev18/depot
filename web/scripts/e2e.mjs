@@ -713,6 +713,30 @@ log(
     : '  ✗ A PREVIEW CAN EXECUTE IN THIS ORIGIN',
 )
 
+// Light mode, then clearing what is held — last, because it empties the
+// list everything above depends on.
+await client.click('.wnav-theme') // system -> light
+const theme = await client.evaluate(() => document.documentElement.dataset.theme)
+if (theme !== 'light') throw new Error(`the theme button left the page ${theme}`)
+await client.screenshot({ path: '/tmp/client-light.png' })
+log('light theme: ✓ applied (screenshot /tmp/client-light.png)')
+await client.click('.wnav-theme') // light -> dark
+await client.click('.wnav-theme') // dark -> system, as it started
+
+const heldBefore = await client.locator(".received-row").count()
+if (heldBefore < 2) throw new Error(`expected at least two received files to clear, found ${heldBefore}`)
+await client.locator('.received-row').first().locator('.received-remove').click()
+await client.waitForFunction((n) => document.querySelectorAll('.received-row').length === n - 1, heldBefore)
+log(`removing one received file: ${heldBefore} -> ${heldBefore - 1} ✓`)
+
+await client.click('.received-clear')
+await client.waitForFunction(() => document.querySelectorAll('.received-row').length === 0)
+await client.reload()
+await client.waitForTimeout(2500)
+const afterReload = await client.locator('.received-row').count()
+if (afterReload !== 0) throw new Error(`${afterReload} file(s) came back after CLEAR ALL and a reload`)
+log('CLEAR ALL: list emptied, and nothing came back after a reload ✓')
+
 const box = await client.evaluate(() => {
   const r = (s) => {
     const el = document.querySelector(s)

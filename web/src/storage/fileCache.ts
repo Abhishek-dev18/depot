@@ -1,4 +1,5 @@
-import { idbDeleteMany, idbGet, idbKeysWithPrefix, idbSetMany } from './idb'
+import { idbDelete, idbDeleteMany, idbGet, idbKeysWithPrefix, idbSetMany } from './idb'
+import { clearChunkCache } from './chunkCache'
 
 /**
  * Files that already came across, kept so a reload does not throw them
@@ -165,6 +166,32 @@ export async function clearFileCache(): Promise<void> {
     // either, and it is bounded regardless.
   }
 }
+
+/** Forgets one file, so a reload does not bring it back. */
+export async function deleteCachedFile(key: string): Promise<void> {
+  memory.delete(key)
+  try {
+    if (await usingIdb()) await idbDelete(storeKey(key))
+  } catch {
+    // Unreadable storage holds nothing that could come back.
+  }
+}
+
+/**
+ * Everything this browser holds for Depot, not only the whole files: the
+ * chunks an interrupted download left behind to resume from are file
+ * contents too, and "clear the cache" that left them would be a promise
+ * half kept.
+ */
+export async function clearAllCached(): Promise<void> {
+  await clearFileCache()
+  await clearChunkCache()
+  // Whatever is showing these files is told, so it does not go on
+  // listing copies a reload will not bring back.
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(CACHE_CLEARED_EVENT))
+}
+
+export const CACHE_CLEARED_EVENT = 'depot:cache-cleared'
 
 /** Tests share a module registry; this puts the backend choice back. */
 export function resetFileCacheForTests(): void {

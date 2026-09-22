@@ -1,5 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-  <rect x="2" y="2" width="28" height="28" rx="4" fill="none" stroke="#FFB020" stroke-width="2.5"/>
-  <path d="M6.5 11 H25.5" stroke="#FFB020" stroke-width="2.5"/>
-  <rect x="21" y="20" width="6" height="6" fill="#FFB020"/>
+  <style>
+    .depot-mark { stroke: #FFB020; }
+    .depot-block { fill: #FFB020; }
+    /* A light tab strip: the darker amber the light theme uses for text. */
+    @media (prefers-color-scheme: light) {
+      .depot-mark { stroke: #A86000; }
+      .depot-block { fill: #A86000; }
+    }
+  </style>
+  <rect class="depot-mark" x="2" y="2" width="28" height="28" rx="4" fill="none" stroke-width="2.5"/>
+  <path class="depot-mark" d="M6.5 11 H25.5" stroke-width="2.5"/>
+  <rect class="depot-block" x="21" y="20" width="6" height="6"/>
 </svg>

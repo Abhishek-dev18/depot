@@ -28,6 +28,7 @@ import com.depot.app.storage.TurnSettings
 import com.depot.app.transport.NetworkPreference
 import com.depot.app.transport.NetworkType
 import com.depot.app.ui.components.Cta
+import com.depot.app.ui.theme.ThemePreference
 import com.depot.app.ui.components.DepotTextField
 import com.depot.app.ui.components.ListRow
 import com.depot.app.ui.components.IconBack
@@ -50,6 +51,7 @@ fun SettingsScreen(
     onSignalUrlChange: (String) -> Unit,
     onTurnChange: (TurnSettings) -> Unit,
     onNetworkPreference: (NetworkPreference) -> Unit,
+    onThemePreference: (ThemePreference) -> Unit,
     onToggleListening: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -143,6 +145,32 @@ fun SettingsScreen(
                         color = if (chosen) DepotColors.Amber else DepotColors.Ink3,
                         modifier = Modifier
                             .clickable { onNetworkPreference(option) }
+                            .padding(end = 16.dp, top = 6.dp, bottom = 10.dp),
+                    )
+                }
+            }
+
+            SectionLabel("APPEARANCE")
+            Text(
+                "Light or dark, or whatever the phone is set to. The browser has the same " +
+                    "choice, in its own settings.",
+                style = DepotType.Body.copy(fontSize = 13.sp),
+                color = DepotColors.Ink3,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            Row(Modifier.padding(bottom = 6.dp)) {
+                for (option in ThemePreference.entries) {
+                    val chosen = state.themePreference == option
+                    Text(
+                        when (option) {
+                            ThemePreference.SYSTEM -> "SYSTEM"
+                            ThemePreference.LIGHT -> "LIGHT"
+                            ThemePreference.DARK -> "DARK"
+                        },
+                        style = DepotType.Label,
+                        color = if (chosen) DepotColors.Amber else DepotColors.Ink3,
+                        modifier = Modifier
+                            .clickable { onThemePreference(option) }
                             .padding(end = 16.dp, top = 6.dp, bottom = 10.dp),
                     )
                 }
