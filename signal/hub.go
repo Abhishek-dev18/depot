@@ -48,6 +48,64 @@ type presence struct {
 	routes  map[string]*conn
 }
 
+// watchers are Clients waiting for a Depot that is not registered yet.
+//
+// Without this a Client has only one way to find out its Depot came back:
+// ask again, and again. Four seconds between asks is already a long time
+// to stare at a phone you have just switched on, and no interval is short
+// enough to feel immediate without being wasteful — the Client was
+// reported sitting on a failure screen for half a minute, and the
+// suggestion that came back was to reload the page every second.
+//
+// Signal knows the answer the instant it is true. Telling the Client is
+// one map and one message, and it makes the poll a fallback rather than
+// the mechanism.
+type watchers struct {
+	mu sync.Mutex
+	by map[string]map[*conn]bool
+}
+
+func newWatchers() *watchers {
+	return &watchers{by: make(map[string]map[*conn]bool)}
+}
+
+func (w *watchers) add(depotID string, c *conn) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.by[depotID] == nil {
+		w.by[depotID] = make(map[*conn]bool)
+	}
+	w.by[depotID][c] = true
+}
+
+func (w *watchers) remove(c *conn) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for depotID, set := range w.by {
+		delete(set, c)
+		if len(set) == 0 {
+			delete(w.by, depotID)
+		}
+	}
+}
+
+// take returns everyone waiting on depotID and forgets them: the notice
+// is sent once, and a Client that wants another waits again.
+func (w *watchers) take(depotID string) []*conn {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	set := w.by[depotID]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]*conn, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+	delete(w.by, depotID)
+	return out
+}
+
 // Hub holds all server state. Signal is otherwise stateless across
 // restarts by design (protocol.md §7): everything here lives in memory
 // only and a restart simply forces affected peers to retry.
@@ -56,6 +114,7 @@ type Hub struct {
 	states  map[*conn]*connState
 	rooms   map[string]*room
 	depots  map[string]*presence
+	waiting *watchers
 	limiter *RateLimiter
 	log     *log.Logger
 
@@ -67,6 +126,7 @@ func NewHub(logger *log.Logger) *Hub {
 		states:     make(map[*conn]*connState),
 		rooms:      make(map[string]*room),
 		depots:     make(map[string]*presence),
+		waiting:    newWatchers(),
 		limiter:    NewRateLimiter(10, time.Minute), // §7: 10 pairing sessions / IP / minute
 		log:        logger,
 		sessionTTL: 120 * time.Second, // §3.1: pairing session expiry
@@ -95,6 +155,8 @@ func (h *Hub) Dispatch(c *conn, e Envelope) {
 		h.handleRegister(c, e)
 	case TypeConnect:
 		h.handleConnect(c, e)
+	case TypeWatch:
+		h.handleWatch(c, e)
 	case TypeRevoke:
 		h.handleRevoke(c, e)
 	default:
@@ -215,6 +277,32 @@ func (h *Hub) handleRegister(c *conn, e Envelope) {
 		old.sendError(ReasonAlreadyConnected)
 		old.close()
 	}
+
+	// Anyone who asked to be told. Sent outside the lock: these are
+	// writes to other sockets and one of them being slow must not hold
+	// up the registration that has already happened.
+	for _, waiter := range h.waiting.take(e.DepotID) {
+		_ = waiter.send(Envelope{Type: TypeDepotOnline, DepotID: e.DepotID})
+	}
+}
+
+// handleWatch records a Client's interest in a Depot that is not here
+// yet. If it turns out to be here already, the answer goes back at once
+// rather than waiting for a registration that has been and gone.
+func (h *Hub) handleWatch(c *conn, e Envelope) {
+	if e.DepotID == "" {
+		c.sendError(ReasonBadEnvelope)
+		return
+	}
+	h.mu.Lock()
+	_, online := h.depots[e.DepotID]
+	h.mu.Unlock()
+
+	if online {
+		_ = c.send(Envelope{Type: TypeDepotOnline, DepotID: e.DepotID})
+		return
+	}
+	h.waiting.add(e.DepotID, c)
 }
 
 func (h *Hub) handleConnect(c *conn, e Envelope) {
@@ -336,6 +424,10 @@ func (h *Hub) handleRelay(c *conn, e Envelope) {
 // Remove tears down all routing state for a connection that has
 // disconnected, notifying whatever peer it was paired with.
 func (h *Hub) Remove(c *conn) {
+	// Before anything else, and regardless of role: a socket that has
+	// gone cannot be told about anything.
+	h.waiting.remove(c)
+
 	h.mu.Lock()
 	st, ok := h.states[c]
 	if !ok {

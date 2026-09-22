@@ -135,6 +135,24 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Says where a saved file went, or that it did not.
+     *
+     * The row stays either way — KEEP copies out, it does not move — so
+     * what this changes is only the account of what happened.
+     */
+    fun onSavedReceived(file: ReceivedFile, savedAs: String?) {
+        DepotSession.noteSaved(file.name, savedAs)
+    }
+
+    fun onRemoveReceived(file: ReceivedFile) {
+        DepotSession.removeReceived(getApplication(), file)
+    }
+
+    fun onClearReceived() {
+        DepotSession.clearReceived(getApplication())
+    }
+
     fun onNetworkPreference(preference: NetworkPreference) {
         Settings.setNetwork(getApplication(), preference)
         refreshNetwork()

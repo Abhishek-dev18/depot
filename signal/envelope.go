@@ -25,12 +25,14 @@ const (
 	TypeRegister = "register" // Depot  -> Signal: announce presence for reconnection
 	TypeConnect  = "connect"  // Client -> Signal: request a route to a registered Depot
 	TypeRevoke   = "revoke"   // Depot  -> Signal: revoke a clientId (routing optimisation only)
+	TypeWatch    = "watch"    // Client -> Signal: tell me when this Depot registers
 
 	TypeSessionCreated = "session_created" // Signal -> Client: room exists, safe to display the QR now
 	TypePeerJoined     = "peer_joined"     // Signal -> both: room is now paired
 	TypePeerLeft       = "peer_left"       // Signal -> remaining peer: other side disconnected
 	TypeIncoming       = "incoming"        // Signal -> Depot: a client is requesting reconnection
 	TypeError          = "error"           // Signal -> either: request could not be satisfied
+	TypeDepotOnline    = "depot_online"    // Signal -> watching Client: it just registered
 )
 
 // Error reasons.

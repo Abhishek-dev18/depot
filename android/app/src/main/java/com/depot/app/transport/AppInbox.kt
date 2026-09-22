@@ -27,9 +27,35 @@ class AppInbox(private val context: Context) : WritableTarget {
     private val dir: File
         get() = File(context.filesDir, DIR_NAME).apply { mkdirs() }
 
-    /** Everything received so far, newest first. */
-    fun files(): List<File> =
-        dir.listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
+    /**
+     * Everything received so far, newest first.
+     *
+     * Empty files are swept rather than listed. A reservation that was
+     * never filled is not a received file, and until abandon() existed
+     * every failed upload left one — so this also quietly clears what
+     * earlier versions left behind.
+     */
+    fun files(): List<File> {
+        val all = dir.listFiles() ?: return emptyList()
+        return all
+            .filter { file ->
+                if (file.isFile && file.length() == 0L) {
+                    file.delete()
+                    false
+                } else {
+                    file.isFile
+                }
+            }
+            .sortedByDescending { it.lastModified() }
+    }
+
+    /** Drops everything received. Settings' "clear all". */
+    fun clear(): Int {
+        val doomed = files()
+        var gone = 0
+        for (file in doomed) if (file.delete()) gone++
+        return gone
+    }
 
     fun find(name: String): File? = files().firstOrNull { it.name == name }
 
@@ -49,6 +75,14 @@ class AppInbox(private val context: Context) : WritableTarget {
         val free = freeName(safe)
         File(dir, free).createNewFile()
         return free
+    }
+
+    override fun abandon(name: String) {
+        // Only if it is still the empty placeholder reserve() made. A
+        // file with bytes in it was stored by something and is not this
+        // upload's to remove.
+        val file = File(dir, name)
+        if (file.isFile && file.length() == 0L) file.delete()
     }
 
     override fun store(name: String, bytes: ByteArray): String {

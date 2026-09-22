@@ -92,6 +92,19 @@ interface WritableTarget {
      * either way — this only decides whether the row is tappable.
      */
     fun store(name: String, bytes: ByteArray): String?
+
+    /**
+     * Gives back a name reserved for an upload that will never arrive.
+     *
+     * Reserving creates the file, so that two uploads racing for one name
+     * cannot both believe they have it. Nothing released those
+     * reservations when a transfer died, and the empty files stayed:
+     * every upload that failed left a nought-byte corpse in the folder,
+     * still holding its name, so the retry landed beside it as
+     * "photo (1).jpg". Four of them turned up in a listing before anyone
+     * thought to look.
+     */
+    fun abandon(name: String)
 }
 
 /** What a handle points at. Never sent anywhere. */
@@ -452,6 +465,15 @@ private class SafFolder(
         } ?: name
         pendingName = actual
         return actual
+    }
+
+    override fun abandon(name: String) {
+        val uri = pending
+        if (uri != null && pendingName == name) {
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+            pending = null
+            pendingName = null
+        }
     }
 
     override fun store(name: String, bytes: ByteArray): String? {

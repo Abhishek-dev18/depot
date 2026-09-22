@@ -19,6 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.runtime.key
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -78,6 +82,8 @@ fun HomeScreen(
     onLinkDevice: () -> Unit,
     onOpenReceived: (ReceivedFile) -> Unit,
     onSaveReceived: (ReceivedFile) -> Unit,
+    onRemoveReceived: (ReceivedFile) -> Unit,
+    onClearReceived: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listening = state.listeningAs != null
@@ -117,14 +123,36 @@ fun HomeScreen(
             // RECEIVED on a Depot nobody sends to is a permanent reminder
             // of a feature rather than a place to look.
             if (state.receiving != null || state.receivedFiles.isNotEmpty()) {
-                SectionLabel("RECEIVED")
+                SectionLabel(
+                    "RECEIVED",
+                    trailing = if (state.receivedFiles.isEmpty()) {
+                        null
+                    } else {
+                        {
+                            Text(
+                                "CLEAR ALL",
+                                style = DepotType.Label,
+                                color = DepotColors.Red,
+                                modifier = Modifier
+                                    .clickable(onClick = onClearReceived)
+                                    .padding(start = 12.dp),
+                            )
+                        }
+                    },
+                )
                 state.receiving?.let { name -> ReceivingRow(name) }
                 for (file in state.receivedFiles) {
-                    ReceivedFileRow(
-                        file = file,
-                        onOpen = { onOpenReceived(file) },
-                        onSave = { onSaveReceived(file) },
-                    )
+                    // Keyed, or a row swiped away hands its dismissal
+                    // state to whichever row slides up into its place.
+                    key(file.name, file.at) {
+                        SwipeAwayRow(onSwiped = { onRemoveReceived(file) }) {
+                            ReceivedFileRow(
+                                file = file,
+                                onOpen = { onOpenReceived(file) },
+                                onSave = { onSaveReceived(file) },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -423,6 +451,49 @@ private fun ReceivingRow(name: String) {
 }
 
 /**
+ * A row that can be swiped off to the left to be rid of it.
+ *
+ * Only leftwards: a swipe that deletes in either direction is one a
+ * scrolling thumb can trigger by accident, and what it deletes here is
+ * the only copy the phone has.
+ */
+@Composable
+private fun SwipeAwayRow(onSwiped: () -> Unit, content: @Composable () -> Unit) {
+    val state = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) {
+                onSwiped()
+                true
+            } else {
+                false
+            }
+        },
+    )
+    SwipeToDismissBox(
+        state = state,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 9.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(DepotColors.RedBg),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Text(
+                    "CLEAR",
+                    style = DepotType.Label,
+                    color = DepotColors.Red,
+                    modifier = Modifier.padding(end = 18.dp),
+                )
+            }
+        },
+        content = { content() },
+    )
+}
+
+/**
  * One that arrived.
  *
  * Two verbs, the same pair the browser offers for a file it holds:
@@ -439,12 +510,16 @@ private fun ReceivedFileRow(file: ReceivedFile, onOpen: () -> Unit, onSave: () -
     val place = file.folder.uppercase()
     ListRow(
         name = file.name,
-        meta = "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)}",
+        meta = when {
+            file.savedAs == null -> "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)}"
+            file.savedAs == file.name -> "${formatBytes(file.size)} · KEPT IN DOWNLOADS"
+            else -> "${formatBytes(file.size)} · KEPT AS ${file.savedAs}"
+        },
         nameColor = DepotColors.Ink,
         onClick = if (file.where == null) null else onOpen,
         leading = { RowTile { IconFile(DepotColors.Green, 18.dp) } },
         trailing = {
-            if (file.where != null) {
+            if (file.where != null && file.savedAs == null) {
                 Text(
                     "KEEP",
                     style = DepotType.Label,

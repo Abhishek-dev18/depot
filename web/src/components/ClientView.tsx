@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLog } from '../hooks/useLog'
 import { runClientPairing } from '../pairing/clientPairing'
-import { runClientReconnect, type DepotConnection } from '../pairing/clientReconnect'
+import {
+  runClientReconnect,
+  type DepotConnection,
+  type DepotOfflineWaiting,
+} from '../pairing/clientReconnect'
 import type { QRPayload } from '../pairing/types'
 import { listPairings, type Pairing } from '../storage/pairings'
 import type { TurnConfig } from '../transport/webrtc'
@@ -57,6 +61,16 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
   const [rate, setRate] = useState<number | undefined>(undefined)
 
   const sessionRef = useRef<DepotConnection | null>(null)
+  /**
+   * The socket held open waiting for Signal to say the Depot registered.
+   *
+   * At most one: a second attempt supersedes the first, and whichever is
+   * abandoned has to give its socket back or the page leaks one per try.
+   */
+  const waitingRef = useRef<DepotOfflineWaiting | null>(null)
+  /** Read from callbacks that must not capture a stale list. */
+  const pairingsRef = useRef<Pairing[]>([])
+  const connectRef = useRef<((depotId: string) => Promise<void>) | null>(null)
   const autoConnected = useRef(false)
   // A ref, not the state: two callers racing to connect would both read
   // the old `connecting` before React re-rendered either of them.
@@ -65,6 +79,19 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
   useEffect(() => {
     sessionRef.current = session
   }, [session])
+
+  useEffect(() => {
+    pairingsRef.current = pairings
+  }, [pairings])
+
+  // The waiting socket belongs to this page; navigating away closes it.
+  useEffect(
+    () => () => {
+      waitingRef.current?.stopWaiting()
+      waitingRef.current = null
+    },
+    [],
+  )
 
   // The data channels and the signal socket belong to the session, so
   // navigating away has to close it rather than leaving both dangling.
@@ -93,13 +120,15 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
         onStatus: push,
         onConnected: ({ connectionType }) => push(`connected (${connectionType})`),
         onSession: (open) => {
+          waitingRef.current?.stopWaiting()
+          waitingRef.current = null
           sessionRef.current = open
           setSession(open)
           setOffline(false)
           setAttempts(0)
           setPolls(0)
         },
-        onDepotOffline: () => {
+        onDepotOffline: (waiting) => {
           setOffline(true)
           // Not counted as an attempt, and the last failure is cleared.
           //
@@ -112,6 +141,30 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
           setFailure(null)
           setAttempts(0)
           setPolls((n) => n + 1)
+          // Signal now says so the moment it registers, so waiting beats
+          // asking again: the answer arrives in the time it takes the
+          // phone to connect, rather than at the next poll. The poll
+          // below stays as the fallback for a notice that never comes —
+          // a Signal restart, a socket a router quietly dropped.
+          waitingRef.current?.stopWaiting()
+          waitingRef.current = waiting
+          void waiting
+            .waitForIt()
+            .then(() => {
+              if (waitingRef.current !== waiting) return
+              waitingRef.current = null
+              waiting.stopWaiting()
+              const depotId = pairingsRef.current[0]?.depotId
+              // Through a ref: this callback lives inside connect's own
+              // definition, and naming it directly would make it
+              // reference itself.
+              if (depotId) void connectRef.current?.(depotId)
+            })
+            .catch(() => {
+              // Timed out or the socket went. The poll picks it up.
+              if (waitingRef.current === waiting) waitingRef.current = null
+              waiting.stopWaiting()
+            })
         },
         onError: (message) => {
           push(`error: ${message}`)
@@ -126,6 +179,10 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     },
     [signalUrl, turnConfig, push],
   )
+
+  useEffect(() => {
+    connectRef.current = connect
+  }, [connect])
 
   // A browser that already holds a credential should behave like a client
   // that is simply connected, not make the user ask for it every time.

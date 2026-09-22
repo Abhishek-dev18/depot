@@ -196,7 +196,22 @@ class FileSender(
     ) {
         val have = java.util.concurrent.ConcurrentHashMap<Int, ByteArray>()
         val outstanding = java.util.Collections.synchronizedSet(chunks.map { it.index }.toMutableSet())
+
+        /** Reset by each chunk that lands; firing gives the name back. */
+        @Volatile
+        var stall: kotlinx.coroutines.Job? = null
     }
+
+    /**
+     * How long an upload may hear nothing before it is given up on.
+     *
+     * A gap, not a total, for the same reason the download side measures
+     * one. The Client half of §5.10 has had this since it was written;
+     * this half had nothing at all, so an upload that died mid-flight
+     * held its reservation for the life of the session and left the
+     * empty file behind for ever.
+     */
+    private val uploadStallMs = 30_000L
 
     private val uploads = java.util.concurrent.ConcurrentHashMap<Int, Upload>()
     private val nextUploadId = java.util.concurrent.atomic.AtomicInteger(1)
@@ -431,6 +446,7 @@ class FileSender(
 
         val uploadId = nextUploadId.getAndIncrement()
         uploads[uploadId] = Upload(wanted, fileHash, target, reserved, size.toInt())
+        touchUpload(uploadId)
         cb.onUploadStarted(reserved, wanted.size)
 
         val need = org.json.JSONArray()
@@ -439,13 +455,41 @@ class FileSender(
         if (wanted.isEmpty()) finishUpload(uploadId)
     }
 
+    /** Restarts the window; an upload that stops arriving is abandoned. */
+    private fun touchUpload(uploadId: Int) {
+        val upload = uploads[uploadId] ?: return
+        upload.stall?.cancel()
+        upload.stall = scope.launch {
+            kotlinx.coroutines.delay(uploadStallMs)
+            abandonUpload(uploadId, "nothing arrived for ${uploadStallMs / 1000}s")
+        }
+    }
+
+    /**
+     * Gives up on an upload and hands its name back.
+     *
+     * Every way out of an upload other than PUT_DONE comes through here,
+     * so there is one place that remembers the reservation has to be
+     * released — which is the thing that was missing.
+     */
+    private fun abandonUpload(uploadId: Int, why: String) {
+        val upload = uploads.remove(uploadId) ?: return
+        upload.stall?.cancel()
+        runCatching { upload.target.abandon(upload.reserved) }
+        runCatching { ctl.send(err(why)) }
+        cb.onError(why)
+    }
+
     /** Verified whole before it is published — never a plausible partial. */
     private fun finishUpload(uploadId: Int) {
-        val upload = uploads.remove(uploadId) ?: return
+        val upload = uploads[uploadId] ?: return
+        upload.stall?.cancel()
+        uploads.remove(uploadId)
         val joined = ByteArray(upload.size)
         var at = 0
         for (info in upload.chunks) {
             val part = upload.have[info.index] ?: run {
+                runCatching { upload.target.abandon(upload.reserved) }
                 ctl.send(err("chunk ${info.index} never arrived"))
                 return
             }
@@ -454,6 +498,7 @@ class FileSender(
         }
 
         if (hashBytes(joined) != upload.fileHash) {
+            runCatching { upload.target.abandon(upload.reserved) }
             ctl.send(err("the whole-file hash did not match; nothing was written"))
             return
         }
@@ -461,6 +506,7 @@ class FileSender(
         val where = try {
             upload.target.store(upload.reserved, joined)
         } catch (e: Exception) {
+            runCatching { upload.target.abandon(upload.reserved) }
             ctl.send(err(e.message ?: "could not write the file"))
             return
         }
@@ -493,6 +539,8 @@ class FileSender(
 
         upload.have[decoded.chunkIndex] = plaintext
         upload.outstanding.remove(decoded.chunkIndex)
+        // Something arrived, so the Client is still there.
+        touchUpload(decoded.transferId)
         if (upload.outstanding.isEmpty()) finishUpload(decoded.transferId)
     }
 
@@ -630,7 +678,13 @@ class FileSender(
         sampler = null
         transfers.clear()
         // Half-received uploads are dropped rather than written: §5.10
-        // publishes nothing it has not verified whole.
+        // publishes nothing it has not verified whole. Their reserved
+        // names go back too, or the session leaves an empty file behind
+        // for every upload that was in flight when it ended.
+        for (entry in uploads.values) {
+            entry.stall?.cancel()
+            runCatching { entry.target.abandon(entry.reserved) }
+        }
         uploads.clear()
         runCatching { channels.data.unregisterObserver() }
         runCatching { channels.ctl.unregisterObserver() }

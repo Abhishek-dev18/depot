@@ -441,3 +441,92 @@ func TestListenAddr(t *testing.T) {
 		})
 	}
 }
+
+// A Client waiting for a Depot that is not here yet should be told the
+// moment it arrives, rather than having to ask again.
+//
+// Asking again was the only mechanism, and no interval is a good one:
+// four seconds is a long time to stare at a phone you have just switched
+// on, and shorter intervals are waste. The suggestion this replaced was
+// to reload the whole page once a second.
+func TestWatchIsToldWhenTheDepotRegisters(t *testing.T) {
+	hub := newHubForTest()
+	srv, url := testServer(t, hub)
+	defer srv.Close()
+
+	client := dial(t, url)
+	depotID := "depot-not-here-yet"
+	send(t, client, Envelope{Type: TypeWatch, DepotID: depotID})
+
+	// Waiting, not answered: read with a deadline to prove the silence
+	// and the connection is broken for good afterwards, which is worse
+	// than useless here. The registry is the fact under test anyway.
+	waitFor(t, func() bool {
+		hub.waiting.mu.Lock()
+		defer hub.waiting.mu.Unlock()
+		return len(hub.waiting.by[depotID]) == 1
+	}, "the watcher to be recorded")
+
+	depot := dial(t, url)
+	send(t, depot, Envelope{Type: TypeRegister, DepotID: depotID})
+
+	got := recvEnvelope(t, client)
+	if got.Type != TypeDepotOnline || got.DepotID != depotID {
+		t.Fatalf("expected %s for %q, got %s for %q", TypeDepotOnline, depotID, got.Type, got.DepotID)
+	}
+}
+
+// A Depot that is already registered is not something to wait for.
+func TestWatchAnswersAtOnceWhenAlreadyOnline(t *testing.T) {
+	hub := newHubForTest()
+	srv, url := testServer(t, hub)
+	defer srv.Close()
+
+	depotID := "depot-already-here"
+	depot := dial(t, url)
+	send(t, depot, Envelope{Type: TypeRegister, DepotID: depotID})
+
+	client := dial(t, url)
+	send(t, client, Envelope{Type: TypeWatch, DepotID: depotID})
+
+	got := recvEnvelope(t, client)
+	if got.Type != TypeDepotOnline {
+		t.Fatalf("expected %s, got %s", TypeDepotOnline, got.Type)
+	}
+}
+
+// A watcher that goes away is forgotten, or the notice is written to a
+// socket that is not there and the map grows for ever.
+func TestWatchersAreForgottenWhenTheySwitchOff(t *testing.T) {
+	hub := newHubForTest()
+	srv, url := testServer(t, hub)
+	defer srv.Close()
+
+	depotID := "depot-watched-then-abandoned"
+	client := dial(t, url)
+	send(t, client, Envelope{Type: TypeWatch, DepotID: depotID})
+	waitFor(t, func() bool {
+		hub.waiting.mu.Lock()
+		defer hub.waiting.mu.Unlock()
+		return len(hub.waiting.by[depotID]) == 1
+	}, "the watcher to be recorded")
+	client.Close()
+
+	waitFor(t, func() bool {
+		hub.waiting.mu.Lock()
+		defer hub.waiting.mu.Unlock()
+		return len(hub.waiting.by[depotID]) == 0
+	}, "the watcher to be forgotten")
+}
+
+// waitFor polls a condition rather than sleeping a guessed interval.
+func waitFor(t *testing.T, done func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

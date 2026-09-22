@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.11 (draft)
+**Version:** 0.12 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -698,6 +698,15 @@ there is visible to anything else on the device until the user moves it out, so
 the consent the writable flag was protecting is still asked for — about one real
 file, at the moment it means something, rather than in advance about a folder.
 
+**A reservation that is not filled MUST be released.** Reserving a name before
+any bytes arrive is what makes "never overwrite" a property of the destination
+rather than a rule each transfer has to remember — but where reserving means
+creating the file, an upload that dies leaves an empty one behind, still holding
+its name, so the retry lands beside it as `photo (1).jpg`. A Depot MUST therefore
+give the name back when an upload fails, is abandoned, or is still in flight when
+the session ends, and SHOULD abandon one that has gone quiet rather than holding
+its reservation for the life of the connection.
+
 Only a Client that has completed §3 and holds a valid credential can reach it, so
 this widens what a *paired* device may do and nothing else. A Depot that offers
 one MUST still show what arrived, and MUST NOT publish it anywhere the rest of the
@@ -826,9 +835,19 @@ SDP/ICE signaling travel):
 | `register` | Depot → Signal | `depotId` | Announces presence for §4 reconnection. A later `register` with the same `depotId` supersedes the earlier connection. |
 | `connect` | Client → Signal | `depotId`, `clientId`, `payload` (the RECONNECT body) | Requests a route to an online Depot. Forwarded to the Depot as `incoming` with the same `payload`, saving a round trip. |
 | `revoke` | Depot → Signal | `clientId` | Routing-only optimisation for §6: future `connect`s for this `clientId` are rejected with `client_revoked`, and any in-flight route is torn down. Correctness never depends on this — see §6. |
+| `watch` | Client → Signal | `depotId` | Asks to be told when that Depot registers. Answered with one `depot_online`, at once if it is already registered, and the Client's socket must stay open to receive it. Signal forgets the watcher when it sends the notice or when the socket goes. |
+
+**A Client SHOULD wait on `watch` rather than asking again.** A Depot's owner
+switching it on is a moment Signal knows about exactly when it happens, and
+asking on a timer cannot be both immediate and cheap: four seconds is a long
+time to stare at a phone that is already on, and shorter intervals are waste
+multiplied by every waiting browser. Polling remains the fallback, because a
+notice can be lost — Signal keeps no state across restarts by design, and a
+socket held open for hours may be dropped by something in between — but it
+should be the thing that catches the rare miss rather than the mechanism.
 
 Signal-originated notices: `session_created`, `peer_joined`, `peer_left`,
-`incoming`, and `error` (with a `reason`: `session_expired`, `session_full`,
+`incoming`, `depot_online`, and `error` (with a `reason`: `session_expired`, `session_full`,
 `session_not_found`, `depot_offline`, `client_revoked`, `rate_limited`,
 `no_route`, `bad_envelope`, `already_connected`).
 
@@ -876,6 +895,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.12 | 2026-09-23 | §7.1: add `watch` / `depot_online`, so a Client waiting for a Depot is told the moment it registers instead of asking again on a timer. No polling interval is both immediate and cheap, and the one in use left someone watching a failure screen for half a minute after switching their phone on. Polling stays as the fallback for a notice that goes missing. §5.10: a reservation that is not filled MUST be released — where reserving means creating the file, every failed upload was leaving an empty one behind that still held its name. |
 | 0.11 | 2026-09-22 | §5.4: bound `maxChunkSize` by what the data channel will carry in one message, not only by what an implementation would like to build. SCTP negotiates a maximum and enforces it, and nothing consulted it: every session starts at §5.5's 64 KB tier, whose frames fit everywhere, so this only appeared once a link measured well and the tier climbed — a download went silent because libwebrtc drops a refused frame without a word, and an upload failed with the browser's exception. Also §5.4: optional advisory `network` and `metered`, which only one end can know. §5.6: a metered peer's chunks are compressed whatever the link measures, because where bytes are billed the comparison is no longer processor time against wire time. |
 | 0.10 | 2026-09-22 | §5.10: a Depot SHOULD also expose an inbox of its own that needs no grant. Requiring a writable folder made receiving conditional on a setup step taken on the phone, for a file its owner had just asked for, and a feature reachable only after configuration is one most people never find. Storage the Depot application owns is not the user's own storage, so nothing reaches the device at large until the user moves it — the consent the flag protected is asked about one real file instead of in advance about a folder. §5.6: the compression decision now also weighs the link's measured speed, because packing a chunk is not overlapped with sending it and a codec slower than the wire costs more time than it saves. |
 | 0.9 | 2026-09-21 | §5.4: forbid waiting for the peer's `CAPS` before treating the session as live, and fix the assumed chunk size for a peer that has said nothing to §5.5's floor. Both Depots gated on it, so a lost `CAPS` produced a session that answered `LIST` but was recorded as nobody — `SHARED_CHANGED` went nowhere and a newly shared file appeared only on a reload. §5.9: say that several files may be offered at once outside any folder, and what a handle-less `REQUEST_FILE` means when there are. |

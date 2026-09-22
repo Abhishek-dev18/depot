@@ -8,10 +8,24 @@ import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing, savePairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
 import type { Envelope } from '../signal/envelope'
-import { ReasonDepotOffline, TypeError as SignalError } from '../signal/envelope'
+import { ReasonDepotOffline, TypeDepotOnline, TypeError as SignalError } from '../signal/envelope'
 import { TypeRejected, throwIfRejected } from './rejection'
 import { negotiateAsOfferer, type ConnectionType, type TurnConfig } from '../transport/webrtc'
 import { openClientSession, type ClientSession } from '../transport/transferSession'
+
+/**
+ * What to do about a Depot that is not registered yet.
+ *
+ * Handed to the caller rather than decided here, because how long to
+ * wait before giving up and showing something is a question about the
+ * screen, not about the protocol.
+ */
+export interface DepotOfflineWaiting {
+  /** Resolves when Signal says it registered; rejects on timeout. */
+  waitForIt: () => Promise<void>
+  /** Releases the socket held open for that. Always call it. */
+  stopWaiting: () => void
+}
 
 export interface ClientReconnectCallbacks {
   onStatus: (status: string) => void
@@ -25,7 +39,7 @@ export interface ClientReconnectCallbacks {
    * there yet. Telling someone their network is at fault when their phone
    * is merely switched off sends them to debug the wrong thing.
    */
-  onDepotOffline: () => void
+  onDepotOffline: (waiting: DepotOfflineWaiting) => void
   onConnected: (info: { depotId: string; connectionType: ConnectionType }) => void
   /**
    * The session is open and can be browsed. Closing it tears down the
@@ -85,6 +99,17 @@ const STEP_TIMEOUT_MS = 40_000
  */
 const FIRST_REPLY_TIMEOUT_MS = 12_000
 
+/**
+ * How long to hold a watch open before asking again from scratch.
+ *
+ * Signal keeps no state across restarts by design, so a watch does not
+ * survive one — and a socket held open for hours through a home router
+ * is not a thing to rely on either. Long enough that waiting is the
+ * normal case, short enough that a lost notice costs one wait rather
+ * than for ever.
+ */
+const WATCH_TIMEOUT_MS = 5 * 60_000
+
 async function waitForStep(
   client: SignalClient,
   predicate: (e: Envelope) => boolean,
@@ -143,12 +168,25 @@ export async function runClientReconnect(
     )
     if (challenge.type === SignalError) {
       if (challenge.reason === ReasonDepotOffline) {
-        // Closed here rather than left to a `finally`, because the
-        // success path deliberately keeps this socket open for the life
-        // of the session. Returning without closing leaked one WebSocket
-        // per poll, and the Client polls every few seconds while it waits.
-        client.close()
-        cb.onDepotOffline()
+        // Not registered. Rather than close and ask again in a few
+        // seconds, ask Signal to say so the moment it registers: the
+        // answer is known there the instant it is true, and no polling
+        // interval is both immediate and cheap. See §7.
+        //
+        // The socket stays open for that, so this is the one path that
+        // reports offline without closing — and the caller is handed the
+        // means to stop waiting.
+        const held = client
+        cb.onDepotOffline({
+          waitForIt: async () => {
+            held.watch(depotId)
+            await held.waitFor(
+              (e) => e.type === TypeDepotOnline && e.depotId === depotId,
+              WATCH_TIMEOUT_MS,
+            )
+          },
+          stopWaiting: () => held.close(),
+        })
         return
       }
       throw new Error(`reconnection rejected: ${challenge.reason}`)
@@ -172,8 +210,11 @@ export async function runClientReconnect(
     )
     if (ok.type === SignalError) {
       if (ok.reason === ReasonDepotOffline) {
+        // Halfway through the handshake is not where a watch belongs:
+        // whatever happened, starting again is cheaper than reasoning
+        // about a half-built session.
         client.close()
-        cb.onDepotOffline()
+        cb.onDepotOffline({ waitForIt: () => Promise.resolve(), stopWaiting: () => {} })
         return
       }
       throw new Error(`reconnection rejected: ${ok.reason}`)
