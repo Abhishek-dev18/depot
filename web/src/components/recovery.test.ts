@@ -32,6 +32,17 @@ const idle: State = {
   hasPairing: true,
 }
 
+/**
+ * What a "that Depot is not registered" answer does to the state.
+ *
+ * Mirrors ClientView's onDepotOffline. It is an answer, not a failure,
+ * so it clears the last one and resets the count — which is the whole
+ * point of the test below it.
+ */
+function depotSaidOffline(s: State): State {
+  return { ...s, offline: true, failure: null, attempts: 0, connecting: false }
+}
+
 /** Milliseconds until the next attempt, or null for "do not schedule one". */
 function nextAttemptIn(s: State): number | null {
   if (s.session || s.connecting) return null
@@ -109,5 +120,36 @@ describe('pressing try now', () => {
     const { connects, after } = retry({ ...idle, offline: true })
     expect(nextAttemptIn(after)).toBeNull()
     expect(connects).toBe(true)
+  })
+})
+
+/*
+ * The reported symptom: switch the phone's terminal off and on again and
+ * the browser took about thirty seconds to notice, every time. Refreshing
+ * the page noticed at once, which is what made it look like the page was
+ * not trying at all.
+ *
+ * It was trying. An offline answer was being counted as a failed attempt,
+ * so four polls of a phone that was merely switched off drove the backoff
+ * to its ceiling — and the ceiling is thirty seconds.
+ */
+describe('a Depot that says it is not listening', () => {
+  it('is an answer, not a failure, so the brisk poll continues', () => {
+    // Four polls of a phone that is switched off.
+    let s: State = { ...idle, offline: true }
+    for (let i = 0; i < 4; i++) s = depotSaidOffline(s)
+
+    expect(s.attempts).toBe(0)
+    expect(nextAttemptIn(s)).toBe(4_000)
+  })
+
+  it('clears a backoff left by an earlier failure', () => {
+    // The sequence that produced the thirty seconds: one real failure —
+    // a stale registration that never answered — and then polls of a
+    // phone that was simply off.
+    const afterFailure: State = { ...idle, failure: 'the Depot did not answer', attempts: 3 }
+    expect(nextAttemptIn(afterFailure)).toBe(30_000)
+
+    expect(nextAttemptIn(depotSaidOffline(afterFailure))).toBe(4_000)
   })
 })

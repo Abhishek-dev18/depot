@@ -68,15 +68,33 @@ const STEP_TIMEOUT_MS = 40_000
  * have been refused outright — and did not reply, which is a different
  * problem from having no route to it and has a different answer.
  */
+/**
+ * How long to wait for the Depot's very first word.
+ *
+ * Shorter than the rest, because a registration that does not answer is
+ * usually a registration that has outlived its phone. Signal holds one
+ * until the socket is noticed to be gone, so a phone that slept, changed
+ * network or was switched off leaves one behind: the Client gets past
+ * "that Depot is offline" and then waits on a peer that is not there.
+ *
+ * Waiting the full step timeout for that is the worst of both — the
+ * phone is usually back and re-registered within a few seconds, and
+ * every second spent waiting on the dead registration is a second the
+ * fresh one is not being tried. Giving up quickly and asking again is
+ * what makes a phone coming back online feel immediate.
+ */
+const FIRST_REPLY_TIMEOUT_MS = 12_000
+
 async function waitForStep(
   client: SignalClient,
   predicate: (e: Envelope) => boolean,
   whatFailed: string,
+  timeoutMs: number = STEP_TIMEOUT_MS,
 ): Promise<Envelope> {
   try {
-    return await client.waitFor(predicate, STEP_TIMEOUT_MS)
+    return await client.waitFor(predicate, timeoutMs)
   } catch {
-    throw new Error(`${whatFailed} within ${Math.round(STEP_TIMEOUT_MS / 1000)}s`)
+    throw new Error(`${whatFailed} within ${Math.round(timeoutMs / 1000)}s`)
   }
 }
 
@@ -121,6 +139,7 @@ export async function runClientReconnect(
       client,
       (e) => e.type === 'CHALLENGE' || e.type === TypeRejected || e.type === SignalError,
       'the Depot is registered but did not answer the reconnection request',
+      FIRST_REPLY_TIMEOUT_MS,
     )
     if (challenge.type === SignalError) {
       if (challenge.reason === ReasonDepotOffline) {
