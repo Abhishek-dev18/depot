@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -76,6 +77,7 @@ fun HomeScreen(
     onDeviceClick: (DeviceRecord) -> Unit,
     onLinkDevice: () -> Unit,
     onOpenReceived: (ReceivedFile) -> Unit,
+    onSaveReceived: (ReceivedFile) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listening = state.listeningAs != null
@@ -118,7 +120,11 @@ fun HomeScreen(
                 SectionLabel("RECEIVED")
                 state.receiving?.let { name -> ReceivingRow(name) }
                 for (file in state.receivedFiles) {
-                    ReceivedFileRow(file = file, onOpen = { onOpenReceived(file) })
+                    ReceivedFileRow(
+                        file = file,
+                        onOpen = { onOpenReceived(file) },
+                        onSave = { onSaveReceived(file) },
+                    )
                 }
             }
 
@@ -419,24 +425,36 @@ private fun ReceivingRow(name: String) {
 /**
  * One that arrived.
  *
- * The folder is named because "saved" is not an answer: a file the user
- * cannot find again may as well not have come. Tapping hands it to
- * whatever app the phone would have used anyway — this one does not
- * open other people's files itself.
+ * Two verbs, the same pair the browser offers for a file it holds:
+ * tapping opens it, and KEEP copies it out to somewhere the user names.
+ * Until KEEP is used, a file sent to the app's own inbox lives only
+ * inside this app and uninstalling takes it with it — which is the
+ * honest state of affairs, and why the row names where it is.
+ *
+ * Depot does not open anything itself; tapping hands the file to
+ * whatever app the phone would have used for it anyway.
  */
 @Composable
-private fun ReceivedFileRow(file: ReceivedFile, onOpen: () -> Unit) {
+private fun ReceivedFileRow(file: ReceivedFile, onOpen: () -> Unit, onSave: () -> Unit) {
     val place = file.folder.uppercase()
     ListRow(
         name = file.name,
-        meta = if (file.where == null) {
-            "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)}"
-        } else {
-            "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)} · TAP TO OPEN"
-        },
+        meta = "${formatBytes(file.size)} · IN $place · ${formatLastSeen(file.at)}",
         nameColor = DepotColors.Ink,
         onClick = if (file.where == null) null else onOpen,
         leading = { RowTile { IconFile(DepotColors.Green, 18.dp) } },
+        trailing = {
+            if (file.where != null) {
+                Text(
+                    "KEEP",
+                    style = DepotType.Label,
+                    color = DepotColors.Amber,
+                    modifier = Modifier
+                        .clickable(onClick = onSave)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        },
     )
 }
 

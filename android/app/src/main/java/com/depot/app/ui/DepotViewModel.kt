@@ -104,6 +104,9 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
         refreshDevices()
         refreshGrants()
         observeSession()
+        // What earlier runs received is still on disk; without this the
+        // list would look empty until something new arrived.
+        DepotSession.loadInbox(getApplication())
     }
 
     /**

@@ -39,6 +39,7 @@ fun DepotApp(
     onPickFile: () -> Unit,
     onRemoveFile: (OfferedSummary) -> Unit,
     onOpenReceived: (ReceivedFile) -> Unit,
+    onSaveReceived: (ReceivedFile) -> Unit,
     onAddFolder: () -> Unit,
     onToggleGrant: (GrantView, Boolean) -> Unit,
     onToggleGrantWritable: (GrantView, Boolean) -> Unit,
@@ -146,6 +147,7 @@ fun DepotApp(
                 onDeviceClick = { selectedDeviceId = it.clientIdentityPub },
                 onLinkDevice = { scanning = true },
                 onOpenReceived = onOpenReceived,
+                onSaveReceived = onSaveReceived,
             )
         }
 

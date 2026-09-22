@@ -24,6 +24,23 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Depot">
+        <!--
+          Lets a received file be opened in whatever app the phone would
+          normally use for it. The grant is per-URI and temporary: the
+          viewer gets that one file and nothing else, for as long as the
+          intent lives. See res/xml/file_paths.xml for the whole of what
+          is exposed.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

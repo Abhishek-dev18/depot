@@ -14,6 +14,34 @@ const COMPRESSION_FORMAT: CompressionFormat = 'deflate-raw'
 const ENTROPY_SAMPLE_SIZE = 64 * 1024
 const ENTROPY_THRESHOLD_BITS_PER_BYTE = 7.5
 
+/**
+ * Above this, compressing costs more time than it saves.
+ *
+ * Compression is not free and it is not overlapped with sending: the
+ * sender packs a chunk, then puts it on the wire, so whatever the codec
+ * takes is added to the transfer rather than hidden behind it. Measured
+ * on `deflate-raw` over 64 KB chunks of ordinary text, this
+ * implementation compresses at about 22 MB/s and decompresses at about
+ * 75 MB/s, for roughly a ninth of the original size.
+ *
+ * Put those in order — pack, send, unpack — and compressing wins only
+ * while
+ *
+ *     1/compress + ratio/link + 1/decompress  <  1/link
+ *
+ * which rearranges to a link speed of about 120 Mbps. Below it the
+ * saving is dramatic: on an 8 Mbps mobile link the same megabyte takes
+ * 160 ms compressed against 1000 ms raw. Above it the codec becomes the
+ * bottleneck instead of the network — on a fast LAN, compressing more
+ * than doubles the time.
+ *
+ * Set well under the measured figure because the number that matters is
+ * the *peer's* decompression speed, which cannot be known from here: a
+ * slower phone moves the real break-even down, and guessing low only
+ * ever costs a little bandwidth on a link that has it to spare.
+ */
+const COMPRESS_BELOW_BYTES_PER_SECOND = 8 * 1024 * 1024
+
 export function estimateEntropy(sample: Uint8Array): number {
   if (sample.length === 0) return 0
   const counts = new Uint32Array(256)
@@ -27,7 +55,23 @@ export function estimateEntropy(sample: Uint8Array): number {
   return entropy
 }
 
-export function shouldCompress(bytes: Uint8Array): boolean {
+/**
+ * Whether packing this chunk is worth the time it takes.
+ *
+ * Two questions, cheapest first. Will it get smaller — §5.6's entropy
+ * gate, which is what keeps photographs and video from being fed
+ * pointlessly through a codec. And then: is the link slow enough for the
+ * saving to be worth the delay, given [observedBytesPerSecond] if the
+ * session has measured one yet.
+ *
+ * An unmeasured link compresses. Most links are far below the
+ * threshold, and the first chunks of a transfer are precisely when there
+ * is nothing to measure from.
+ */
+export function shouldCompress(bytes: Uint8Array, observedBytesPerSecond?: number): boolean {
+  if (observedBytesPerSecond !== undefined && observedBytesPerSecond > COMPRESS_BELOW_BYTES_PER_SECOND) {
+    return false
+  }
   const sample = bytes.subarray(0, Math.min(ENTROPY_SAMPLE_SIZE, bytes.length))
   return estimateEntropy(sample) < ENTROPY_THRESHOLD_BITS_PER_BYTE
 }

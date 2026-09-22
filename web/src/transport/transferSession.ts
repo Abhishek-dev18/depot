@@ -3,6 +3,7 @@ import { sodium } from '../crypto/sodium'
 import { cachedChunks, dropChunks, getChunk, putChunks } from '../storage/chunkCache'
 import { AdaptiveChunkSize, cdcParamsForAvg, sampleNetwork } from './chunkSize'
 import { compress, decompress, shouldCompress } from './compression'
+import { LinkSpeed } from './linkSpeed'
 import { Direction, decodeChunkFrame, decodeCtlFrame, encodeChunkFrame, encodeCtlFrame } from './frame'
 import { buildManifest, hashBytes, type ChunkInfo, type Manifest } from './manifest'
 import { validateManifest, validateUploadName } from './validate'
@@ -586,6 +587,7 @@ export async function runFileSender(
 ): Promise<RunningSender> {
   const ctl = createCtlCodec(channels, keys, 'depot')
   const chunkSizer = new AdaptiveChunkSize()
+  const linkSpeed = new LinkSpeed()
 
   const transfers = new Map<number, { manifest: Manifest; bytes: Uint8Array }>()
   let nextTransferId = 1
@@ -874,13 +876,18 @@ export async function runFileSender(
 
         let payload = plaintext
         let compressed = false
-        if (shouldCompress(plaintext)) {
+        // §5.6, with the link's own speed in the decision: on a fast
+        // LAN the codec is slower than the wire, and packing a chunk
+        // costs more time than the smaller chunk saves. See
+        // compression.ts for the arithmetic and the measurements.
+        if (shouldCompress(plaintext, linkSpeed.current())) {
           const packed = await compress(plaintext)
           if (packed.length < plaintext.length) {
             payload = packed
             compressed = true
           }
         }
+        const putOnWireAt = performance.now()
 
         const frame = await encodeChunkFrame(keys.kD2C, Direction.DepotToClient, {
           transferId: msg.transferId,
@@ -890,6 +897,11 @@ export async function runFileSender(
         })
         await waitForDrain(channels.data)
         channels.data.send(new Uint8Array(frame)) // fresh ArrayBuffer-backed copy — RTCDataChannel.send()'s stricter typed-array generic wants it
+        // Measured around the wait, not around the codec: what this has
+        // to estimate is how fast the wire drains, and folding the
+        // compression time into that would let a slow codec argue for
+        // itself.
+        linkSpeed.sample(payload.length, performance.now() - putOnWireAt)
         bytesSent += info.length
         onEvent({
           type: 'chunk-sent',

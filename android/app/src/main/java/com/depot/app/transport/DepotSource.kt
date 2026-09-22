@@ -135,6 +135,9 @@ class AndroidDepotSource(
      */
     private fun offeredHandleFor(file: OfferedFile) = "offered:${file.bytes.size}:${file.name}"
 
+    /** Stable for as long as the file is unchanged, for the same reason. */
+    private fun inboxHandleFor(name: String, size: Long) = "inbox:$size:$name"
+
     /**
      * The same location keeps the same handle for as long as this source
      * lives.
@@ -158,6 +161,17 @@ class AndroidDepotSource(
 
     override fun list(handle: String): List<DirEntry> {
         if (handle.isEmpty()) return listRoots()
+        if (handle == AppInbox.HANDLE) {
+            return inbox.files().map { file ->
+                DirEntry(
+                    handle = inboxHandleFor(file.name, file.length()),
+                    name = file.name,
+                    isDirectory = false,
+                    size = file.length(),
+                    modifiedAt = file.lastModified(),
+                )
+            }
+        }
         val location = handles[handle] ?: return emptyList()
         if (!location.isDirectory) return emptyList()
         return listChildren(location.treeUri, location.documentId)
@@ -167,7 +181,19 @@ class AndroidDepotSource(
     private fun grantFor(treeUri: Uri): com.depot.app.storage.Grant? =
         GrantStore.enabled(context).firstOrNull { it.treeUri == treeUri.toString() }
 
+    private val inbox = AppInbox(context)
+
     private fun listRoots(): List<DirEntry> {
+        // Always first, and always writable: receiving must not depend on
+        // a setup step taken on the phone for a file its owner just
+        // asked for. See AppInbox for why this needs no permission.
+        val appInbox = DirEntry(
+            handle = AppInbox.HANDLE,
+            name = AppInbox.INBOX_LABEL,
+            isDirectory = true,
+            count = inbox.files().size,
+            writable = true,
+        )
         val roots = GrantStore.enabled(context).mapNotNull { grant ->
             val treeUri = runCatching { Uri.parse(grant.treeUri) }.getOrNull() ?: return@mapNotNull null
             val documentId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
@@ -183,7 +209,7 @@ class AndroidDepotSource(
 
         // The picked files sit alongside the folders rather than
         // replacing them, in the order they were added.
-        return roots + offered().map { file ->
+        return listOf(appInbox) + roots + offered().map { file ->
             DirEntry(
                 handle = offeredHandleFor(file),
                 name = file.name,
@@ -255,6 +281,7 @@ class AndroidDepotSource(
      * — which is the whole point of §5.9.
      */
     override fun writable(handle: String): WritableTarget? {
+        if (handle == AppInbox.HANDLE) return inbox
         val location = handles[handle] ?: return null
         if (!location.isDirectory) return null
         val grant = grantFor(location.treeUri) ?: return null
@@ -269,6 +296,17 @@ class AndroidDepotSource(
         // a Client old enough to send no handle has no way to say which.
         if (handle == null || handle == offeredHandle) return files.firstOrNull()?.servable()
         files.firstOrNull { offeredHandleFor(it) == handle }?.let { return it.servable() }
+        // Reading back what was sent up, so a Client can confirm what
+        // arrived rather than taking PUT_DONE on trust.
+        if (handle.startsWith("inbox:")) {
+            val name = handle.substringAfter(':').substringAfter(':')
+            val file = inbox.find(name) ?: return null
+            return ServableFile(
+                name = file.name,
+                size = file.length(),
+                openStream = { file.inputStream() },
+            )
+        }
         val location = handles[handle] ?: return null
         if (location.isDirectory) return null
         return describeDocument(location)

@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.9 (draft)
+**Version:** 0.10 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -456,6 +456,28 @@ level 3.
 Compressing an MP4 costs CPU and battery for near-zero gain; on a phone that is
 measurable heat. Text, code, CSV and logs compress 60–90% and are worth it.
 
+**Entropy answers whether a chunk *can* shrink; it does not answer whether
+shrinking it is worth the delay.** Compression is not overlapped with sending —
+a sender packs a chunk and then puts it on the wire — so the codec's throughput
+is a ceiling on the transfer. Ordering the three costs gives
+
+```
+compressing wins while   1/compress + ratio/link + 1/decompress  <  1/link
+```
+
+which for this implementation's codec comes out around 120 Mbps. Below it the
+saving is large and one-sided: on an 8 Mbps mobile link a compressible megabyte
+takes about 160 ms packed against 1000 ms raw. Above it the codec becomes the
+slow part, and compressing an ordinary text file over a direct LAN connection
+more than doubles the time it takes.
+
+So a Depot SHOULD weigh the link's own speed alongside entropy, measured from
+the transfer rather than probed for, and SHOULD compress while it has no
+measurement — most links are far below the threshold, and the start of a
+transfer is exactly when there is nothing to measure from. The threshold belongs
+well under the sender's measured figure, because what actually bounds the
+decision is the *peer's* decompression speed, which the sender cannot know.
+
 ### 5.7 Transfer flow
 
 ```
@@ -641,6 +663,23 @@ it accepts into **only** those the user separately marked writable, and that fla
 defaults to off. Granting a folder to read from is not consent to have things put
 in it, and the two are asked for separately because they are different questions.
 
+**A Depot SHOULD also expose an inbox of its own, needing no grant at all.** The
+rule above is the right one for writing into someone's Downloads. It is the wrong
+one for receiving *anything*, because it made sending from a browser conditional
+on a setup step taken on the phone, for a file the phone's owner had just asked
+for — and a feature reachable only after configuration is one most people never
+find. Such an inbox is listed like any other writable directory and is subject to
+every other rule in this section; what makes it safe to offer unconditionally is
+that it is storage the Depot application owns, not the user's own. Nothing written
+there is visible to anything else on the device until the user moves it out, so
+the consent the writable flag was protecting is still asked for — about one real
+file, at the moment it means something, rather than in advance about a folder.
+
+Only a Client that has completed §3 and holds a valid credential can reach it, so
+this widens what a *paired* device may do and nothing else. A Depot that offers
+one MUST still show what arrived, and MUST NOT publish it anywhere the rest of the
+device can see without the user saying so.
+
 ```json
 {
   "type": "PUT",
@@ -814,6 +853,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.10 | 2026-09-22 | §5.10: a Depot SHOULD also expose an inbox of its own that needs no grant. Requiring a writable folder made receiving conditional on a setup step taken on the phone, for a file its owner had just asked for, and a feature reachable only after configuration is one most people never find. Storage the Depot application owns is not the user's own storage, so nothing reaches the device at large until the user moves it — the consent the flag protected is asked about one real file instead of in advance about a folder. §5.6: the compression decision now also weighs the link's measured speed, because packing a chunk is not overlapped with sending it and a codec slower than the wire costs more time than it saves. |
 | 0.9 | 2026-09-21 | §5.4: forbid waiting for the peer's `CAPS` before treating the session as live, and fix the assumed chunk size for a peer that has said nothing to §5.5's floor. Both Depots gated on it, so a lost `CAPS` produced a session that answered `LIST` but was recorded as nobody — `SHARED_CHANGED` went nowhere and a newly shared file appeared only on a reload. §5.9: say that several files may be offered at once outside any folder, and what a handle-less `REQUEST_FILE` means when there are. |
 | 0.8 | 2026-09-20 | Add §5.10 upload — `PUT` / `PUT_OK` / `PUT_DONE`, the one direction in which a Client causes the Depot to write. Gated on a per-grant writable flag that defaults to off, because granting a folder to read from is not consent to have things put in it. Never overwrites; verifies before publishing. |
 | 0.4 | 2026-09-19 | Add §5.9 browsing: `LIST`/`LIST_OK` over `ctl`, and an optional handle on `REQUEST_FILE`. Handles are opaque and minted per session, so a Client never names a location and there is no path to traverse. Backwards compatible — a `REQUEST_FILE` with no handle keeps its old meaning. |

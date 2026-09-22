@@ -6,6 +6,7 @@ import com.depot.app.pairing.DepotReconnectListener
 import com.depot.app.pairing.runDepotReconnectListener
 import com.depot.app.storage.Settings
 import com.depot.app.transport.AndroidDepotSource
+import com.depot.app.transport.AppInbox
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.TurnConfig
 import com.depot.app.transport.OfferedFile
@@ -134,6 +135,34 @@ object DepotSession {
 
     /** How much memory the files on offer are already holding. */
     fun offeredBytes(): Long = offered.sumOf { it.bytes.size.toLong() }
+
+    /**
+     * Puts what is already in the app's inbox back on screen.
+     *
+     * The files outlive the process — they are on disk — so a RECEIVED
+     * list rebuilt only from this run's arrivals would tell the user
+     * their files had gone when they had not. Called when the screen
+     * appears, and additive, so an arrival that beat it is not lost.
+     */
+    fun loadInbox(context: Context) {
+        val known = AppInbox(context).files().map { file ->
+            ReceivedFile(
+                name = file.name,
+                size = file.length(),
+                folder = AppInbox.INBOX_LABEL,
+                where = file.absolutePath,
+                at = file.lastModified(),
+            )
+        }
+        if (known.isEmpty()) return
+        _state.update { state ->
+            val already = state.receivedFiles.map { it.name }.toSet()
+            state.copy(
+                receivedFiles = (state.receivedFiles + known.filterNot { it.name in already })
+                    .sortedByDescending { it.at },
+            )
+        }
+    }
 
     /** Stops offering one of them, without touching the rest. */
     fun removeOfferedFile(name: String, size: Int) {
