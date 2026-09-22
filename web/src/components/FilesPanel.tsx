@@ -4,7 +4,7 @@ import type { DirEntry } from '../transport/transferSession'
 import { formatBytes, formatDay, nowMs } from '../format'
 import { heldFor, keyFor, type HeldFile } from '../heldFiles'
 import { describePreview, previewBlockedReason } from '../preview'
-import { listCachedFiles, putCachedFile } from '../storage/fileCache'
+import { CACHE_CLEARED_EVENT, clearAllCached, deleteCachedFile, listCachedFiles, putCachedFile } from '../storage/fileCache'
 import { Dialog } from './Dialog'
 import { PreviewOverlay } from './PreviewOverlay'
 import { TransferCard, type TransferState } from './TransferCard'
@@ -360,6 +360,35 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
    * modification time: with nothing to compare, a changed file keeps the
    * same key and the held copy would otherwise stand forever.
    */
+
+  /**
+   * Forgets a file that came across: off this page, and out of the
+   * browser's storage so a reload does not bring it back. The phone still
+   * has it — this is only the copy held here.
+   */
+  function removeReceived(key: string): void {
+    const file = receivedRef.current.find((f) => f.key === key)
+    if (file) URL.revokeObjectURL(file.url)
+    setPreviewing((p) => (p === key ? null : p))
+    setReceived((prev) => prev.filter((f) => f.key !== key))
+    void deleteCachedFile(key)
+  }
+
+  /** Every copy held here, and every chunk kept to resume a download. */
+  function clearReceived(): void {
+    void clearAllCached() // announces itself; the listener below empties the list
+  }
+
+  // Cleared from here or from settings, the list follows.
+  useEffect(() => {
+    const onCleared = () => {
+      for (const file of receivedRef.current) URL.revokeObjectURL(file.url)
+      setPreviewing(null)
+      setReceived([])
+    }
+    window.addEventListener(CACHE_CLEARED_EVENT, onCleared)
+    return () => window.removeEventListener(CACHE_CLEARED_EVENT, onCleared)
+  }, [])
   const refetch = async (key: string) => {
     if (pending) return
     setPreviewing(null)
@@ -717,7 +746,16 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
 
           {received.length > 0 && (
             <div className="received">
-              <div className="sl">RECEIVED · VERIFIED</div>
+              <div className="sl received-head">
+                <span>RECEIVED · VERIFIED</span>
+                <button
+                  className="received-clear"
+                  title="Forget every file held in this browser. The phone keeps its copies."
+                  onClick={clearReceived}
+                >
+                  CLEAR ALL
+                </button>
+              </div>
               {received.map((file) => {
                 const reason = blockedReason(file)
                 const kind = describePreview(file.name, file.mime).kind
@@ -751,6 +789,14 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
                     <a className="received-act download" href={file.url} download={file.name}>
                       DOWNLOAD
                     </a>
+                    <button
+                      className="received-remove"
+                      title={`Forget ${file.name} in this browser`}
+                      aria-label={`Remove ${file.name}`}
+                      onClick={() => removeReceived(file.key)}
+                    >
+                      ✕
+                    </button>
                   </div>
                 )
               })}

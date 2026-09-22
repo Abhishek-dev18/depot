@@ -74,6 +74,16 @@ export async function dropChunks(hashes: string[]): Promise<void> {
 }
 
 /** Test seam: forget which backend was chosen and empty the in-memory one. */
+/** Drops every chunk held for resuming, whatever download it came from. */
+export async function clearChunkCache(): Promise<void> {
+  memory.clear()
+  try {
+    if (await usingIdb()) await idbDeleteMany(await idbKeysWithPrefix(PREFIX))
+  } catch {
+    // Nothing to do — storage that cannot be read cannot be cleared either.
+  }
+}
+
 export function resetChunkCacheForTests(): void {
   backend = null
   memory.clear()

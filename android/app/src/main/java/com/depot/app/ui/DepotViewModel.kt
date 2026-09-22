@@ -27,6 +27,7 @@ import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.OfferedFile
 import com.depot.app.transport.grantStats
 import com.depot.app.ui.components.formatBytes
+import com.depot.app.ui.theme.ThemePreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -81,13 +82,18 @@ data class DepotUiState(
     /** What this phone is connected by, and whether bytes cost money. */
     val network: NetworkState = NetworkState.Unknown,
     val networkPreference: NetworkPreference = NetworkPreference.AUTO,
+    val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val log: List<String> = emptyList(),
 )
 
 class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(
-        DepotUiState(signalUrl = Settings.signalUrl(app), turn = Settings.turn(app)),
+        DepotUiState(
+            signalUrl = Settings.signalUrl(app),
+            turn = Settings.turn(app),
+            themePreference = Settings.theme(app),
+        ),
     )
     val state: StateFlow<DepotUiState> = _state.asStateFlow()
 
@@ -151,6 +157,11 @@ class DepotViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onClearReceived() {
         DepotSession.clearReceived(getApplication())
+    }
+
+    fun onThemePreference(preference: ThemePreference) {
+        Settings.setTheme(getApplication(), preference)
+        _state.update { it.copy(themePreference = preference) }
     }
 
     fun onNetworkPreference(preference: NetworkPreference) {

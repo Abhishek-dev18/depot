@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { formatBytes } from '../format'
 import { isLoopbackSignalUrl } from '../signalUrl'
-import { MAX_CACHED_FILE, cacheUsage, clearFileCache } from '../storage/fileCache'
+import { MAX_CACHED_FILE, cacheUsage, clearAllCached } from '../storage/fileCache'
 import type { TurnConfig } from '../transport/webrtc'
+import { useThemePreference, type ThemePreference } from '../theme'
 
 interface Props {
   signalUrl: string
@@ -32,6 +33,7 @@ export function ConnectionSettings({
   onOpenSimulator,
 }: Props) {
   const [usage, setUsage] = useState<{ count: number; bytes: number } | null>(null)
+  const [theme, setTheme] = useThemePreference()
 
   const readUsage = useCallback(() => {
     void cacheUsage().then(setUsage)
@@ -105,11 +107,27 @@ export function ConnectionSettings({
         </span>
         <button
           className="wnav-action"
-          disabled={usage === null || usage.count === 0}
-          onClick={() => void clearFileCache().then(readUsage)}
+          disabled={usage === null}
+          onClick={() => void clearAllCached().then(readUsage)}
+          title="Also drops the pieces kept to resume an interrupted download"
         >
-          Clear
+          Clear cache
         </button>
+      </div>
+
+      <p className="hint settings-section-label">Appearance</p>
+      <div className="theme-choice" role="radiogroup" aria-label="Appearance">
+        {(['system', 'light', 'dark'] as ThemePreference[]).map((option) => (
+          <button
+            key={option}
+            role="radio"
+            aria-checked={theme === option}
+            className={theme === option ? 'theme-option chosen' : 'theme-option'}
+            onClick={() => setTheme(option)}
+          >
+            {option === 'system' ? 'SYSTEM' : option.toUpperCase()}
+          </button>
+        ))}
       </div>
 
       {onOpenSimulator && (

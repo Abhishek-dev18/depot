@@ -282,7 +282,7 @@ fun GrantSwitch(on: Boolean, modifier: Modifier = Modifier) {
         modifier = modifier
             .size(width = 46.dp, height = 26.dp)
             .clip(RoundedCornerShape(13.dp))
-            .background(if (on) DepotColors.Amber else DepotColors.Line2),
+            .background(if (on) DepotColors.AmberFill else DepotColors.Line2),
         contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart,
     ) {
         Box(
@@ -309,7 +309,7 @@ fun Cta(
             .fillMaxWidth()
             .height(56.dp)
             .clip(shape)
-            .background(if (enabled) DepotColors.Amber else DepotColors.Surface2)
+            .background(if (enabled) DepotColors.AmberFill else DepotColors.Surface2)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -335,7 +335,7 @@ fun SheetButton(
             .height(56.dp)
             .clip(shape)
             .then(
-                if (primary) Modifier.background(DepotColors.Amber)
+                if (primary) Modifier.background(DepotColors.AmberFill)
                 else Modifier.border(1.dp, DepotColors.Line2, shape),
             )
             .clickable(onClick = onClick),

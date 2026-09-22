@@ -41,7 +41,7 @@ fun BottomSheet(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.62f))
+            .background(DepotColors.Scrim)
             .pointerInput(onDismiss) {
                 detectTapGestures { onDismiss?.invoke() }
             },

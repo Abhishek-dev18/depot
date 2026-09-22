@@ -12,6 +12,7 @@ import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -30,6 +31,7 @@ import com.depot.app.ui.DepotApp
 import com.depot.app.ui.DepotViewModel
 import com.depot.app.ui.theme.DepotColors
 import com.depot.app.ui.theme.DepotTheme
+import com.depot.app.ui.theme.isDark
 
 class MainActivity : ComponentActivity() {
 
@@ -165,8 +167,22 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         offerSharedFile(intent)
         setContent {
-            DepotTheme {
-                val state by viewModel.state.collectAsState()
+            val state by viewModel.state.collectAsState()
+            val dark = state.themePreference.isDark()
+
+            // The status and navigation bar icons follow the app's theme,
+            // not only the system's: a phone in dark mode with the app set
+            // to light would otherwise draw white icons on a light screen.
+            LaunchedEffect(dark) {
+                val bars = if (dark) {
+                    SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                }
+                enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+            }
+
+            DepotTheme(dark = dark) {
 
                 // Android 13+ will silently drop the foreground service's
                 // notification without this, and a service with no visible
@@ -221,6 +237,7 @@ class MainActivity : ComponentActivity() {
                         onRemoveFile = viewModel::onRemoveOfferedFile,
                         onOpenReceived = { file -> file.where?.let(::openReceived) },
                         onNetworkPreference = viewModel::onNetworkPreference,
+                        onThemePreference = viewModel::onThemePreference,
                         onSaveReceived = { file ->
                             saveReceived(file) { pickWhereToSave.launch(file.name) }
                         },

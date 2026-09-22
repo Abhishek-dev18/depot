@@ -83,6 +83,12 @@ six-digit code, or file contents.
   is slow enough for it to pay off. Resumed transfers fetch only the chunks they are missing.
 - **Mobile-data aware.** Treat the connection as Wi-Fi or mobile data, or let the phone decide.
   On a metered link it compresses whenever that saves bytes, even when it would not save time.
+- **Light and dark.** Both the browser and the phone follow the system theme or can be set to
+  light or dark: the ◐ button in the browser's nav, and *Appearance* in the app's settings. The
+  launcher icon has a light variant too, used when the phone is in light mode.
+- **Clear what the browser holds.** Remove one received file with ✕, or everything with
+  *Clear all*. That covers whole files and the pieces kept to resume a download, and nothing
+  comes back on reload. The same control is in the browser's settings.
 - **Back as soon as the phone is.** A waiting browser is told the moment the phone comes online
   and reconnects by itself, without a reload.
 

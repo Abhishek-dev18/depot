@@ -1,8 +1,9 @@
 /**
  * Every copy of the Depot crate, measured against public/favicon.svg.
  *
- * The mark lives in four places — the favicon, two CSS pseudo-element
- * constructions, an Android launcher vector and a notification vector —
+ * The mark lives in several places — the favicon, two CSS pseudo-element
+ * constructions, the Android launcher vectors (dark and light) and a
+ * notification vector —
  * and they had quietly drifted into four different shapes. Eyeballing
  * them side by side does not catch a seam two pixels high or a block
  * sitting slightly too far into the corner, so this renders each one and
@@ -22,10 +23,10 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const web = fileURLToPath(new URL('..', import.meta.url))
-const drawable = fileURLToPath(new URL('../../android/app/src/main/res/drawable/', import.meta.url))
+const res = fileURLToPath(new URL('../../android/app/src/main/res/', import.meta.url))
 
 function vectorToSvg(file, viewBox) {
-  const src = readFileSync(drawable + file, 'utf8')
+  const src = readFileSync(res + file, 'utf8')
   const paths = [...src.matchAll(/<path\b([\s\S]*?)\/>/g)].map(([, attrs]) => {
     const d = /android:pathData="([^"]+)"/.exec(attrs)[1]
     const fill = /android:fillColor="(#\w+)"/.exec(attrs)[1]
@@ -51,8 +52,10 @@ const cells = {
     'width="32" height="32"',
     'width="200" height="200"',
   ),
-  launcher: vectorToSvg('ic_launcher_foreground.xml', '0 0 108 108'),
-  notification: vectorToSvg('ic_notification.xml', '0 0 24 24'),
+  launcher: vectorToSvg('drawable/ic_launcher_foreground.xml', '0 0 108 108'),
+  // The light-mode launcher icon: its own file, so its own measurement.
+  launcherLight: vectorToSvg('drawable-notnight/ic_launcher_foreground.xml', '0 0 108 108'),
+  notification: vectorToSvg('drawable/ic_notification.xml', '0 0 24 24'),
   brandmark: '<span class="brand-mark z32"></span>',
   wmark: '<span class="wmark z26"></span>',
 }
@@ -69,6 +72,7 @@ const cells = {
  */
 const SAFE = {
   launcher: { canvas: 108, safeDiameter: 66 },
+  launcherLight: { canvas: 108, safeDiameter: 66 },
   // Not Android's number. Whatever draws notification icons on a real
   // handset crops far inside anything documented — 23dp of 24 clipped,
   // then 14, then 12. This is the launcher's proven ratio (40 of 108)
@@ -99,7 +103,7 @@ const file = `${tmpdir()}/depot-mark.html`
 writeFileSync(file, html)
 
 const browser = await launchChromium()
-const tab = await browser.newPage({ viewport: { width: 200, height: 1200 } })
+const tab = await browser.newPage({ viewport: { width: 200, height: 1400 } })
 await tab.goto('file://' + file)
 await tab.waitForTimeout(300)
 
