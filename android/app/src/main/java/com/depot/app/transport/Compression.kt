@@ -1,6 +1,7 @@
 package com.depot.app.transport
 
 import java.io.ByteArrayOutputStream
+import java.util.zip.DataFormatException
 import java.util.zip.Deflater
 import java.util.zip.Inflater
 
@@ -56,15 +57,24 @@ fun compress(bytes: ByteArray): ByteArray {
     }
 }
 
-fun decompress(bytes: ByteArray): ByteArray {
+/**
+ * Inflates one chunk, refusing to produce more than [maxBytes] — the
+ * chunk's length from the manifest, which is all a genuine one inflates
+ * to. Deflate reaches about 1000:1, so without a limit one small frame can
+ * demand tens of megabytes before its hash is ever checked.
+ */
+fun decompress(bytes: ByteArray, maxBytes: Int = Int.MAX_VALUE): ByteArray {
     val inflater = Inflater(true)
     try {
         inflater.setInput(bytes)
-        val out = ByteArrayOutputStream(bytes.size * 2)
+        val out = ByteArrayOutputStream(minOf(maxBytes.toLong(), bytes.size * 2L).toInt())
         val buffer = ByteArray(16 * 1024)
         while (!inflater.finished()) {
             val n = inflater.inflate(buffer)
             if (n == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
+            if (out.size().toLong() + n > maxBytes) {
+                throw DataFormatException("chunk inflates past the $maxBytes bytes its manifest allows")
+            }
             out.write(buffer, 0, n)
         }
         return out.toByteArray()

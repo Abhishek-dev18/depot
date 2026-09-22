@@ -3,7 +3,7 @@ import type { Credential } from '../crypto/credential'
 import { verifyCredential } from '../crypto/credential'
 import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair } from '../crypto/keys'
-import { reconnectTranscript, signReconnectResponse } from '../crypto/reconnect'
+import { reconnectTranscript, signReconnectResponse, verifyDepotChallenge } from '../crypto/reconnect'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { getPairing, savePairing } from '../storage/pairings'
 import { SignalClient } from '../signal/client'
@@ -58,6 +58,8 @@ export interface DepotConnection extends ClientSession {
 interface ChallengePayload {
   depotEk: string
   challengeNonce: string
+  /** DepotIdentity's signature over depotChallengeBytes — §4 step 2. */
+  depotSig?: string
 }
 
 /**
@@ -193,9 +195,29 @@ export async function runClientReconnect(
     }
     throwIfRejected(challenge)
 
-    const { depotEk, challengeNonce } = challenge.payload as ChallengePayload
+    const { depotEk, challengeNonce, depotSig } = challenge.payload as ChallengePayload
     const depotEkBytes = fromBase64(depotEk)
     const challengeNonceBytes = fromBase64(challengeNonce)
+
+    // Whoever answered is only the Depot if it can sign for the identity
+    // this browser paired with. Signal does not check who registers an id,
+    // so without this an impostor could finish the handshake and receive
+    // everything sent to it. Checked before RESPONSE, so an impostor does
+    // not even learn that this Client would have answered. A CHALLENGE with
+    // no signature is refused too: accepting one would let anyone opt out.
+    if (!depotSig) {
+      throw new Error('the Depot did not prove who it is — update the Depot app')
+    }
+    const genuine = await verifyDepotChallenge(
+      depotSig,
+      fromBase64(depotId),
+      ephemeral.publicKey,
+      depotEkBytes,
+      challengeNonceBytes,
+    )
+    if (!genuine) {
+      throw new Error('whatever answered is not the Depot this browser paired with')
+    }
 
     const transcript = reconnectTranscript(ephemeral.publicKey, depotEkBytes, challengeNonceBytes)
     const sig = await signReconnectResponse(identity.privateKey, transcript)

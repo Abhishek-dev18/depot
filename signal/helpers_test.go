@@ -158,7 +158,7 @@ func TestRevokeWithoutAClientIDIsRefused(t *testing.T) {
 
 	depot := dial(t, url)
 	defer depot.Close()
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: "d-revoke-empty"})
+	registerDepot(t, depot)
 
 	send(t, depot, Envelope{Type: TypeRevoke})
 	if got := recvEnvelope(t, depot); got.Reason != ReasonBadEnvelope {
@@ -175,7 +175,7 @@ func TestDepotRelayWithoutAClientIDIsRefused(t *testing.T) {
 
 	depot := dial(t, url)
 	defer depot.Close()
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: "d-relay-empty"})
+	registerDepot(t, depot)
 
 	send(t, depot, Envelope{Type: "challenge", Payload: []byte(`{}`)})
 	if got := recvEnvelope(t, depot); got.Reason != ReasonBadEnvelope {

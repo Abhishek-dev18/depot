@@ -4,7 +4,7 @@ import { sodium } from './sodium'
 import { toBase64, toHex } from './codec'
 import { buildTranscript, u8, utf8 } from './transcript'
 import { computeSAS, deriveKeys, ecdh, pairingTranscript } from './derive'
-import { reconnectTranscript, signReconnectResponse } from './reconnect'
+import { depotChallengeBytes, reconnectTranscript, signDepotChallenge, signReconnectResponse } from './reconnect'
 import { Direction, deriveChunkNonce, deriveCtlNonce, encodeChunkFrame, encodeCtlFrame } from '../transport/frame'
 
 /** Deterministic filler so vectors are reproducible without randomness. */
@@ -73,6 +73,8 @@ describe('cross-implementation test vectors', () => {
     const challengeNonce = seq(16, 33)
     const rTranscript = reconnectTranscript(clientEkPub, depotEkPub, challengeNonce)
     const rSig = await signReconnectResponse(clientIk.privateKey, rTranscript)
+    const dBytes = depotChallengeBytes(clientEkPub, depotEkPub, challengeNonce)
+    const dSig = await signDepotChallenge(depotIk.privateKey, clientEkPub, depotEkPub, challengeNonce)
 
     // --- frames (§5.3) ------------------------------------------------
     const chunkPlain = seq(64, 5)
@@ -130,6 +132,8 @@ describe('cross-implementation test vectors', () => {
         challengeNonce: toHex(challengeNonce),
         transcript: toHex(rTranscript),
         sig: rSig,
+        depotChallengeBytes: toHex(dBytes),
+        depotSig: dSig,
       },
       nonces: {
         _comment: 'protocol.md §5.3 derived nonces; the two spaces must stay disjoint',

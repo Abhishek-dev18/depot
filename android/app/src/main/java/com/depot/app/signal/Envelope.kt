@@ -55,6 +55,12 @@ const val TYPE_PEER_LEFT = "peer_left"
 const val TYPE_INCOMING = "incoming"
 const val TYPE_ERROR = "error"
 
+/** Signal -> a registering Depot: sign this nonce to prove it is you (§7.1). */
+const val TYPE_REGISTER_CHALLENGE = "register_challenge"
+
+/** Signal -> a Depot whose proof checked out: Clients can reach it now. */
+const val TYPE_REGISTERED = "registered"
+
 // Error reasons.
 const val REASON_SESSION_EXPIRED = "session_expired"
 const val REASON_SESSION_FULL = "session_full"
@@ -65,3 +71,6 @@ const val REASON_RATE_LIMITED = "rate_limited"
 const val REASON_NO_ROUTE = "no_route"
 const val REASON_BAD_ENVELOPE = "bad_envelope"
 const val REASON_ALREADY_CONNECTED = "already_connected"
+
+/** A register not signed by the key its depotId names. */
+const val REASON_UNAUTHORIZED = "unauthorized"

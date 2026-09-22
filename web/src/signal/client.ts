@@ -1,6 +1,7 @@
 import { TypeConnect, TypeError, TypeHello, TypeJoin, TypeRegister, TypeRevoke, type Envelope,
-  TypeWatch,
+  TypeRegisterChallenge, TypeWatch,
 } from './envelope'
+import { fromBase64 } from '../crypto/codec'
 
 /** Thin wrapper over the WebSocket connection to signal (protocol.md §7). */
 export class SignalClient {
@@ -73,7 +74,24 @@ export class SignalClient {
     this.send({ type: TypeJoin, sessionId })
   }
 
-  register(depotId: string): void {
+  /**
+   * Registers as depotId, proving it by signing the nonce Signal answers
+   * with (§7.1). `prove` is handed that nonce and returns the base64
+   * signature; the key stays with the caller.
+   *
+   * Listens before asking, for the same reason the Depot does: an answer
+   * that arrives before anyone is listening is lost.
+   */
+  register(depotId: string, prove: (nonce: Uint8Array) => Promise<string>): void {
+    this.onMessage((e) => {
+      if (e.type !== TypeRegisterChallenge || e.depotId !== depotId) return
+      const { nonce } = (e.payload ?? {}) as { nonce?: string }
+      if (!nonce) return
+      void prove(fromBase64(nonce)).then(
+        (sig) => this.send({ type: TypeRegister, depotId, payload: { sig } }),
+        () => {},
+      )
+    })
     this.send({ type: TypeRegister, depotId })
   }
 

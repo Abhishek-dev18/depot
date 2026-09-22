@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { FAILURES_BEFORE_SAYING_SO, retryDelayMs, showsFailure } from './retryPolicy'
 
 /**
  * The scheduling rules ClientView follows when it is not connected.
@@ -43,12 +44,17 @@ function depotSaidOffline(s: State): State {
   return { ...s, offline: true, failure: null, attempts: 0, connecting: false }
 }
 
-/** Milliseconds until the next attempt, or null for "do not schedule one". */
+/**
+ * Milliseconds until the next attempt, or null for "do not schedule one".
+ *
+ * The gating is ClientView's effect; the delay itself is the real
+ * retryPolicy function rather than a copy of it, so the two cannot drift.
+ */
 function nextAttemptIn(s: State): number | null {
   if (s.session || s.connecting) return null
   if (!s.offline && s.failure === null) return null
   if (!s.hasPairing) return null
-  return s.failure === null ? 4_000 : Math.min(30_000, 4_000 * 2 ** Math.min(s.attempts, 3))
+  return retryDelayMs(s.failure !== null, s.attempts)
 }
 
 describe('when the Client tries again', () => {
@@ -63,13 +69,15 @@ describe('when the Client tries again', () => {
     expect(nextAttemptIn({ ...idle, failure: 'the Depot did not answer', attempts: 1 })).not.toBeNull()
   })
 
-  it('backs off on repeated failures, but not for ever', () => {
+  it('backs off on repeated failures, to a ceiling of seconds', () => {
+    // The ceiling used to be thirty seconds, which was the difference
+    // between "it connected" and "it connected if you waited". One
+    // browser and one phone can afford to ask every few seconds.
     const delay = (attempts: number) => nextAttemptIn({ ...idle, failure: 'x', attempts })
-    expect(delay(0)).toBe(4_000)
-    expect(delay(1)).toBe(8_000)
-    expect(delay(2)).toBe(16_000)
-    expect(delay(3)).toBe(30_000)
-    expect(delay(50)).toBe(30_000)
+    expect(delay(1)).toBe(2_000)
+    expect(delay(2)).toBe(4_000)
+    expect(delay(3)).toBe(6_000)
+    expect(delay(50)).toBe(6_000)
   })
 
   it('keeps polling briskly for a phone that is merely switched off', () => {
@@ -148,8 +156,31 @@ describe('a Depot that says it is not listening', () => {
     // a stale registration that never answered — and then polls of a
     // phone that was simply off.
     const afterFailure: State = { ...idle, failure: 'the Depot did not answer', attempts: 3 }
-    expect(nextAttemptIn(afterFailure)).toBe(30_000)
+    expect(nextAttemptIn(afterFailure)).toBe(6_000)
 
     expect(nextAttemptIn(depotSaidOffline(afterFailure))).toBe(4_000)
+  })
+})
+
+/*
+ * The failure screen tells someone their network is at fault and sends
+ * them to put both devices on the same Wi-Fi. After one transient miss —
+ * the kind that happens as a phone comes online — that is advice about a
+ * problem that does not exist. It was reported as the page "going to
+ * the same-Wi-Fi option" and then connecting on its own anyway.
+ */
+describe('when the page admits something is wrong', () => {
+  it('retries quietly before the threshold', () => {
+    for (let n = 1; n < FAILURES_BEFORE_SAYING_SO; n++) {
+      expect(showsFailure(true, n), `after ${n} miss(es)`).toBe(false)
+    }
+  })
+
+  it('says so once failures are consistent', () => {
+    expect(showsFailure(true, FAILURES_BEFORE_SAYING_SO)).toBe(true)
+  })
+
+  it('never warns about a Depot that is simply off', () => {
+    expect(showsFailure(false, 99)).toBe(false)
   })
 })

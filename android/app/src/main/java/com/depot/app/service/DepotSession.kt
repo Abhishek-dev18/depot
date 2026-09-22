@@ -25,7 +25,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** One file on offer, as the screens need to show it. */
-data class OfferedSummary(val name: String, val size: Int)
+data class OfferedSummary(val name: String, val size: Long)
 
 /**
  * One file a Client sent up (§5.10), as the home screen shows it.
@@ -122,14 +122,14 @@ object DepotSession {
     fun addOfferedFiles(files: List<OfferedFile>) {
         if (files.isEmpty()) return
         val added = files.filterNot { candidate ->
-            offered.any { it.name == candidate.name && it.bytes.size == candidate.bytes.size }
+            offered.any { it.name == candidate.name && it.size == candidate.size }
         }
         if (added.isEmpty()) return
         offered.addAll(added)
         _state.update {
             it.copy(
-                offeredFiles = offered.map { f -> OfferedSummary(f.name, f.bytes.size) },
-                log = it.log + added.map { f -> "offering ${f.name} (${f.bytes.size} bytes)" },
+                offeredFiles = offered.map { f -> OfferedSummary(f.name, f.size) },
+                log = it.log + added.map { f -> "offering ${f.name} (${f.size} bytes)" },
             )
         }
         notifySharedChanged()
@@ -184,8 +184,8 @@ object DepotSession {
         }
     }
 
-    /** How much memory the files on offer are already holding. */
-    fun offeredBytes(): Long = offered.sumOf { it.bytes.size.toLong() }
+    /** How much the files on offer add up to. Read from storage, not memory. */
+    fun offeredBytes(): Long = offered.sumOf { it.size }
 
     /**
      * Puts what is already in the app's inbox back on screen.
@@ -216,13 +216,14 @@ object DepotSession {
     }
 
     /** Stops offering one of them, without touching the rest. */
-    fun removeOfferedFile(name: String, size: Int) {
-        val doomed = offered.filter { it.name == name && it.bytes.size == size }
+    fun removeOfferedFile(name: String, size: Long) {
+        val doomed = offered.filter { it.name == name && it.size == size }
         if (doomed.isEmpty()) return
         offered.removeAll(doomed)
+        for (file in doomed) runCatching { file.release() }
         _state.update {
             it.copy(
-                offeredFiles = offered.map { f -> OfferedSummary(f.name, f.bytes.size) },
+                offeredFiles = offered.map { f -> OfferedSummary(f.name, f.size) },
                 log = it.log + "stopped offering $name",
             )
         }

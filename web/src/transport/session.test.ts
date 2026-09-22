@@ -920,6 +920,62 @@ describe('a channel that enforces its maximum message size', () => {
     stop()
   }, 30_000)
 
+  /*
+   * Chunks were fitted to the limit; the messages describing them were
+   * not. A MANIFEST lists every chunk, so it grows with the file, and at
+   * the phone's 64 KB it outgrew the channel somewhere under 100 MB: the
+   * phone's send() returned false and the browser's threw, whichever way
+   * the file was going. A folder of a few thousand files did the same to
+   * LIST_OK. Here the limit is scaled down with the file so the test stays
+   * fast: 16 KB against a 3 MB file is the same shape.
+   */
+  it('describes a file whose chunk list is larger than one message', async () => {
+    const file = fileOf('holiday.mp4', 3_000_000, 41)
+    const { session, stop } = await connect(singleFileSource(() => file), { maxMessageSize: 16 * 1024 })
+    const entries = await session.list('')
+    const got = await session.fetch(entries[0].handle)
+    expect(await bytesOf(got)).toEqual(Array.from(file.bytes))
+    session.close()
+    stop()
+  }, 30_000)
+
+  it('sends up a file whose chunk list is larger than one message', async () => {
+    const folder = writableFolder()
+    const { session, stop } = await connect(
+      {
+        list: (handle) =>
+          handle === '' ? [{ handle: 'inbox', name: 'Inbox', kind: 'dir' as const }] : [],
+        open: () => null,
+        writable: (handle) => (handle === 'inbox' ? folder.target : null),
+      },
+      { maxMessageSize: 16 * 1024 },
+    )
+    const entries = await session.list('')
+    const inbox = entries.find((e) => e.kind === 'dir')!
+    const video = fileOf('holiday.mp4', 3_000_000, 42)
+    const stored = await session.send(inbox.handle, { name: video.name, bytes: video.bytes })
+    expect(Array.from(folder.files.get(stored)!)).toEqual(Array.from(video.bytes))
+    session.close()
+    stop()
+  }, 30_000)
+
+  it('lists a folder too large to list in one message', async () => {
+    const many = Array.from({ length: 400 }, (_, i) => ({
+      handle: `h${i}`,
+      name: `IMG_${String(i).padStart(4, '0')}.jpg`,
+      kind: 'file' as const,
+      size: 1000 + i,
+    }))
+    const { session, stop } = await connect(
+      { list: (handle) => (handle === '' ? many : []), open: () => null },
+      { maxMessageSize: 16 * 1024 },
+    )
+    const entries = await session.list('')
+    expect(entries.map((e) => e.name)).toEqual(many.map((e) => e.name))
+    session.close()
+    stop()
+  }, 30_000)
+
   it('sends a photograph up over it', async () => {
     // The sizes from the report: the 150 KB file arrived and everything
     // over a megabyte failed.

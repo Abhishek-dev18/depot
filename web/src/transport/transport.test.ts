@@ -213,6 +213,15 @@ describe('compression (protocol.md §5.6)', () => {
     expect(new TextDecoder().decode(restored)).toBe(text)
   })
 
+  it('refuses to inflate past the length the manifest allows', async () => {
+    // Zeros deflate about 1000:1 — the shape of a decompression bomb.
+    const bomb = await compress(new Uint8Array(4 * 1024 * 1024))
+    expect(bomb.length).toBeLessThan(16 * 1024)
+    await expect(decompress(bomb, 64 * 1024)).rejects.toThrow(/inflates past/)
+    // And exactly the allowed length is fine.
+    expect((await decompress(bomb, 4 * 1024 * 1024)).length).toBe(4 * 1024 * 1024)
+  })
+
   it('flags high-entropy (random) data as not worth compressing', async () => {
     const random = await randomBytes(64 * 1024)
     expect(shouldCompress(random)).toBe(false)

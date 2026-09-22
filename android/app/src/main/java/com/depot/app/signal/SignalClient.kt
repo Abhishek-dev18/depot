@@ -1,5 +1,6 @@
 package com.depot.app.signal
 
+import com.depot.app.crypto.fromBase64
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -135,7 +136,26 @@ class SignalClient(private val url: String) {
 
     fun join(sessionId: String) = send(Envelope(type = TYPE_JOIN, sessionId = sessionId))
 
-    fun register(depotId: String) = send(Envelope(type = TYPE_REGISTER, depotId = depotId))
+    /**
+     * Registers as [depotId], proving it by signing the nonce Signal
+     * answers with (§7.1). [prove] is handed that nonce and returns the
+     * base64 signature, so the key never comes here.
+     *
+     * Listens before asking: OkHttp delivers on its own thread, and an
+     * answer that arrives before anyone listens is lost.
+     */
+    fun register(depotId: String, prove: (ByteArray) -> String) {
+        onMessage { e ->
+            if (e.type != TYPE_REGISTER_CHALLENGE || e.depotId != depotId) return@onMessage
+            val nonce = e.payload?.optString("nonce").orEmpty()
+            if (nonce.isEmpty()) return@onMessage
+            runCatching {
+                val sig = prove(nonce.fromBase64())
+                send(Envelope(type = TYPE_REGISTER, depotId = depotId, payload = JSONObject().put("sig", sig)))
+            }
+        }
+        send(Envelope(type = TYPE_REGISTER, depotId = depotId))
+    }
 
     fun connectTo(depotId: String, clientId: String, payload: JSONObject) =
         send(Envelope(type = TYPE_CONNECT, depotId = depotId, clientId = clientId, payload = payload))

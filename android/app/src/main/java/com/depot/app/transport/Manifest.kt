@@ -94,6 +94,26 @@ fun buildManifest(
  * [openStream] rather than a stream, because §5.7 needs a second pass over
  * the same bytes to answer NEED, and a consumed stream cannot be rewound.
  */
+/**
+ * The whole-file hash of whatever [input] yields, read a buffer at a
+ * time. For checking a file that is too large to hold, against a
+ * manifest that was built from one that was.
+ */
+fun hashStream(input: InputStream): String {
+    val state = ByteArray(Sodium.lazy.cryptoGenericHashStateBytes())
+    require(Sodium.lazy.cryptoGenericHashInit(state, 32), "crypto_generichash_init")
+    val buffer = ByteArray(64 * 1024)
+    while (true) {
+        val n = input.read(buffer)
+        if (n < 0) break
+        if (n == 0) continue
+        require(Sodium.lazy.cryptoGenericHashUpdate(state, buffer.copyOf(n), n.toLong()), "crypto_generichash_update")
+    }
+    val out = ByteArray(32)
+    require(Sodium.lazy.cryptoGenericHashFinal(state, out, 32), "crypto_generichash_final")
+    return out.toBase64()
+}
+
 fun buildManifestStreaming(
     transferId: Int,
     name: String,

@@ -10,6 +10,8 @@ import com.depot.app.crypto.generateEphemeralKeyPair
 import com.depot.app.crypto.issueCredential
 import com.depot.app.crypto.randomBytes
 import com.depot.app.crypto.reconnectTranscript
+import com.depot.app.crypto.signDepotChallenge
+import com.depot.app.crypto.signRegistration
 import com.depot.app.crypto.toBase64
 import com.depot.app.crypto.verifyCredential
 import com.depot.app.crypto.verifyReconnectResponse
@@ -135,15 +137,27 @@ suspend fun runDepotReconnectListener(
     signal.connect()
     signal.ready()
 
-    signal.register(depotId)
-    cb.onStatus("registered, listening for reconnections")
-    cb.onRegistered(depotId)
-
     signal.onDisconnected { reason -> cb.onDisconnected(reason) }
 
     val connections = ConcurrentHashMap<String, () -> Unit>()
     val senders = ConcurrentHashMap<String, FileSender>()
 
+    // Listening before registering, never the other way about.
+    //
+    // Registering is the moment Signal starts routing Clients here — and,
+    // since §7.1's `watch`, the moment it tells any browser that was
+    // waiting. That browser answers within a round trip, so its request
+    // arrives almost at once. OkHttp delivers messages on its own thread,
+    // and SignalClient hands each one to whoever is listening *at that
+    // instant*; registering first left a gap in which the request found
+    // nobody and was dropped without a trace. The browser then waited out
+    // its timeout, showed "put both devices on the same Wi-Fi", backed
+    // off, and connected on the next try — twenty to thirty seconds after
+    // the phone came online, every time, while a reload connected at once.
+    //
+    // The web Depot registers first too and cannot lose a message that
+    // way, because JavaScript runs both calls in one uninterrupted turn.
+    // That difference is why this never reproduced anywhere but a phone.
     signal.onMessage { e ->
         val clientId = e.clientId
         when {
@@ -164,6 +178,10 @@ suspend fun runDepotReconnectListener(
             }
         }
     }
+
+    signal.register(depotId) { nonce -> signRegistration(depotIdentity.privateKey, depotId, nonce) }
+    cb.onStatus("registered, listening for reconnections")
+    cb.onRegistered(depotId)
 
     return DepotReconnectListener(depotId, signal, connections, senders)
 }
@@ -210,11 +228,16 @@ private suspend fun handleIncoming(
         val depotEphemeral = generateEphemeralKeyPair()
         val challengeNonce = randomBytes(16)
 
+        // Signed, so the Client can tell this answer comes from the Depot it
+        // paired with: Signal lets anyone register any id, and the session
+        // keys are ephemeral-only, so nothing else in §4 proves it.
+        val depotSig = signDepotChallenge(depotPrivateKey, clientEk, depotEphemeral.publicKey, challengeNonce)
         signal.relay(
             "CHALLENGE",
             JSONObject()
                 .put("depotEk", depotEphemeral.publicKey.toBase64())
-                .put("challengeNonce", challengeNonce.toBase64()),
+                .put("challengeNonce", challengeNonce.toBase64())
+                .put("depotSig", depotSig),
             clientId,
         )
 

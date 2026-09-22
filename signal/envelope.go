@@ -27,12 +27,14 @@ const (
 	TypeRevoke   = "revoke"   // Depot  -> Signal: revoke a clientId (routing optimisation only)
 	TypeWatch    = "watch"    // Client -> Signal: tell me when this Depot registers
 
-	TypeSessionCreated = "session_created" // Signal -> Client: room exists, safe to display the QR now
-	TypePeerJoined     = "peer_joined"     // Signal -> both: room is now paired
-	TypePeerLeft       = "peer_left"       // Signal -> remaining peer: other side disconnected
-	TypeIncoming       = "incoming"        // Signal -> Depot: a client is requesting reconnection
-	TypeError          = "error"           // Signal -> either: request could not be satisfied
-	TypeDepotOnline    = "depot_online"    // Signal -> watching Client: it just registered
+	TypeSessionCreated    = "session_created"    // Signal -> Client: room exists, safe to display the QR now
+	TypePeerJoined        = "peer_joined"        // Signal -> both: room is now paired
+	TypePeerLeft          = "peer_left"          // Signal -> remaining peer: other side disconnected
+	TypeIncoming          = "incoming"           // Signal -> Depot: a client is requesting reconnection
+	TypeError             = "error"              // Signal -> either: request could not be satisfied
+	TypeDepotOnline       = "depot_online"       // Signal -> watching Client: it just registered
+	TypeRegisterChallenge = "register_challenge" // Signal -> Depot: sign this nonce to register
+	TypeRegistered        = "registered"         // Signal -> Depot: the proof checked out, you are reachable
 )
 
 // Error reasons.
@@ -46,4 +48,5 @@ const (
 	ReasonNoRoute          = "no_route"
 	ReasonBadEnvelope      = "bad_envelope"
 	ReasonAlreadyConnected = "already_connected"
+	ReasonUnauthorized     = "unauthorized" // register: not signed by the key the depotId names
 )

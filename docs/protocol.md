@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.12 (draft)
+**Version:** 0.14 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -244,18 +244,32 @@ bearer token — see §4.
 ## 4. Reconnection
 
 A paired Client reconnecting does **not** repeat the QR flow, but must prove it
-holds the private half of `ClientIdentity`.
+holds the private half of `ClientIdentity` — and the Depot must prove it holds
+the private half of `DepotIdentity`, because Signal decides who answers a
+`connect` and Signal is not trusted to decide that honestly.
 
 ```
 CLIENT                          SIGNAL                        DEPOT
   ├─ RECONNECT {credential, clientEk} ───────────────────────>│
   │                                                            │
-  │<─── CHALLENGE {depotEk, challengeNonce} ───────────────────┤
+  │<─── CHALLENGE {depotEk, challengeNonce, depotSig} ─────────┤
   │                                                            │
   ├─ RESPONSE {Ed25519_sign(ClientIdentityPriv, transcript)} ─>│
   │                                                            │
   │<─── SESSION_OK ────────────────────────────────────────────┤
 ```
+
+`depotSig` is `Ed25519_sign(DepotIdentityPriv, T)` where
+`T = transcript("depot-reconnect-challenge/v1", clientEk, depotEk, challengeNonce)`
+(§3.3's length-prefixed concatenation). The Client MUST verify it against the
+`depotId` it stored at pairing **before** sending RESPONSE, and MUST treat a
+CHALLENGE without one as a failure. Without this step the Depot is never
+authenticated on reconnect: the session keys come from two ephemeral keys and
+nothing else, so anything able to answer a `connect` — Signal itself, or anyone
+able to register the Depot's id — could complete the handshake and receive
+whatever the user sends. Covering `clientEk` makes the signature useless for any
+other attempt; the label keeps it apart from everything else `DepotIdentity`
+signs (credentials, PAIR_RESPONSE, §7.1 registration).
 
 The Depot verifies:
 1. The credential signature is valid and made by its own `DepotIdentity`
@@ -543,6 +557,21 @@ variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
 Each of these is carried inside an encrypted control frame (§5.3), one
 message per frame — Signal sees only ciphertext and a monotonic counter.
 
+**`PART` — a message too large for one frame.** SCTP holds every message to
+the size it negotiated, and 64 KB is all a phone guarantees; a `MANIFEST`
+lists every chunk and a `LIST_OK` every entry, so both outgrow that — a
+`MANIFEST` somewhere under 100 MB of file at 64 KB chunks. A sender whose
+message is larger than 16 KB of UTF-8 cuts those bytes into pieces of at most
+16 KB and sends each, in order, as its own control frame:
+`{type: "PART", id, index, count, data}` where `data` is the piece in base64 and
+`id` is unique among the sender's messages for the session. The receiver gathers
+the pieces of an `id` and, once all `count` are in, parses the concatenated bytes
+as the message they were cut from and handles it as though it had arrived whole.
+Pieces of different messages may interleave. A receiver SHOULD bound what it
+gathers — the implementations refuse anything past 48 MB and hold at most four
+messages part-gathered — and each piece is still its own frame, with its own
+counter and replay check.
+
 **`REJECTED` (§4.2).** Sent by the Depot over the same relay route as
 `CHALLENGE`, carrying its reason in the payload.
 
@@ -698,6 +727,15 @@ there is visible to anything else on the device until the user moves it out, so
 the consent the writable flag was protecting is still asked for — about one real
 file, at the moment it means something, rather than in advance about a folder.
 
+**What bounds an upload is storage, not memory.** A Depot SHOULD gather an
+upload somewhere that does not grow with its size — writing each verified chunk
+to its place in a scratch file, and hashing the result back off disk — and
+refuse up front, before the Client sends anything, when there is not room to
+gather and then publish it. Holding the chunks in memory ties the largest
+acceptable file to the heap, which on a phone is small and not the user's to
+choose; the implementation this replaced needed twice an upload's size in
+memory and would have been killed well inside the limit it advertised.
+
 **A reservation that is not filled MUST be released.** Reserving a name before
 any bytes arrive is what makes "never overwrite" a property of the destination
 rather than a rule each transfer has to remember — but where reserving means
@@ -832,10 +870,29 @@ SDP/ICE signaling travel):
 |---|---|---|---|
 | `hello` | Client → Signal | `sessionId` | Opens a pairing room. Replied to with `session_created` once the room exists — **the Client must wait for this before rendering the QR**, otherwise a Depot that joins before the room is created sees `session_not_found`. |
 | `join` | Depot → Signal | `sessionId` | Joins an existing room (max 2 peers). Both sides then receive `peer_joined` and are relayed to each other. |
-| `register` | Depot → Signal | `depotId` | Announces presence for §4 reconnection. A later `register` with the same `depotId` supersedes the earlier connection. |
+| `register` | Depot → Signal | `depotId`, then `payload: {sig}` | Announces presence for §4 reconnection, in two steps. A `register` with no payload is answered with `register_challenge` carrying `payload: {nonce}` (32 random bytes, base64); the Depot answers with a second `register` whose `sig` is `Ed25519_sign(DepotIdentityPriv, transcript("depot-signal-register/v1", depotId, nonce))`. Only a signature that verifies against the key the `depotId` *is* registers anything, and Signal replies `registered`; otherwise `unauthorized`. The nonce is good for that connection's next answer only. A registration that succeeds supersedes any earlier connection for the same `depotId`. |
 | `connect` | Client → Signal | `depotId`, `clientId`, `payload` (the RECONNECT body) | Requests a route to an online Depot. Forwarded to the Depot as `incoming` with the same `payload`, saving a round trip. |
 | `revoke` | Depot → Signal | `clientId` | Routing-only optimisation for §6: future `connect`s for this `clientId` are rejected with `client_revoked`, and any in-flight route is torn down. Correctness never depends on this — see §6. |
 | `watch` | Client → Signal | `depotId` | Asks to be told when that Depot registers. Answered with one `depot_online`, at once if it is already registered, and the Client's socket must stay open to receive it. Signal forgets the watcher when it sends the notice or when the socket goes. |
+
+**Why registration is signed.** Every Client ever paired with a Depot knows its
+`depotId`, including ones since revoked. When knowing it was enough to register,
+any of them could push the real Depot off Signal, answer its Clients (which
+§4's `depotSig` now stops from going further), and `revoke` those Clients at
+Signal until it restarted. Signal is still trusted for availability only; this
+makes availability something only the Depot's key can take away, short of
+Signal itself misbehaving.
+
+**A Depot MUST be listening before it sends `register`.** Registering is the
+moment Signal begins routing Clients to it and tells any that were watching, so
+the first `incoming` can arrive within one round trip of it. On a runtime that
+reads its socket on another thread — OkHttp on Android, among many — a message
+can be delivered between the `register` call returning and the next line
+running, and one that arrives before a listener exists is simply gone. The
+Client then waits out its timeout for a CHALLENGE that is never coming. This
+was invisible on the web Depot, where JavaScript cannot deliver a message
+between two synchronous calls, and cost twenty to thirty seconds on every
+phone reconnection once `watch` made the first request prompt.
 
 **A Client SHOULD wait on `watch` rather than asking again.** A Depot's owner
 switching it on is a moment Signal knows about exactly when it happens, and
@@ -847,9 +904,9 @@ socket held open for hours may be dropped by something in between — but it
 should be the thing that catches the rare miss rather than the mechanism.
 
 Signal-originated notices: `session_created`, `peer_joined`, `peer_left`,
-`incoming`, `depot_online`, and `error` (with a `reason`: `session_expired`, `session_full`,
+`incoming`, `depot_online`, `register_challenge`, `registered`, and `error` (with a `reason`: `session_expired`, `session_full`,
 `session_not_found`, `depot_offline`, `client_revoked`, `rate_limited`,
-`no_route`, `bad_envelope`, `already_connected`).
+`no_route`, `bad_envelope`, `already_connected`, `unauthorized`).
 
 A Depot's `register` connection is long-lived and may have several clients
 mid-reconnect concurrently; Signal demultiplexes by tagging relayed envelopes
@@ -895,6 +952,8 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.14 | 2026-09-25 | §5.8: `PART`, so a control message larger than one data-channel message — the `MANIFEST` of a file of a hundred megabytes or so, the `LIST_OK` of a folder of a few thousand files — is sent in pieces instead of refused by the channel. Chunks were already fitted to SCTP's limit; the messages describing them were not. §4: the Depot signs CHALLENGE (`depotSig`) and the Client verifies it against the stored `depotId` before answering. Nothing in §4 authenticated the Depot before — the session keys are ephemeral-only — so whatever answered a `connect` could complete the handshake and collect what the user sent. §7.1: `register` is proved with a signature over a nonce Signal issues, so knowing a `depotId` no longer lets anyone push the Depot off Signal or revoke its Clients there. Not backwards compatible: Client, Depot and Signal must all be at 0.14. |
+| 0.13 | 2026-09-24 | §7.1: a Depot MUST be listening before it sends `register`. On a runtime that reads its socket on another thread a message can arrive between the two, and the first `incoming` after a registration — prompt since `watch` — was being dropped, costing twenty to thirty seconds on every phone reconnection and never reproducing on the JavaScript Depot. §5.10: what bounds an upload is storage, not memory, and a Depot should gather one on disk and refuse up front when there is no room. |
 | 0.12 | 2026-09-23 | §7.1: add `watch` / `depot_online`, so a Client waiting for a Depot is told the moment it registers instead of asking again on a timer. No polling interval is both immediate and cheap, and the one in use left someone watching a failure screen for half a minute after switching their phone on. Polling stays as the fallback for a notice that goes missing. §5.10: a reservation that is not filled MUST be released — where reserving means creating the file, every failed upload was leaving an empty one behind that still held its name. |
 | 0.11 | 2026-09-22 | §5.4: bound `maxChunkSize` by what the data channel will carry in one message, not only by what an implementation would like to build. SCTP negotiates a maximum and enforces it, and nothing consulted it: every session starts at §5.5's 64 KB tier, whose frames fit everywhere, so this only appeared once a link measured well and the tier climbed — a download went silent because libwebrtc drops a refused frame without a word, and an upload failed with the browser's exception. Also §5.4: optional advisory `network` and `metered`, which only one end can know. §5.6: a metered peer's chunks are compressed whatever the link measures, because where bytes are billed the comparison is no longer processor time against wire time. |
 | 0.10 | 2026-09-22 | §5.10: a Depot SHOULD also expose an inbox of its own that needs no grant. Requiring a writable folder made receiving conditional on a setup step taken on the phone, for a file its owner had just asked for, and a feature reachable only after configuration is one most people never find. Storage the Depot application owns is not the user's own storage, so nothing reaches the device at large until the user moves it — the consent the flag protected is asked about one real file instead of in advance about a folder. §5.6: the compression decision now also weighs the link's measured speed, because packing a chunk is not overlapped with sending it and a codec slower than the wire costs more time than it saves. |

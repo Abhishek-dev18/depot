@@ -4,7 +4,8 @@ import { issueCredential, verifyCredential } from '../crypto/credential'
 import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair, randomBytes } from '../crypto/keys'
 import type { KeyPair } from '../crypto/keys'
-import { reconnectTranscript, verifyReconnectResponse } from '../crypto/reconnect'
+import { reconnectTranscript, signDepotChallenge, verifyReconnectResponse } from '../crypto/reconnect'
+import { signRegistration } from '../crypto/registration'
 import { getDevice, touchDevice } from '../storage/devices'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { SignalClient } from '../signal/client'
@@ -72,16 +73,17 @@ export async function runDepotReconnectListener(
   const client = new SignalClient(signalUrl)
   await client.ready()
 
-  client.register(depotId)
-  cb.onStatus('registered, listening for reconnections')
-  cb.onRegistered(depotId)
-
   // protocol.md §6 step 3 — "Any live DataChannel to that Client is closed
   // immediately" is the step that actually matters; signal-level REVOKE is
   // only the routing optimisation. Track live connections so revoke() can do it.
   const activeConnections = new Map<string, () => void>()
   const senders = new Map<string, RunningSender>()
 
+  // Listening before registering. JavaScript cannot deliver a message
+  // between two synchronous calls, so the other order was safe here by
+  // accident — and the Android Depot, where it was not, lost the first
+  // request after every registration. Written the safe way so that
+  // neither side depends on how its runtime schedules a socket.
   const unsubscribe = client.onMessage((e) => {
     if (e.type === 'incoming' && e.clientId) {
       void handleIncoming(
@@ -89,6 +91,10 @@ export async function runDepotReconnectListener(
       )
     }
   })
+
+  client.register(depotId, (nonce) => signRegistration(depotIdentity.privateKey, depotId, nonce))
+  cb.onStatus('registered, listening for reconnections')
+  cb.onRegistered(depotId)
 
   return {
     depotId,
@@ -137,9 +143,16 @@ async function handleIncoming(
 
     const depotEphemeral = await generateEphemeralKeyPair()
     const challengeNonce = await randomBytes(16)
+    const clientEkBytes = fromBase64(clientEk)
+    const depotSig = await signDepotChallenge(
+      depotIdentity.privateKey,
+      clientEkBytes,
+      depotEphemeral.publicKey,
+      challengeNonce,
+    )
     client.relay(
       'CHALLENGE',
-      { depotEk: toBase64(depotEphemeral.publicKey), challengeNonce: toBase64(challengeNonce) },
+      { depotEk: toBase64(depotEphemeral.publicKey), challengeNonce: toBase64(challengeNonce), depotSig },
       clientId,
     )
 
@@ -150,7 +163,6 @@ async function handleIncoming(
     if (response.type !== 'RESPONSE') throw new Error('client disconnected before responding')
 
     const { sig } = response.payload as { sig: string }
-    const clientEkBytes = fromBase64(clientEk)
     const transcript = reconnectTranscript(clientEkBytes, depotEphemeral.publicKey, challengeNonce)
     const clientIdentityPub = fromBase64(clientId)
     if (!(await verifyReconnectResponse(sig, transcript, clientIdentityPub))) {

@@ -23,6 +23,10 @@ export const TypeIncoming = 'incoming'
 export const TypeError = 'error'
 /** Signal -> a watching Client: the Depot it asked about just registered. */
 export const TypeDepotOnline = 'depot_online'
+/** Signal -> a registering Depot: sign this nonce to prove it is you (§7.1). */
+export const TypeRegisterChallenge = 'register_challenge'
+/** Signal -> a Depot whose proof checked out: Clients can reach it now. */
+export const TypeRegistered = 'registered'
 
 export const ReasonSessionExpired = 'session_expired'
 export const ReasonSessionFull = 'session_full'
@@ -33,3 +37,5 @@ export const ReasonRateLimited = 'rate_limited'
 export const ReasonNoRoute = 'no_route'
 export const ReasonBadEnvelope = 'bad_envelope'
 export const ReasonAlreadyConnected = 'already_connected'
+/** A register not signed by the key its depotId names. */
+export const ReasonUnauthorized = 'unauthorized'
