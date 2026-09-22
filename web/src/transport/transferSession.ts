@@ -4,6 +4,7 @@ import { cachedChunks, dropChunks, getChunk, putChunks } from '../storage/chunkC
 import { AdaptiveChunkSize, cdcParamsForAvg, sampleNetwork } from './chunkSize'
 import { compress, decompress, shouldCompress } from './compression'
 import { LinkSpeed } from './linkSpeed'
+import { maxChunkBytesFor } from './messageSize'
 import { Direction, decodeChunkFrame, decodeCtlFrame, encodeChunkFrame, encodeCtlFrame } from './frame'
 import { buildManifest, hashBytes, type ChunkInfo, type Manifest } from './manifest'
 import { validateManifest, validateUploadName } from './validate'
@@ -16,6 +17,15 @@ export interface SessionKeys {
 
 /** protocol.md §5.4 CAPS — the intersection governs the session. */
 interface CapsMessage {
+  /**
+   * What the peer is connected by, and whether it pays for the bytes.
+   *
+   * Advisory, and only one side can know it: a browser has no way to
+   * find out whether the phone it is talking to is on a metered plan.
+   * Absent from an older peer, which is why nothing depends on it.
+   */
+  network?: string
+  metered?: boolean
   type: 'CAPS'
   protocolVersion: number
   compression: string[]
@@ -313,9 +323,18 @@ async function waitForDrain(data: RTCDataChannel): Promise<void> {
   })
 }
 
-async function exchangeCaps(ctl: CtlCodec): Promise<CapsMessage> {
+/**
+ * §5.4, with the transport's own limit folded into what we advertise.
+ *
+ * OUR_CAPS names the largest chunk this implementation is willing to
+ * build. The data channel has the final say on what it will carry in one
+ * message, and it is a hard limit — so the number that goes on the wire
+ * is the smaller of the two. Advertising the ambition rather than the
+ * ability is how both peers came to build frames that could not be sent.
+ */
+async function exchangeCaps(ctl: CtlCodec, transportMax: number): Promise<CapsMessage> {
   const reply = ctl.waitFor((m): m is CapsMessage => m.type === 'CAPS', 10_000)
-  await ctl.send(OUR_CAPS)
+  await ctl.send({ ...OUR_CAPS, maxChunkSize: Math.min(OUR_CAPS.maxChunkSize, transportMax) })
   return reply
 }
 
@@ -595,7 +614,7 @@ export async function runFileSender(
   // our own ceiling: until the peer has said what it accepts, the only
   // safe assumption is the least it could have said. Costs nothing in
   // practice — the adaptive sizer (§5.5) starts at the same tier.
-  let maxChunkSize = MIN_CAPS_CHUNK_SIZE
+  let maxChunkSize = Math.min(MIN_CAPS_CHUNK_SIZE, maxChunkBytesFor(channels.pc))
 
   const statsTimer = setInterval(() => {
     void sampleNetwork(channels.pc).then((sample) => {
@@ -608,7 +627,15 @@ export async function runFileSender(
   // Depot that has not started listening yet, and the message would be
   // dropped with nothing to retry it.
   const unsubscribe = ctl.onMessage((msg) => {
-    void handleCtl(msg)
+    // Reported rather than dropped. `void` on its own turns a serving
+    // failure into an unhandled rejection nobody sees, and the Client
+    // waiting for the answer just stops — which is what an oversized
+    // frame looked like from the outside: a transfer stuck at 3%.
+    void handleCtl(msg).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err)
+      onEvent({ type: 'error', message })
+      void ctl.send({ type: 'ERROR', message }).catch(() => {})
+    })
   })
 
   /**
@@ -626,9 +653,12 @@ export async function runFileSender(
    * needs no waiting: the ceiling starts at the lowest tier and CAPS
    * only ever raises it.
    */
-  void exchangeCaps(ctl)
+  const transportMax = maxChunkBytesFor(channels.pc)
+  let peerIsMetered = false
+  void exchangeCaps(ctl, transportMax)
     .then((peerCaps) => {
-      maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize)
+      maxChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize, transportMax)
+      peerIsMetered = peerCaps.metered === true
     })
     .catch(() => {
       // Nothing to do: the ceiling starts at §5.5's lowest tier, which
@@ -886,7 +916,7 @@ export async function runFileSender(
         // LAN the codec is slower than the wire, and packing a chunk
         // costs more time than the smaller chunk saves. See
         // compression.ts for the arithmetic and the measurements.
-        if (shouldCompress(plaintext, linkSpeed.current())) {
+        if (shouldCompress(plaintext, linkSpeed.current(), peerIsMetered)) {
           const packed = await compress(plaintext)
           if (packed.length < plaintext.length) {
             payload = packed
@@ -1015,11 +1045,21 @@ export async function openClientSession(
   keys: SessionKeys,
 ): Promise<ClientSession> {
   const ctl = createCtlCodec(channels, keys, 'client')
-  const peerCaps = await exchangeCaps(ctl)
+  const transportMax = maxChunkBytesFor(channels.pc)
+  const peerCaps = await exchangeCaps(ctl, transportMax)
   // §5.4: the smaller of the two, and the figure a manifest is checked
   // against. A Depot is free to send smaller chunks; one larger than
   // this is a disagreement about a number both sides just settled.
-  const negotiatedChunkSize = Math.min(OUR_CAPS.maxChunkSize, peerCaps.maxChunkSize || OUR_CAPS.maxChunkSize)
+  const peerIsMetered = peerCaps.metered === true
+  const uploadSpeed = new LinkSpeed()
+  const negotiatedChunkSize = Math.min(
+    OUR_CAPS.maxChunkSize,
+    peerCaps.maxChunkSize || OUR_CAPS.maxChunkSize,
+    // What this connection will actually carry in one message. A peer
+    // that advertises more than our channel can send would otherwise
+    // have us build frames that throw on the way out.
+    transportMax,
+  )
 
   async function list(handle: string): Promise<DirEntry[]> {
     const pending = ctl.waitFor(
@@ -1148,7 +1188,10 @@ export async function openClientSession(
 
       let payload = plaintext
       let compressed = false
-      if (shouldCompress(plaintext)) {
+      // The direction where the peer's own answer matters most: these
+      // bytes land on the phone, so it is the phone's plan that pays for
+      // them. §5.6, with §5.4's advisory flag.
+      if (shouldCompress(plaintext, uploadSpeed.current(), peerIsMetered)) {
         const packed = await compress(plaintext)
         if (packed.length < plaintext.length) {
           payload = packed
@@ -1163,7 +1206,10 @@ export async function openClientSession(
         compressed,
       })
       await waitForDrain(channels.data)
+      const putOnWireAt = performance.now()
       channels.data.send(new Uint8Array(frame))
+      // Measured around the wait, not around the codec: see linkSpeed.ts.
+      uploadSpeed.sample(payload.length, performance.now() - putOnWireAt)
 
       bytesSent += info.length
       onEvent({

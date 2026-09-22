@@ -21,11 +21,31 @@ import org.webrtc.DataChannel
 class SessionKeys(val kC2D: ByteArray, val kD2C: ByteArray)
 
 /** protocol.md §5.4 — the intersection of both CAPS governs the session. */
+/**
+ * What a single message on a data channel may carry, less the frame
+ * wrapped around it (§5.3 header plus the AEAD tag).
+ *
+ * SCTP negotiates this in the SDP and it is a hard limit, not a
+ * suggestion — and libwebrtc enforces it by returning false from send()
+ * rather than raising, so an oversized frame vanishes and the transfer
+ * simply stops. That is what a download stalling at a few percent was.
+ *
+ * 64 KB because RFC 8831 §6.6 requires every implementation to handle at
+ * least that much, and libwebrtc's Java API does not expose the figure
+ * actually negotiated. Claiming more than can be guaranteed is what
+ * caused this; claiming what is guaranteed costs a little throughput and
+ * works. If the negotiated value ever becomes readable from here, this
+ * can rise to meet it — CAPS already takes the smaller of the two ends.
+ */
+private const val SAFE_MESSAGE_BYTES = 64 * 1024
+private const val CHUNK_FRAME_OVERHEAD = 10 + 16
+private const val MAX_CHUNK_BYTES = SAFE_MESSAGE_BYTES - CHUNK_FRAME_OVERHEAD
+
 private val OUR_CAPS = JSONObject()
     .put("type", "CAPS")
     .put("protocolVersion", 1)
     .put("compression", org.json.JSONArray(listOf("deflate", "none")))
-    .put("maxChunkSize", 1024 * 1024)
+    .put("maxChunkSize", MAX_CHUNK_BYTES)
     .put("features", org.json.JSONArray(listOf("cdc", "browse", "upload")))
 
 /**
@@ -79,7 +99,12 @@ class CtlCodec(
         // that overtaking is not hypothetical.
         synchronized(sendLock) {
             val frame = encodeCtlFrame(sendKey, sendDirection, sendCounter.getAndIncrement(), plaintext)
-            channel.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))
+            // Same reason as the chunk path: a refusal here is silent
+            // unless it is looked at, and a dropped ctl message is a
+            // peer waiting for an answer that will never come.
+            if (!channel.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))) {
+                throw IllegalStateException("the control channel refused a ${frame.size} byte frame")
+            }
         }
     }
 
@@ -145,6 +170,15 @@ class FileSender(
     private val source: DepotSource,
     private val scope: CoroutineScope,
     private val cb: TransferCallbacks,
+    /**
+     * What this phone is connected by, told to the Client in CAPS.
+     *
+     * Advisory, and only one side can know it: a browser has no way to
+     * find out whether the phone it is talking to is paying for every
+     * byte. Telling it lets the other direction make the same decision
+     * about compression this side already makes — see §5.6.
+     */
+    private val network: () -> NetworkState = { NetworkState.Unknown },
 ) {
     private val ctl = CtlCodec(channels.ctl, keys, isDepot = true)
     // Every ctl message is handled in its own coroutine, so everything
@@ -177,7 +211,7 @@ class FileSender(
      * is willing to take.
      */
     @Volatile
-    private var peerMaxChunkSize = 64 * 1024
+    private var peerMaxChunkSize = MAX_CHUNK_BYTES
     private val chunkSizer = AdaptiveChunkSize()
     private var sampler: Job? = null
 
@@ -203,7 +237,14 @@ class FileSender(
             }
         })
 
-        ctl.send(OUR_CAPS)
+        // A fresh object each time: OUR_CAPS is shared and the network
+        // can change under a session that is already running.
+        val net = network()
+        ctl.send(
+            JSONObject(OUR_CAPS.toString())
+                .put("network", net.type.wireName())
+                .put("metered", net.metered),
+        )
 
         // protocol.md §5.5. Sampling on a timer rather than once per
         // transfer is what gives the EWMA anything to smooth: a single
@@ -235,7 +276,7 @@ class FileSender(
         val type = msg.optString("type")
         try {
             when (type) {
-                "CAPS" -> peerMaxChunkSize = msg.optInt("maxChunkSize", 64 * 1024)
+                "CAPS" -> peerMaxChunkSize = msg.optInt("maxChunkSize", MAX_CHUNK_BYTES)
                 "LIST" -> handleList(msg)
                 "REQUEST_FILE" -> handleRequestFile(msg)
                 "NEED" -> handleNeed(msg)
@@ -516,7 +557,16 @@ class FileSender(
                 )
 
                 awaitDrain()
-                channels.data.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))
+                // libwebrtc says no by returning false, not by raising.
+                // Ignoring that let an oversized or refused frame vanish
+                // and the transfer stop at whatever percentage it had
+                // reached, with nothing on either screen to say why.
+                if (!channels.data.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))) {
+                    val why = "the data channel refused a ${frame.size} byte frame"
+                    ctl.send(err(why))
+                    cb.onError(why)
+                    return
+                }
 
                 bytesSent += info.length
                 cb.onChunkSent(index, manifest.chunkCount, bytesSent, manifest.size)

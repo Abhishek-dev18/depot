@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.10 (draft)
+**Version:** 0.11 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -422,6 +422,22 @@ The intersection governs the session. This message is what allows new transports
 compression algorithms and features to be added later without breaking older
 clients.
 
+**`maxChunkSize` is bounded by what the transport will carry, not only by what
+the implementation would like to build.** SCTP negotiates a maximum message size
+and enforces it — a browser throws, and libwebrtc returns false without a word —
+so a peer MUST advertise the smaller of its own ceiling and the figure its data
+channel reports, and MUST NOT build a frame larger than the result. Where the
+negotiated figure cannot be read, 64 KB is the value RFC 8831 §6.6 requires every
+implementation to handle and is therefore the largest that is safe to assume. A
+very large reported figure should not be taken at face value: implementations
+disagree about fragmenting messages that far, and chunks past 256 KB buy little.
+
+**`network` and `metered` are optional and advisory.** They say what the sender
+is connected by (`"wifi"`, `"cellular"`, `"other"`, `"unknown"`) and whether it
+pays for the bytes it moves. Only one end can know this — a browser cannot see
+its peer's data plan — and §5.6 is the only thing that reads it. A peer that
+sends neither field is not making a claim, and nothing may depend on them.
+
 **A Depot MUST NOT wait for the Client's `CAPS` before treating the session as
 live.** It sends its own, starts answering, and applies the Client's when it
 arrives; until then it assumes the peer accepts no more than the smallest chunk
@@ -470,6 +486,13 @@ saving is large and one-sided: on an 8 Mbps mobile link a compressible megabyte
 takes about 160 ms packed against 1000 ms raw. Above it the codec becomes the
 slow part, and compressing an ordinary text file over a direct LAN connection
 more than doubles the time it takes.
+
+A metered connection changes the question rather than the answer. The comparison
+above is between processor time and wire time; where the wire is billed by the
+byte it costs money as well as time and the processor does not, so a peer that
+§5.4 reports as `metered` SHOULD have its chunks compressed whatever the link
+measures. The peer is the only one that can know this, which is why it travels
+in CAPS rather than being inferred.
 
 So a Depot SHOULD weigh the link's own speed alongside entropy, measured from
 the transfer rather than probed for, and SHOULD compress while it has no
@@ -853,6 +876,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.11 | 2026-09-22 | §5.4: bound `maxChunkSize` by what the data channel will carry in one message, not only by what an implementation would like to build. SCTP negotiates a maximum and enforces it, and nothing consulted it: every session starts at §5.5's 64 KB tier, whose frames fit everywhere, so this only appeared once a link measured well and the tier climbed — a download went silent because libwebrtc drops a refused frame without a word, and an upload failed with the browser's exception. Also §5.4: optional advisory `network` and `metered`, which only one end can know. §5.6: a metered peer's chunks are compressed whatever the link measures, because where bytes are billed the comparison is no longer processor time against wire time. |
 | 0.10 | 2026-09-22 | §5.10: a Depot SHOULD also expose an inbox of its own that needs no grant. Requiring a writable folder made receiving conditional on a setup step taken on the phone, for a file its owner had just asked for, and a feature reachable only after configuration is one most people never find. Storage the Depot application owns is not the user's own storage, so nothing reaches the device at large until the user moves it — the consent the flag protected is asked about one real file instead of in advance about a folder. §5.6: the compression decision now also weighs the link's measured speed, because packing a chunk is not overlapped with sending it and a codec slower than the wire costs more time than it saves. |
 | 0.9 | 2026-09-21 | §5.4: forbid waiting for the peer's `CAPS` before treating the session as live, and fix the assumed chunk size for a peer that has said nothing to §5.5's floor. Both Depots gated on it, so a lost `CAPS` produced a session that answered `LIST` but was recorded as nobody — `SHARED_CHANGED` went nowhere and a newly shared file appeared only on a reload. §5.9: say that several files may be offered at once outside any folder, and what a handle-less `REQUEST_FILE` means when there are. |
 | 0.8 | 2026-09-20 | Add §5.10 upload — `PUT` / `PUT_OK` / `PUT_DONE`, the one direction in which a Client causes the Depot to write. Gated on a per-grant writable flag that defaults to off, because granting a folder to read from is not consent to have things put in it. Never overwrites; verifies before publishing. |

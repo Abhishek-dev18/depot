@@ -19,10 +19,12 @@ import com.depot.app.signal.TYPE_ERROR
 import com.depot.app.signal.TYPE_INCOMING
 import com.depot.app.signal.TYPE_PEER_LEFT
 import com.depot.app.storage.DeviceStore
+import com.depot.app.storage.Settings
 import com.depot.app.storage.IdentityStore
 import com.depot.app.transport.ConnectionType
 import com.depot.app.transport.DepotSource
 import com.depot.app.transport.FileSender
+import com.depot.app.transport.Network
 import com.depot.app.transport.SessionKeys
 import com.depot.app.transport.TransferCallbacks
 import com.depot.app.transport.TurnConfig
@@ -272,6 +274,10 @@ private suspend fun handleIncoming(
             keys = SessionKeys(keys.kC2D, keys.kD2C),
             source = source,
             scope = scope,
+            // Read when CAPS goes out rather than captured here: a phone
+            // walks off its Wi-Fi mid-session more often than it opens a
+            // new one.
+            network = { Network.effective(context, Settings.network(context)) },
             cb = object : TransferCallbacks {
                 override fun onManifestSent(transferId: Int, chunkCount: Int) {
                     cb.onStatus("offering $chunkCount chunk(s)")

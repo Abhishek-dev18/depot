@@ -75,23 +75,62 @@ class SaysNothing extends FakeChannel {
   override send(): void {}
 }
 
+/**
+ * A channel that enforces a maximum message size, as a real one does.
+ *
+ * The plain FakeChannel has no limit at all, which is why every test in
+ * this file passed while both directions were building frames the wire
+ * would refuse. The message is the one Chrome produces.
+ */
+class RefusesOversized extends FakeChannel {
+  limit = Number.POSITIVE_INFINITY
+
+  override send(data: Uint8Array): void {
+    if (data.length > this.limit) {
+      throw new Error(
+        "Failed to execute 'send' on 'RTCDataChannel': " +
+          'Trying to send message larger than max-message-size',
+      )
+    }
+    super.send(data)
+  }
+}
+
 function linkedChannels(
-  options: { clientCtl?: () => FakeChannel; depotData?: () => FakeChannel } = {},
+  options: {
+    clientCtl?: () => FakeChannel
+    depotData?: () => FakeChannel
+    /** What SCTP negotiated, enforced on both ends as a real link does. */
+    maxMessageSize?: number
+  } = {},
 ): { client: DataChannels; depot: DataChannels } {
-  const make = (a: FakeChannel = new FakeChannel()) => {
-    const b = new FakeChannel()
+  const limited = () => {
+    const c = new RefusesOversized()
+    if (options.maxMessageSize !== undefined) c.limit = options.maxMessageSize
+    return c
+  }
+  /**
+   * Both ends of a pair, because a limit only one end enforces proves
+   * only half of anything — and got this wrong once already: with the
+   * Depot's data channel unlimited, serving oversized frames sailed
+   * through a test written to catch exactly that.
+   */
+  const makePair = (a?: FakeChannel, b?: FakeChannel) => {
+    a ??= limited()
+    b ??= limited()
     a.peer = b
     b.peer = a
     return [a, b] as const
   }
-  const [clientCtl, depotCtl] = make(options.clientCtl?.())
-  const [depotData, clientData] = options.depotData
-    ? make(options.depotData())
-    : (([a, b]) => [b, a] as const)(make())
+  const [clientCtl, depotCtl] = makePair(options.clientCtl?.())
+  const [depotData, clientData] = makePair(options.depotData?.())
 
   // sampleNetwork() only iterates the report, so an empty one is a valid
   // "nothing to learn yet" and leaves the chunk sizer at its default.
-  const pc = { getStats: () => Promise.resolve(new Map()) } as unknown as RTCPeerConnection
+  const pc = {
+    getStats: () => Promise.resolve(new Map()),
+    sctp: options.maxMessageSize === undefined ? null : { maxMessageSize: options.maxMessageSize },
+  } as unknown as RTCPeerConnection
 
   const wrap = (ctl: FakeChannel, data: FakeChannel): DataChannels => ({
     pc,
@@ -127,8 +166,11 @@ async function bytesOf(file: { blob: Blob }): Promise<number[]> {
   return Array.from(new Uint8Array(await file.blob.arrayBuffer()))
 }
 
-async function connect(source: DepotSource) {
-  const { client, depot } = linkedChannels()
+async function connect(
+  source: DepotSource,
+  options: Parameters<typeof linkedChannels>[0] = {},
+) {
+  const { client, depot } = linkedChannels(options)
   const k = keys()
   const sent: number[] = []
   const [sender, session] = await Promise.all([
@@ -247,7 +289,12 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
       manifest.chunks.map((c) => [c.hash, file.bytes.slice(c.offset, c.offset + c.length)] as [string, Uint8Array]),
     )
 
-    const { session, stop, sent } = await connect(singleFileSource(() => file))
+    // A link generous enough to leave the chunking alone: this test
+    // seeds the cache from explicit parameters, so the sender has to
+    // arrive at the same boundaries for the seeding to mean anything.
+    const { session, stop, sent } = await connect(singleFileSource(() => file), {
+      maxMessageSize: 1024 * 1024,
+    })
     const [entry] = await session.list('')
     const received = await session.fetch(entry.handle)
 
@@ -267,7 +314,12 @@ describe('transfer session over ctl (protocol.md §5.7, §5.9)', () => {
       held.map((c) => [c.hash, file.bytes.slice(c.offset, c.offset + c.length)] as [string, Uint8Array]),
     )
 
-    const { session, stop, sent } = await connect(singleFileSource(() => file))
+    // A link generous enough to leave the chunking alone: this test
+    // seeds the cache from explicit parameters, so the sender has to
+    // arrive at the same boundaries for the seeding to mean anything.
+    const { session, stop, sent } = await connect(singleFileSource(() => file), {
+      maxMessageSize: 1024 * 1024,
+    })
     const [entry] = await session.list('')
     const received = await session.fetch(entry.handle)
 
@@ -824,4 +876,72 @@ describe('chunk sizes against the ceiling CAPS agreed', () => {
     session.close()
     stop()
   })
+})
+
+/**
+ * The limit SCTP actually enforces, which nothing consulted.
+ *
+ * A data channel negotiates a maximum message size and holds to it: a
+ * browser throws "Trying to send message larger than max-message-size",
+ * and libwebrtc returns false from send() without a word. Chunk sizes
+ * were chosen from §5.4's CAPS and §5.5's tiers alone, as though the
+ * wire would carry whatever it was handed.
+ *
+ * It mostly did, by luck: §5.5 starts every session at 64 KB, whose
+ * frames fit inside every implementation's limit. Once a link measured
+ * well and the tier climbed, the frames outgrew the channel. A download
+ * stopped at a few percent, because the Depot's sends were being dropped
+ * silently; an upload failed outright with the browser's exception. On a
+ * fake channel with no limit, neither can happen — which is why every
+ * test here passed while both directions were broken on real hardware.
+ */
+describe('a channel that enforces its maximum message size', () => {
+  // What a phone's libwebrtc guarantees, and what this now assumes when
+  // a connection does not say: RFC 8831 §6.6.
+  const PHONE_LIMIT = 64 * 1024
+
+  const force = (n: number | undefined) => {
+    ;(globalThis as { DEPOT_FORCE_CHUNK_TIER?: number }).DEPOT_FORCE_CHUNK_TIER = n
+  }
+  afterEach(() => force(undefined))
+
+  it('serves a large file over it, at the tier that used to break', async () => {
+    const file = fileOf('DSC_0409.JPG', 1_500_000, 31)
+    const { session, stop } = await connect(singleFileSource(() => file), {
+      maxMessageSize: PHONE_LIMIT,
+    })
+    const entries = await session.list('')
+
+    force(1024 * 1024)
+    const got = await session.fetch(entries[0].handle)
+    expect(await bytesOf(got)).toEqual(Array.from(file.bytes))
+
+    session.close()
+    stop()
+  }, 30_000)
+
+  it('sends a photograph up over it', async () => {
+    // The sizes from the report: the 150 KB file arrived and everything
+    // over a megabyte failed.
+    const folder = writableFolder()
+    const { session, stop } = await connect(
+      {
+        list: (handle) =>
+          handle === '' ? [{ handle: 'inbox', name: 'Inbox', kind: 'dir' as const }] : [],
+        open: () => null,
+        writable: (handle) => (handle === 'inbox' ? folder.target : null),
+      },
+      { maxMessageSize: PHONE_LIMIT },
+    )
+    const entries = await session.list('')
+    const inbox = entries.find((e) => e.kind === 'dir')!
+
+    const photo = fileOf('ChatGPT Image.png', 1_900_000, 32)
+    const stored = await session.send(inbox.handle, { name: photo.name, bytes: photo.bytes })
+    expect(stored).toBe(photo.name)
+    expect(Array.from(folder.files.get(photo.name)!)).toEqual(Array.from(photo.bytes))
+
+    session.close()
+    stop()
+  }, 30_000)
 })

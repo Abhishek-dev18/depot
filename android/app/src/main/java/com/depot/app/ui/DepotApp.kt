@@ -21,6 +21,7 @@ import com.depot.app.ui.components.FailState
 import com.depot.app.ui.components.SheetButton
 import com.depot.app.service.OfferedSummary
 import com.depot.app.service.ReceivedFile
+import com.depot.app.transport.NetworkPreference
 import com.depot.app.ui.theme.DepotColors
 
 /**
@@ -39,6 +40,7 @@ fun DepotApp(
     onPickFile: () -> Unit,
     onRemoveFile: (OfferedSummary) -> Unit,
     onOpenReceived: (ReceivedFile) -> Unit,
+    onNetworkPreference: (NetworkPreference) -> Unit,
     onSaveReceived: (ReceivedFile) -> Unit,
     onAddFolder: () -> Unit,
     onToggleGrant: (GrantView, Boolean) -> Unit,
@@ -126,6 +128,7 @@ fun DepotApp(
                 state = state,
                 onSignalUrlChange = onSignalUrlChange,
                 onTurnChange = onTurnChange,
+                onNetworkPreference = onNetworkPreference,
                 onToggleListening = onToggleListening,
                 onBack = { settingsOpen = false },
             )
