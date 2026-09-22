@@ -38,13 +38,30 @@ object IdentityStore {
     private const val GCM_TAG_BITS = 128
     private const val NONCE_BYTES = 12
 
+    // Synchronized: pairing and the reconnect listener both call this, and
+    // on a first launch two callers each finding nothing stored would mint
+    // two identities — one of them handed to a Client and then overwritten.
+    @Synchronized
     fun loadOrCreate(context: Context): KeyPair {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.getString(KEY_IDENTITY, null)?.let { stored ->
-            return decode(decrypt(stored))
+            val restored = runCatching { decode(decrypt(stored)) }.getOrNull()
+            if (restored != null) return restored
+            // Stored, but no longer readable: the wrapping key is gone. It
+            // lives in the keystore and never leaves this phone, so this is
+            // a blob copied from another one (a restore, a device transfer)
+            // or a keystore that was reset. The identity it held cannot be
+            // recovered by anyone, and refusing to start would fail here on
+            // every launch for ever. A new identity is the only way on;
+            // every Client has to pair again, and the device list — records
+            // of Clients whose credentials the new key cannot vouch for — is
+            // cleared rather than left showing pairings that cannot work.
+            DeviceStore.clear(context)
         }
         val created = generateIdentityKeyPair()
-        prefs.edit().putString(KEY_IDENTITY, encrypt(encode(created))).apply()
+        // commit(), not apply(): this key is about to be put in front of a
+        // Client, and must not be lost to a process death a moment later.
+        prefs.edit().putString(KEY_IDENTITY, encrypt(encode(created))).commit()
         return created
     }
 

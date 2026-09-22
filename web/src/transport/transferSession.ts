@@ -1,4 +1,4 @@
-import { toBase64 } from '../crypto/codec'
+import { fromBase64, toBase64 } from '../crypto/codec'
 import { sodium } from '../crypto/sodium'
 import { cachedChunks, dropChunks, getChunk, putChunks } from '../storage/chunkCache'
 import { AdaptiveChunkSize, cdcParamsForAvg, sampleNetwork } from './chunkSize'
@@ -175,6 +175,57 @@ interface CtlCodec {
   close: () => void
 }
 
+/*
+ * A ctl message too large for one data-channel message goes as PARTs
+ * (protocol.md §5.8): its UTF-8 bytes cut into pieces, each carried as
+ * {type: 'PART', id, index, count, data: base64}. The receiver gathers
+ * every piece of an id and hands the reassembled message on as if it had
+ * arrived whole.
+ *
+ * Needed because a MANIFEST lists every chunk and a LIST_OK every entry,
+ * so both grow without bound while SCTP holds each message to what it
+ * negotiated — 64 KB is all a phone guarantees. A few thousand chunks, or
+ * files in one folder, and the one message outgrew the channel.
+ */
+/** Anything larger is refused rather than gathered: ~500k chunks' worth. */
+export const MAX_CTL_MESSAGE_BYTES = 48 * 1024 * 1024
+/**
+ * Pieces of at most this, whatever the channel would take — the same as
+ * the phone uses, and well inside the 64 KB every implementation accepts
+ * once base64'd and wrapped.
+ */
+const MAX_CTL_PART_BYTES = 16 * 1024
+/** Messages being gathered at once; the oldest is dropped past this. */
+const MAX_CTL_ASSEMBLIES = 4
+
+interface CtlPart {
+  type: 'PART'
+  id: number
+  index: number
+  count: number
+  data: string
+}
+
+function isCtlPart(v: unknown): v is CtlPart {
+  const p = v as Partial<CtlPart>
+  return (
+    p.type === 'PART' &&
+    Number.isSafeInteger(p.id) &&
+    Number.isSafeInteger(p.count) &&
+    (p.count as number) >= 1 &&
+    Number.isSafeInteger(p.index) &&
+    (p.index as number) >= 0 &&
+    (p.index as number) < (p.count as number) &&
+    typeof p.data === 'string'
+  )
+}
+
+/** Raw bytes per PART that fit a channel carrying `transportMax`-byte frames once wrapped. */
+function ctlPartBytes(transportMax: number): number {
+  const base64Room = Math.max(1024, transportMax - 256)
+  return Math.min(MAX_CTL_PART_BYTES, Math.floor(base64Room / 4) * 3)
+}
+
 function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client' | 'depot'): CtlCodec {
   const sendKey = role === 'client' ? keys.kC2D : keys.kD2C
   const sendDirection = role === 'client' ? Direction.ClientToDepot : Direction.DepotToClient
@@ -214,9 +265,63 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
     return true
   }
 
-  async function send(msg: CtlMessage): Promise<void> {
-    const frame = await encodeCtlFrame(sendKey, sendDirection, sendCounter++, encodeUtf8(JSON.stringify(msg)))
+  const partBytes = ctlPartBytes(maxChunkBytesFor(channels.pc))
+  let nextPartId = 0
+
+  async function sendFrame(plaintext: Uint8Array): Promise<void> {
+    const frame = await encodeCtlFrame(sendKey, sendDirection, sendCounter++, plaintext)
     channels.ctl.send(new Uint8Array(frame))
+  }
+
+  async function send(msg: CtlMessage): Promise<void> {
+    const bytes = encodeUtf8(JSON.stringify(msg))
+    if (bytes.length <= partBytes) return sendFrame(bytes)
+    if (bytes.length > MAX_CTL_MESSAGE_BYTES) {
+      throw new Error(`a ${msg.type} of ${bytes.length} bytes is more than one exchange can describe`)
+    }
+    const id = nextPartId++
+    const count = Math.ceil(bytes.length / partBytes)
+    for (let index = 0; index < count; index++) {
+      const data = toBase64(bytes.subarray(index * partBytes, (index + 1) * partBytes))
+      const part: CtlPart = { type: 'PART', id, index, count, data }
+      await sendFrame(encodeUtf8(JSON.stringify(part)))
+    }
+  }
+
+  // Messages arriving in PARTs, by id, until every piece is in.
+  const assembling = new Map<number, { pieces: (Uint8Array | undefined)[]; have: number; bytes: number }>()
+
+  /** The whole message once `part` completes it, otherwise undefined. */
+  function gather(part: CtlPart): unknown {
+    if (part.count * 1024 > MAX_CTL_MESSAGE_BYTES * 2) return undefined // implausible, not gathered
+    let entry = assembling.get(part.id)
+    if (!entry) {
+      if (assembling.size >= MAX_CTL_ASSEMBLIES) {
+        const oldest = assembling.keys().next().value as number
+        assembling.delete(oldest)
+      }
+      entry = { pieces: new Array<Uint8Array | undefined>(part.count), have: 0, bytes: 0 }
+      assembling.set(part.id, entry)
+    }
+    if (entry.pieces.length !== part.count || entry.pieces[part.index]) return undefined
+    const piece = fromBase64(part.data)
+    entry.bytes += piece.length
+    if (entry.bytes > MAX_CTL_MESSAGE_BYTES) {
+      assembling.delete(part.id)
+      return undefined
+    }
+    entry.pieces[part.index] = piece
+    entry.have++
+    if (entry.have < part.count) return undefined
+
+    assembling.delete(part.id)
+    const whole = new Uint8Array(entry.bytes)
+    let at = 0
+    for (const p of entry.pieces as Uint8Array[]) {
+      whole.set(p, at)
+      at += p.length
+    }
+    return JSON.parse(new TextDecoder().decode(whole))
   }
 
   // One channel listener, fanning out to every handler.
@@ -234,7 +339,8 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
         const raw = new Uint8Array(ev.data as ArrayBuffer)
         const { counter, plaintext } = await decodeCtlFrame(recvKey, recvDirection, raw)
         if (!acceptCounter(counter)) return // replayed, or too old to matter
-        const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext))
+        let parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext))
+        if (isCtlPart(parsed)) parsed = gather(parsed)
         if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) return
         // Copied first: a handler may unsubscribe itself while we iterate.
         for (const handler of [...handlers]) handler(parsed as CtlMessage)
@@ -255,6 +361,7 @@ function createCtlCodec(channels: DataChannels, keys: SessionKeys, role: 'client
 
   function close(): void {
     handlers.clear()
+    assembling.clear()
     channels.ctl.removeEventListener('message', listener)
   }
 
@@ -828,7 +935,7 @@ export async function runFileSender(
 
         const info = entry.manifest.chunks[decoded.chunkIndex]
         if (!info) return
-        const plaintext = decoded.compressed ? await decompress(decoded.plaintext) : decoded.plaintext
+        const plaintext = decoded.compressed ? await decompress(decoded.plaintext, info.length) : decoded.plaintext
         // Checked as it arrives, so a corrupt chunk is dropped rather
         // than written and discovered at the end.
         if ((await hashBytes(plaintext)) !== info.hash) return
@@ -1347,7 +1454,7 @@ async function receiveFile(
             const info = manifest.chunks[decoded.chunkIndex]
             if (!info || !outstanding.has(decoded.chunkIndex)) return
 
-            const plaintext = decoded.compressed ? await decompress(decoded.plaintext) : decoded.plaintext
+            const plaintext = decoded.compressed ? await decompress(decoded.plaintext, info.length) : decoded.plaintext
             const hash = await hashBytes(plaintext)
             if (hash !== info.hash) {
               onEvent({ type: 'chunk-invalid', index: decoded.chunkIndex })

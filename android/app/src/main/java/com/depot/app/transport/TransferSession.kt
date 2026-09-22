@@ -75,6 +75,10 @@ class CtlCodec(
     private val sendCounter = AtomicLong(0)
     private val sendLock = Any()
 
+    /** Guarded by [sendLock]. */
+    private var nextPartId = 0L
+    private val assembler = CtlAssembler()
+
     /*
      * Replay tracking as a sliding window rather than a growing set.
      *
@@ -97,13 +101,18 @@ class CtlCodec(
         // of the earlier one. ctl is written from the coroutines that
         // answer requests and from whichever thread picks a file, so
         // that overtaking is not hypothetical.
+        //
+        // Every PART of one message goes out under the same hold, so
+        // another message's pieces cannot land between them.
         synchronized(sendLock) {
-            val frame = encodeCtlFrame(sendKey, sendDirection, sendCounter.getAndIncrement(), plaintext)
-            // Same reason as the chunk path: a refusal here is silent
-            // unless it is looked at, and a dropped ctl message is a
-            // peer waiting for an answer that will never come.
-            if (!channel.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))) {
-                throw IllegalStateException("the control channel refused a ${frame.size} byte frame")
+            for (piece in ctlParts(plaintext, nextPartId++)) {
+                val frame = encodeCtlFrame(sendKey, sendDirection, sendCounter.getAndIncrement(), piece)
+                // Same reason as the chunk path: a refusal here is silent
+                // unless it is looked at, and a dropped ctl message is a
+                // peer waiting for an answer that will never come.
+                if (!channel.send(DataChannel.Buffer(ByteBuffer.wrap(frame), true))) {
+                    throw IllegalStateException("the control channel refused a ${frame.size} byte frame")
+                }
             }
         }
     }
@@ -115,7 +124,8 @@ class CtlCodec(
             if (!accept(decoded.counter)) {
                 null // replayed by the relay, or too old to matter
             } else {
-                JSONObject(String(decoded.plaintext, Charsets.UTF_8))
+                // A PART yields nothing until its message is whole.
+                assembler.offer(JSONObject(String(decoded.plaintext, Charsets.UTF_8)))
             }
         }
     } catch (_: Exception) {
@@ -601,7 +611,7 @@ class FileSender(
         val info = upload.chunks.getOrNull(decoded.chunkIndex) ?: return
 
         val plaintext = try {
-            if (decoded.compressed) decompress(decoded.plaintext) else decoded.plaintext
+            if (decoded.compressed) decompress(decoded.plaintext, info.length) else decoded.plaintext
         } catch (_: Exception) {
             return
         }

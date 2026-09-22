@@ -557,6 +557,21 @@ variable-length), `NEED` (Client → Depot), and `ERROR` (either direction).
 Each of these is carried inside an encrypted control frame (§5.3), one
 message per frame — Signal sees only ciphertext and a monotonic counter.
 
+**`PART` — a message too large for one frame.** SCTP holds every message to
+the size it negotiated, and 64 KB is all a phone guarantees; a `MANIFEST`
+lists every chunk and a `LIST_OK` every entry, so both outgrow that — a
+`MANIFEST` somewhere under 100 MB of file at 64 KB chunks. A sender whose
+message is larger than 16 KB of UTF-8 cuts those bytes into pieces of at most
+16 KB and sends each, in order, as its own control frame:
+`{type: "PART", id, index, count, data}` where `data` is the piece in base64 and
+`id` is unique among the sender's messages for the session. The receiver gathers
+the pieces of an `id` and, once all `count` are in, parses the concatenated bytes
+as the message they were cut from and handles it as though it had arrived whole.
+Pieces of different messages may interleave. A receiver SHOULD bound what it
+gathers — the implementations refuse anything past 48 MB and hold at most four
+messages part-gathered — and each piece is still its own frame, with its own
+counter and replay check.
+
 **`REJECTED` (§4.2).** Sent by the Depot over the same relay route as
 `CHALLENGE`, carrying its reason in the payload.
 
@@ -937,7 +952,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
-| 0.14 | 2026-09-25 | §4: the Depot signs CHALLENGE (`depotSig`) and the Client verifies it against the stored `depotId` before answering. Nothing in §4 authenticated the Depot before — the session keys are ephemeral-only — so whatever answered a `connect` could complete the handshake and collect what the user sent. §7.1: `register` is proved with a signature over a nonce Signal issues, so knowing a `depotId` no longer lets anyone push the Depot off Signal or revoke its Clients there. Not backwards compatible: Client, Depot and Signal must all be at 0.14. |
+| 0.14 | 2026-09-25 | §5.8: `PART`, so a control message larger than one data-channel message — the `MANIFEST` of a file of a hundred megabytes or so, the `LIST_OK` of a folder of a few thousand files — is sent in pieces instead of refused by the channel. Chunks were already fitted to SCTP's limit; the messages describing them were not. §4: the Depot signs CHALLENGE (`depotSig`) and the Client verifies it against the stored `depotId` before answering. Nothing in §4 authenticated the Depot before — the session keys are ephemeral-only — so whatever answered a `connect` could complete the handshake and collect what the user sent. §7.1: `register` is proved with a signature over a nonce Signal issues, so knowing a `depotId` no longer lets anyone push the Depot off Signal or revoke its Clients there. Not backwards compatible: Client, Depot and Signal must all be at 0.14. |
 | 0.13 | 2026-09-24 | §7.1: a Depot MUST be listening before it sends `register`. On a runtime that reads its socket on another thread a message can arrive between the two, and the first `incoming` after a registration — prompt since `watch` — was being dropped, costing twenty to thirty seconds on every phone reconnection and never reproducing on the JavaScript Depot. §5.10: what bounds an upload is storage, not memory, and a Depot should gather one on disk and refuse up front when there is no room. |
 | 0.12 | 2026-09-23 | §7.1: add `watch` / `depot_online`, so a Client waiting for a Depot is told the moment it registers instead of asking again on a timer. No polling interval is both immediate and cheap, and the one in use left someone watching a failure screen for half a minute after switching their phone on. Polling stays as the fallback for a notice that goes missing. §5.10: a reservation that is not filled MUST be released — where reserving means creating the file, every failed upload was leaving an empty one behind that still held its name. |
 | 0.11 | 2026-09-22 | §5.4: bound `maxChunkSize` by what the data channel will carry in one message, not only by what an implementation would like to build. SCTP negotiates a maximum and enforces it, and nothing consulted it: every session starts at §5.5's 64 KB tier, whose frames fit everywhere, so this only appeared once a link measured well and the tier climbed — a download went silent because libwebrtc drops a refused frame without a word, and an upload failed with the browser's exception. Also §5.4: optional advisory `network` and `metered`, which only one end can know. §5.6: a metered peer's chunks are compressed whatever the link measures, because where bytes are billed the comparison is no longer processor time against wire time. |

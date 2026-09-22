@@ -69,6 +69,13 @@ class TransportTest {
         val packed = compress(repetitive)
         assertTrue("expected compression to shrink it", packed.size < repetitive.size)
         assertEquals(repetitive.toList(), decompress(packed).toList())
+
+        // A bomb — zeros deflate about 1000:1 — stops at the manifest's
+        // length instead of inflating on regardless.
+        val bomb = compress(ByteArray(4 * 1024 * 1024))
+        val refused = runCatching { decompress(bomb, 64 * 1024) }
+        assertTrue("inflated past its limit", refused.isFailure)
+        assertEquals(4 * 1024 * 1024, decompress(bomb, 4 * 1024 * 1024).size)
     }
 
     @Test

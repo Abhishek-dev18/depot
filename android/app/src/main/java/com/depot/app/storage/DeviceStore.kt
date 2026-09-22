@@ -56,6 +56,11 @@ object DeviceStore {
         prefs(context).edit().putString(KEY, array.toString()).apply()
     }
 
+    /** Forgets every device, for when the identity they were paired with is gone. */
+    fun clear(context: Context) {
+        prefs(context).edit().remove(KEY).commit()
+    }
+
     fun save(context: Context, device: DeviceRecord) {
         write(context, list(context).filterNot { it.clientIdentityPub == device.clientIdentityPub } + device)
     }

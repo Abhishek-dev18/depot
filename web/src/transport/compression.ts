@@ -108,10 +108,39 @@ export async function compress(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream.readable).arrayBuffer())
 }
 
-export async function decompress(bytes: Uint8Array): Promise<Uint8Array> {
+/**
+ * Inflates one chunk, refusing to produce more than `maxBytes`.
+ *
+ * The limit is the chunk's length from the manifest, which is all a
+ * genuine chunk can inflate to. Without it the hash check comes too late:
+ * deflate reaches about 1000:1, so one 64 KB frame can demand 64 MB before
+ * anything looks at it, and a few dozen in flight take a tab or a phone
+ * down. Reading stops the moment the output passes the limit.
+ */
+export async function decompress(bytes: Uint8Array, maxBytes: number = Number.MAX_SAFE_INTEGER): Promise<Uint8Array> {
   const stream = new DecompressionStream(COMPRESSION_FORMAT)
   const writer = stream.writable.getWriter()
-  void writer.write(toArrayBufferView(bytes))
-  void writer.close()
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer())
+  void writer.write(toArrayBufferView(bytes)).catch(() => {})
+  void writer.close().catch(() => {})
+
+  const reader = stream.readable.getReader()
+  const parts: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.length
+    if (total > maxBytes) {
+      void reader.cancel().catch(() => {})
+      throw new Error(`chunk inflates past the ${maxBytes} bytes its manifest allows`)
+    }
+    parts.push(value)
+  }
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const part of parts) {
+    out.set(part, at)
+    at += part.length
+  }
+  return out
 }
