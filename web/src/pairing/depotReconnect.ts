@@ -72,16 +72,17 @@ export async function runDepotReconnectListener(
   const client = new SignalClient(signalUrl)
   await client.ready()
 
-  client.register(depotId)
-  cb.onStatus('registered, listening for reconnections')
-  cb.onRegistered(depotId)
-
   // protocol.md §6 step 3 — "Any live DataChannel to that Client is closed
   // immediately" is the step that actually matters; signal-level REVOKE is
   // only the routing optimisation. Track live connections so revoke() can do it.
   const activeConnections = new Map<string, () => void>()
   const senders = new Map<string, RunningSender>()
 
+  // Listening before registering. JavaScript cannot deliver a message
+  // between two synchronous calls, so the other order was safe here by
+  // accident — and the Android Depot, where it was not, lost the first
+  // request after every registration. Written the safe way so that
+  // neither side depends on how its runtime schedules a socket.
   const unsubscribe = client.onMessage((e) => {
     if (e.type === 'incoming' && e.clientId) {
       void handleIncoming(
@@ -89,6 +90,10 @@ export async function runDepotReconnectListener(
       )
     }
   })
+
+  client.register(depotId)
+  cb.onStatus('registered, listening for reconnections')
+  cb.onRegistered(depotId)
 
   return {
     depotId,

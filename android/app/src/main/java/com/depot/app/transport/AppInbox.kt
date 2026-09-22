@@ -85,13 +85,19 @@ class AppInbox(private val context: Context) : WritableTarget {
         if (file.isFile && file.length() == 0L) file.delete()
     }
 
-    override fun store(name: String, bytes: ByteArray): String {
+    override fun store(name: String, from: File): String {
         val target = File(dir, name)
         if (target.parentFile?.canonicalFile != dir.canonicalFile) {
             throw IllegalStateException("that name does not stay inside the inbox")
         }
         try {
-            target.writeBytes(bytes)
+            // A rename when the scratch file is on the same storage, which
+            // it normally is; a copy when it is not. Either way the name
+            // only ever holds the whole file or nothing — renaming over the
+            // empty reservation is the step that makes it appear.
+            if (!from.renameTo(target)) {
+                from.inputStream().use { input -> target.outputStream().use { input.copyTo(it) } }
+            }
         } catch (e: Exception) {
             // A half-written file with a plausible name is worse than no
             // file: §5.10 publishes nothing it has not verified whole.

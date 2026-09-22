@@ -135,15 +135,27 @@ suspend fun runDepotReconnectListener(
     signal.connect()
     signal.ready()
 
-    signal.register(depotId)
-    cb.onStatus("registered, listening for reconnections")
-    cb.onRegistered(depotId)
-
     signal.onDisconnected { reason -> cb.onDisconnected(reason) }
 
     val connections = ConcurrentHashMap<String, () -> Unit>()
     val senders = ConcurrentHashMap<String, FileSender>()
 
+    // Listening before registering, never the other way about.
+    //
+    // Registering is the moment Signal starts routing Clients here — and,
+    // since §7.1's `watch`, the moment it tells any browser that was
+    // waiting. That browser answers within a round trip, so its request
+    // arrives almost at once. OkHttp delivers messages on its own thread,
+    // and SignalClient hands each one to whoever is listening *at that
+    // instant*; registering first left a gap in which the request found
+    // nobody and was dropped without a trace. The browser then waited out
+    // its timeout, showed "put both devices on the same Wi-Fi", backed
+    // off, and connected on the next try — twenty to thirty seconds after
+    // the phone came online, every time, while a reload connected at once.
+    //
+    // The web Depot registers first too and cannot lose a message that
+    // way, because JavaScript runs both calls in one uninterrupted turn.
+    // That difference is why this never reproduced anywhere but a phone.
     signal.onMessage { e ->
         val clientId = e.clientId
         when {
@@ -164,6 +176,10 @@ suspend fun runDepotReconnectListener(
             }
         }
     }
+
+    signal.register(depotId)
+    cb.onStatus("registered, listening for reconnections")
+    cb.onRegistered(depotId)
 
     return DepotReconnectListener(depotId, signal, connections, senders)
 }

@@ -15,6 +15,7 @@ import { ConnectionBadge, NoRouteBadge } from './ConnectionBadge'
 import { FilesPanel } from './FilesPanel'
 import { Log } from './Log'
 import { NoRoutePanel } from './NoRoutePanel'
+import { retryDelayMs, showsFailure } from './retryPolicy'
 import { PairPanel } from './PairPanel'
 import { WaitingPanel } from './WaitingPanel'
 
@@ -213,11 +214,9 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     if (!offline && failure === null) return
     const depotId = pairings[0]?.depotId
     if (!depotId) return
-    // A Depot that says it is offline is polled briskly: the answer
-    // costs one round trip and arrives at once. Only an attempt that
-    // actually failed backs off, because whatever broke is unlikely to
-    // be fixed four seconds later.
-    const delay = failure === null ? 4_000 : Math.min(30_000, 4_000 * 2 ** Math.min(attempts, 3))
+    // See retryPolicy.ts: quick after a failure, with a ceiling of
+    // seconds rather than half a minute.
+    const delay = retryDelayMs(failure !== null, attempts)
     const timer = setTimeout(() => {
       void connect(depotId)
     }, delay)
@@ -323,6 +322,12 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     [push],
   )
 
+  // A failure below the threshold is retried quietly, under the same
+  // "reaching your Depot" the page shows for any attempt in progress —
+  // see retryPolicy.ts for why one miss is not worth a warning.
+  const failed = showsFailure(failure !== null, attempts)
+  const quietlyRetrying = failure !== null && !failed
+
   return (
     <div className="client-shell">
       <ClientNav
@@ -330,11 +335,11 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
         badge={
           session ? (
             <ConnectionBadge type={session.connectionType} rate={rate} />
-          ) : failure ? (
+          ) : failed ? (
             <NoRouteBadge />
           ) : offline ? (
             <NoRouteBadge label="DEPOT OFFLINE" tone="idle" />
-          ) : connecting ? (
+          ) : connecting || quietlyRetrying ? (
             <NoRouteBadge label="CONNECTING" tone="idle" />
           ) : (
             <NoRouteBadge label="NOT LINKED" tone="idle" />
@@ -360,11 +365,11 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
           log={push}
           onRate={setRate}
         />
-      ) : failure ? (
+      ) : failed && failure ? (
         <NoRoutePanel message={failure} attempts={attempts} onRetry={retry} onSettings={onOpenSettings} />
       ) : offline ? (
         <WaitingPanel attempts={polls} onRetryNow={retry} onPairAgain={pairAgain} />
-      ) : connecting ? (
+      ) : connecting || quietlyRetrying ? (
         <div className="connecting">
           <div className="connecting-mark" aria-hidden="true" />
           <div className="pairttl">Reaching your Depot</div>

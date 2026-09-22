@@ -157,7 +157,34 @@ interface TransferCallbacks {
 }
 
 /** A file this Depot is willing to serve. */
-class OfferedFile(val name: String, val bytes: ByteArray, val mime: String? = null)
+/**
+ * A file this Depot is willing to serve, read when it is asked for.
+ *
+ * It used to be held in memory, whole, from the moment it was picked —
+ * so a picked file's size was capped by what the process could spare,
+ * and anything bigger was turned away with "share the folder it is in
+ * instead; folders are streamed". Folders were streamed and single files
+ * were not, for no reason a user could see. Now both are: a picked file
+ * is read from where it lives, on demand, in one forward pass, the same
+ * way a file inside a shared folder is.
+ */
+class OfferedFile(
+    val name: String,
+    val size: Long,
+    val mime: String? = null,
+    /**
+     * Lets go of whatever keeps this readable — a kept permission, a
+     * copy on disk — once it is no longer offered. Android caps how many
+     * grants an app may hold, so offers that are never given back would
+     * eventually stop new ones from being kept at all.
+     */
+    val release: () -> Unit = {},
+    val openStream: () -> java.io.InputStream,
+) {
+    /** Held in memory. For tests, and for nothing large. */
+    constructor(name: String, bytes: ByteArray, mime: String? = null) :
+        this(name, bytes.size.toLong(), mime, {}, { java.io.ByteArrayInputStream(bytes) })
+}
 
 /**
  * Depot side of §5.7: answer REQUEST_FILE with a MANIFEST, then stream
@@ -186,16 +213,33 @@ class FileSender(
     private val transfers = java.util.concurrent.ConcurrentHashMap<Int, Pair<Manifest, ServableFile>>()
     private val nextTransferId = java.util.concurrent.atomic.AtomicInteger(1)
 
-    /** §5.10 — uploads in flight, by the id this Depot issued. */
+    /**
+     * §5.10 — uploads in flight, by the id this Depot issued.
+     *
+     * Assembled on disk, one chunk in memory at a time. The first version
+     * held every chunk in a map and then copied them all into a second
+     * array to join them, so an upload needed twice its own size in heap
+     * — more than many phones give an app for a file of a couple of
+     * hundred megabytes, well inside the limit this Depot advertised. It
+     * would have taken the service down rather than said no.
+     */
     private class Upload(
         val chunks: List<ChunkInfo>,
         val fileHash: String,
         val target: WritableTarget,
         val reserved: String,
-        val size: Int,
+        val size: Long,
+        /** Where the bytes gather until the whole file has verified. */
+        val part: java.io.File,
     ) {
-        val have = java.util.concurrent.ConcurrentHashMap<Int, ByteArray>()
+        val out = java.io.RandomAccessFile(part, "rw").apply { setLength(size) }
         val outstanding = java.util.Collections.synchronizedSet(chunks.map { it.index }.toMutableSet())
+
+        /** Closes and removes the part file. Safe to call more than once. */
+        fun discard() {
+            runCatching { out.close() }
+            part.delete()
+        }
 
         /** Reset by each chunk that lands; firing gives the name back. */
         @Volatile
@@ -405,6 +449,15 @@ class FileSender(
             ctl.send(err("that file is larger than this Depot will accept"))
             return
         }
+        // The real limit now that nothing is held in memory: room to
+        // gather the file and then publish it, which can briefly mean two
+        // copies. Checked up front so a Client is told before it sends a
+        // byte, rather than after the disk fills.
+        val scratch = java.io.File(System.getProperty("java.io.tmpdir") ?: ".")
+        if (scratch.usableSpace < size * 2 + UPLOAD_HEADROOM_BYTES) {
+            ctl.send(err("this phone does not have room for that file"))
+            return
+        }
         if (chunksJson.length() != msg.optInt("chunkCount", -1)) {
             ctl.send(err("the manifest's chunk count does not match its list"))
             return
@@ -445,7 +498,14 @@ class FileSender(
         }
 
         val uploadId = nextUploadId.getAndIncrement()
-        uploads[uploadId] = Upload(wanted, fileHash, target, reserved, size.toInt())
+        val part = try {
+            java.io.File.createTempFile("depot-upload-", ".part")
+        } catch (e: Exception) {
+            runCatching { target.abandon(reserved) }
+            ctl.send(err("could not make room for that file"))
+            return
+        }
+        uploads[uploadId] = Upload(wanted, fileHash, target, reserved, size, part)
         touchUpload(uploadId)
         cb.onUploadStarted(reserved, wanted.size)
 
@@ -475,6 +535,7 @@ class FileSender(
     private fun abandonUpload(uploadId: Int, why: String) {
         val upload = uploads.remove(uploadId) ?: return
         upload.stall?.cancel()
+        upload.discard()
         runCatching { upload.target.abandon(upload.reserved) }
         runCatching { ctl.send(err(why)) }
         cb.onError(why)
@@ -485,35 +546,44 @@ class FileSender(
         val upload = uploads[uploadId] ?: return
         upload.stall?.cancel()
         uploads.remove(uploadId)
-        val joined = ByteArray(upload.size)
-        var at = 0
-        for (info in upload.chunks) {
-            val part = upload.have[info.index] ?: run {
-                runCatching { upload.target.abandon(upload.reserved) }
-                ctl.send(err("chunk ${info.index} never arrived"))
-                return
-            }
-            part.copyInto(joined, at)
-            at += part.size
+
+        fun fail(why: String) {
+            upload.discard()
+            runCatching { upload.target.abandon(upload.reserved) }
+            ctl.send(err(why))
         }
 
-        if (hashBytes(joined) != upload.fileHash) {
-            runCatching { upload.target.abandon(upload.reserved) }
-            ctl.send(err("the whole-file hash did not match; nothing was written"))
+        if (upload.outstanding.isNotEmpty()) {
+            fail("chunk ${upload.outstanding.min()} never arrived")
+            return
+        }
+        runCatching { upload.out.close() }
+
+        // Read back from disk for the whole-file hash: what is checked is
+        // what will be published, not what was believed to have been
+        // written.
+        val actual = try {
+            upload.part.inputStream().use { hashStream(it) }
+        } catch (e: Exception) {
+            fail("could not read the file back: ${e.message}")
+            return
+        }
+        if (actual != upload.fileHash) {
+            fail("the whole-file hash did not match; nothing was written")
             return
         }
 
         val where = try {
-            upload.target.store(upload.reserved, joined)
+            upload.target.store(upload.reserved, upload.part)
         } catch (e: Exception) {
-            runCatching { upload.target.abandon(upload.reserved) }
-            ctl.send(err(e.message ?: "could not write the file"))
+            fail(e.message ?: "could not write the file")
             return
         }
+        upload.part.delete()
         ctl.send(
             JSONObject().put("type", "PUT_DONE").put("uploadId", uploadId).put("name", upload.reserved),
         )
-        cb.onUploadStored(upload.reserved, joined.size.toLong(), upload.target.label, where)
+        cb.onUploadStored(upload.reserved, upload.size, upload.target.label, where)
     }
 
     /**
@@ -537,7 +607,17 @@ class FileSender(
         }
         if (hashBytes(plaintext) != info.hash) return
 
-        upload.have[decoded.chunkIndex] = plaintext
+        // Written where it belongs in the file, not kept. One chunk's worth
+        // of memory whatever the size of the upload.
+        try {
+            synchronized(upload) {
+                upload.out.seek(info.offset)
+                upload.out.write(plaintext)
+            }
+        } catch (_: Exception) {
+            abandonUpload(decoded.transferId, "could not write chunk ${decoded.chunkIndex} to storage")
+            return
+        }
         upload.outstanding.remove(decoded.chunkIndex)
         // Something arrived, so the Client is still there.
         touchUpload(decoded.transferId)
@@ -683,6 +763,7 @@ class FileSender(
         // for every upload that was in flight when it ended.
         for (entry in uploads.values) {
             entry.stall?.cancel()
+            entry.discard()
             runCatching { entry.target.abandon(entry.reserved) }
         }
         uploads.clear()
@@ -702,6 +783,14 @@ class FileSender(
          * be hashed before it is written, which is what "verify before
          * publishing" costs on a device with this little to spare.
          */
-        const val MAX_UPLOAD_BYTES = 256L * 1024 * 1024
+        /**
+         * A sanity bound, not the working limit. Free space is what
+         * actually decides, and is checked per upload; this only stops
+         * an absurd claim in a manifest from being taken seriously.
+         */
+        const val MAX_UPLOAD_BYTES = 64L * 1024 * 1024 * 1024
+
+        /** Left free on top of the upload itself, for everything else on the phone. */
+        const val UPLOAD_HEADROOM_BYTES = 256L * 1024 * 1024
     }
 }

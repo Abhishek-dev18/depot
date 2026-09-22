@@ -1,6 +1,6 @@
 # Depot Protocol Specification
 
-**Version:** 0.12 (draft)
+**Version:** 0.13 (draft)
 **Status:** Implemented on both sides
 **Scope:** Device pairing, session establishment, encrypted transport, browsing, revocation.
 
@@ -698,6 +698,15 @@ there is visible to anything else on the device until the user moves it out, so
 the consent the writable flag was protecting is still asked for — about one real
 file, at the moment it means something, rather than in advance about a folder.
 
+**What bounds an upload is storage, not memory.** A Depot SHOULD gather an
+upload somewhere that does not grow with its size — writing each verified chunk
+to its place in a scratch file, and hashing the result back off disk — and
+refuse up front, before the Client sends anything, when there is not room to
+gather and then publish it. Holding the chunks in memory ties the largest
+acceptable file to the heap, which on a phone is small and not the user's to
+choose; the implementation this replaced needed twice an upload's size in
+memory and would have been killed well inside the limit it advertised.
+
 **A reservation that is not filled MUST be released.** Reserving a name before
 any bytes arrive is what makes "never overwrite" a property of the destination
 rather than a rule each transfer has to remember — but where reserving means
@@ -837,6 +846,17 @@ SDP/ICE signaling travel):
 | `revoke` | Depot → Signal | `clientId` | Routing-only optimisation for §6: future `connect`s for this `clientId` are rejected with `client_revoked`, and any in-flight route is torn down. Correctness never depends on this — see §6. |
 | `watch` | Client → Signal | `depotId` | Asks to be told when that Depot registers. Answered with one `depot_online`, at once if it is already registered, and the Client's socket must stay open to receive it. Signal forgets the watcher when it sends the notice or when the socket goes. |
 
+**A Depot MUST be listening before it sends `register`.** Registering is the
+moment Signal begins routing Clients to it and tells any that were watching, so
+the first `incoming` can arrive within one round trip of it. On a runtime that
+reads its socket on another thread — OkHttp on Android, among many — a message
+can be delivered between the `register` call returning and the next line
+running, and one that arrives before a listener exists is simply gone. The
+Client then waits out its timeout for a CHALLENGE that is never coming. This
+was invisible on the web Depot, where JavaScript cannot deliver a message
+between two synchronous calls, and cost twenty to thirty seconds on every
+phone reconnection once `watch` made the first request prompt.
+
 **A Client SHOULD wait on `watch` rather than asking again.** A Depot's owner
 switching it on is a moment Signal knows about exactly when it happens, and
 asking on a timer cannot be both immediate and cheap: four seconds is a long
@@ -895,6 +915,7 @@ whoever builds the Android app against this spec.
 | 0.5 | 2026-09-19 | Add `SHARED_CHANGED` (§5.9): a Depot tells a connected Client its listing is stale rather than leaving it showing a snapshot from when it connected. Advisory and payload-free — the Client re-issues `LIST`. |
 | 0.6 | 2026-09-19 | §5.9: require handles to be stable within a session and to name a file rather than a slot, so a Client can recognise what it already holds and stop fetching the same bytes twice. Both Depot implementations were re-minting on every listing. |
 | 0.7 | 2026-09-20 | §5.9: add the optional, advisory `mime` to a listing entry. Advisory only — a Client may use it to pick among renderers it would already have used, never to parse something it otherwise would not. Added because providers return display names with no extension, leaving a Client unable to identify perfectly ordinary photographs. |
+| 0.13 | 2026-09-24 | §7.1: a Depot MUST be listening before it sends `register`. On a runtime that reads its socket on another thread a message can arrive between the two, and the first `incoming` after a registration — prompt since `watch` — was being dropped, costing twenty to thirty seconds on every phone reconnection and never reproducing on the JavaScript Depot. §5.10: what bounds an upload is storage, not memory, and a Depot should gather one on disk and refuse up front when there is no room. |
 | 0.12 | 2026-09-23 | §7.1: add `watch` / `depot_online`, so a Client waiting for a Depot is told the moment it registers instead of asking again on a timer. No polling interval is both immediate and cheap, and the one in use left someone watching a failure screen for half a minute after switching their phone on. Polling stays as the fallback for a notice that goes missing. §5.10: a reservation that is not filled MUST be released — where reserving means creating the file, every failed upload was leaving an empty one behind that still held its name. |
 | 0.11 | 2026-09-22 | §5.4: bound `maxChunkSize` by what the data channel will carry in one message, not only by what an implementation would like to build. SCTP negotiates a maximum and enforces it, and nothing consulted it: every session starts at §5.5's 64 KB tier, whose frames fit everywhere, so this only appeared once a link measured well and the tier climbed — a download went silent because libwebrtc drops a refused frame without a word, and an upload failed with the browser's exception. Also §5.4: optional advisory `network` and `metered`, which only one end can know. §5.6: a metered peer's chunks are compressed whatever the link measures, because where bytes are billed the comparison is no longer processor time against wire time. |
 | 0.10 | 2026-09-22 | §5.10: a Depot SHOULD also expose an inbox of its own that needs no grant. Requiring a writable folder made receiving conditional on a setup step taken on the phone, for a file its owner had just asked for, and a feature reachable only after configuration is one most people never find. Storage the Depot application owns is not the user's own storage, so nothing reaches the device at large until the user moves it — the consent the flag protected is asked about one real file instead of in advance about a folder. §5.6: the compression decision now also weighs the link's measured speed, because packing a chunk is not overlapped with sending it and a codec slower than the wire costs more time than it saves. |

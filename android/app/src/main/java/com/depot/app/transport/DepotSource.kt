@@ -5,7 +5,6 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.util.Base64
-import java.io.ByteArrayInputStream
 import java.io.InputStream
 import com.depot.app.crypto.randomBytes
 import com.depot.app.storage.GrantStore
@@ -87,11 +86,14 @@ interface WritableTarget {
     fun reserve(name: String): String
 
     /**
-     * Returns something this app can open the stored file with, or null
-     * if the destination has nothing to offer. The upload is complete
-     * either way — this only decides whether the row is tappable.
+     * Publishes [from] — the whole file, already verified — under [name].
+     *
+     * A file rather than a byte array so that the size of an upload is
+     * bounded by storage and not by the heap. Returns something this app
+     * can open the result with, or null if the destination has nothing to
+     * offer; the upload is complete either way.
      */
-    fun store(name: String, bytes: ByteArray): String?
+    fun store(name: String, from: java.io.File): String?
 
     /**
      * Gives back a name reserved for an upload that will never arrive.
@@ -146,7 +148,7 @@ class AndroidDepotSource(
      * received. Name and length are all that is known without reading
      * the file, so two picks alike in both still collide.
      */
-    private fun offeredHandleFor(file: OfferedFile) = "offered:${file.bytes.size}:${file.name}"
+    private fun offeredHandleFor(file: OfferedFile) = "offered:${file.size}:${file.name}"
 
     /** Stable for as long as the file is unchanged, for the same reason. */
     private fun inboxHandleFor(name: String, size: Long) = "inbox:$size:$name"
@@ -227,7 +229,7 @@ class AndroidDepotSource(
                 handle = offeredHandleFor(file),
                 name = file.name,
                 isDirectory = false,
-                size = file.bytes.size.toLong(),
+                size = file.size,
                 mime = file.mime,
             )
         }
@@ -351,9 +353,8 @@ class AndroidDepotSource(
     }
 }
 
-/** An in-memory offer, served through the same streaming path. */
-fun OfferedFile.servable(): ServableFile =
-    ServableFile(name, bytes.size.toLong()) { ByteArrayInputStream(bytes) }
+/** An offered file, served through the same streaming path as a folder's. */
+fun OfferedFile.servable(): ServableFile = ServableFile(name, size, openStream)
 
 /** What the ACCESS screen shows under a grant's name. */
 data class GrantStats(val files: Int, val bytes: Long)
@@ -394,7 +395,7 @@ fun grantStats(context: Context, treeUri: Uri): GrantStats? = runCatching {
 /** Serves one file and nothing else — what the app did before §5.9. */
 class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
     // As in AndroidDepotSource: the handle names the file, not the slot.
-    private fun handleFor(file: OfferedFile) = "offered:${file.bytes.size}:${file.name}"
+    private fun handleFor(file: OfferedFile) = "offered:${file.size}:${file.name}"
 
     override fun list(handle: String): List<DirEntry> {
         if (handle.isNotEmpty()) return emptyList()
@@ -404,7 +405,7 @@ class SingleFileSource(private val offered: () -> OfferedFile?) : DepotSource {
                 handleFor(file),
                 file.name,
                 isDirectory = false,
-                size = file.bytes.size.toLong(),
+                size = file.size,
                 mime = file.mime,
             ),
         )
@@ -476,14 +477,15 @@ private class SafFolder(
         }
     }
 
-    override fun store(name: String, bytes: ByteArray): String? {
+    override fun store(name: String, from: java.io.File): String? {
         val uri = pending
         if (uri == null || pendingName != name) {
             throw IllegalStateException("store() without a matching reserve()")
         }
         try {
-            context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
-                ?: throw IllegalStateException("could not open the new file for writing")
+            context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                from.inputStream().use { it.copyTo(out) }
+            } ?: throw IllegalStateException("could not open the new file for writing")
             return uri.toString()
         } catch (e: Exception) {
             // A half-written file with a plausible name is worse than no

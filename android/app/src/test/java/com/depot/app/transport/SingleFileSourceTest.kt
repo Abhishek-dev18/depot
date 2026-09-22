@@ -43,7 +43,11 @@ class SingleFileSourceTest {
         val servable = source.open(null)!!
         assertEquals("a.bin", servable.name)
         assertEquals(8L, servable.size)
-        assertEquals(offered.bytes.toList(), servable.openStream().readBytes().toList())
+        // Compared with what the offer yields rather than a field it holds:
+        // an offered file is a stream now, read from where it lives, not a
+        // byte array kept in memory.
+        assertEquals(offered.openStream().readBytes().toList(), servable.openStream().readBytes().toList())
+        assertEquals(ByteArray(8) { it.toByte() }.toList(), servable.openStream().readBytes().toList())
     }
 
     @Test
