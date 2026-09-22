@@ -129,9 +129,33 @@ fun chunkStream(input: InputStream, params: CdcParams, sink: (ByteArray) -> Unit
     }
 }
 
-/** protocol.md §5.5 — CDC parameters for a target average chunk size. */
-fun cdcParamsForAvg(avgSize: Int): CdcParams = CdcParams(
-    minSize = maxOf(1024, avgSize / 4),
-    avgSize = avgSize,
-    maxSize = avgSize * 4,
-)
+/**
+ * protocol.md §5.5 — CDC parameters for a target average chunk size,
+ * never exceeding what §5.4's CAPS agreed.
+ *
+ * [ceiling] matters more than it looks. A chunker asked for an average
+ * of N produces chunks of up to 4N — that spread is how content-defined
+ * chunking finds its boundaries — while the negotiated maxChunkSize is
+ * a hard limit that the peer rejects a whole manifest for exceeding.
+ * Deriving the parameters from the average alone therefore built
+ * manifests a Client was entitled to refuse, and did: §5.5's tier starts
+ * at 64 KB, whose maximum of 256 KB sits comfortably inside a 1 MB
+ * ceiling, so the first fetch of a session worked; once the link
+ * measured well and the tier climbed to 1 MB the maximum became 4 MB and
+ * every fetch after that was refused.
+ *
+ * So the ceiling caps the maximum, and the average follows it down
+ * rather than the other way about.
+ */
+fun cdcParamsForAvg(avgSize: Int, ceiling: Int = Int.MAX_VALUE): CdcParams {
+    val maxSize = minOf(avgSize.toLong() * 4, ceiling.toLong()).toInt()
+    val avg = maxOf(1, minOf(avgSize, maxSize / 4))
+    return CdcParams(
+        // The 1 KB floor the original carried, but never above the
+        // maximum — a ceiling small enough to squeeze them together
+        // would otherwise produce params that cannot be satisfied.
+        minSize = minOf(maxOf(1024, avg / 4), maxSize),
+        avgSize = avg,
+        maxSize = maxSize,
+    )
+}

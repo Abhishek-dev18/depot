@@ -30,7 +30,13 @@ export class AdaptiveChunkSize {
   }
 
   current(): number {
-    return TIERS[this.tier]
+    // A test hook, in the same shape as the stall windows in
+    // transferSession.ts. Climbing a tier honestly takes a 5s cooldown
+    // and real getStats() samples, which is exactly the condition that
+    // made the second fetch of a session differ from the first — so
+    // there has to be some way to reach it without waiting.
+    const forced = (globalThis as { DEPOT_FORCE_CHUNK_TIER?: number }).DEPOT_FORCE_CHUNK_TIER
+    return forced ?? TIERS[this.tier]
   }
 
   update(sample: NetworkSample, now: number = Date.now()): void {
@@ -90,6 +96,34 @@ export async function sampleNetwork(pc: RTCPeerConnection): Promise<NetworkSampl
 }
 
 /** CDC parameters scaled to a target average chunk size, keeping min/max proportionally bounded. */
-export function cdcParamsForAvg(avgSize: number): { minSize: number; avgSize: number; maxSize: number } {
-  return { minSize: Math.floor(avgSize / 4), avgSize, maxSize: avgSize * 4 }
+/**
+ * CDC parameters for a target average, never exceeding what CAPS agreed.
+ *
+ * [ceiling] matters more than it looks. A chunker asked for an average
+ * of N produces chunks of up to 4N — that spread is how content-defined
+ * chunking finds its boundaries — while §5.4 makes the negotiated
+ * maxChunkSize a hard limit that *both* sides reject a manifest for
+ * exceeding. Deriving the parameters from the average alone therefore
+ * built manifests that the peer was entitled to refuse, and did:
+ *
+ *  - Uploading passed the negotiated size straight in as the average,
+ *    so every chunk four times over the limit. Sending anything from
+ *    the browser failed with "chunk 0 is larger than CAPS agreed".
+ *  - Serving passed §5.5's current tier. That starts at 64 KB, whose
+ *    maximum of 256 KB is comfortably inside a 1 MB ceiling — so the
+ *    first fetch of a session worked. Once the link measured well and
+ *    the tier climbed to 1 MB, the maximum became 4 MB and every fetch
+ *    after that was refused, until the page was reloaded and the tier
+ *    reset. "The first one works and then I have to reload" was this.
+ *
+ * So the ceiling caps the maximum, and the average follows it down
+ * rather than the other way about.
+ */
+export function cdcParamsForAvg(
+  avgSize: number,
+  ceiling = Number.POSITIVE_INFINITY,
+): { minSize: number; avgSize: number; maxSize: number } {
+  const maxSize = Math.min(avgSize * 4, ceiling)
+  const avg = Math.max(1, Math.min(avgSize, Math.floor(maxSize / 4)))
+  return { minSize: Math.max(1, Math.floor(avg / 4)), avgSize: avg, maxSize }
 }

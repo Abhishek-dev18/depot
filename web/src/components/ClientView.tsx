@@ -39,6 +39,16 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
   const [failure, setFailure] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
   const [attempts, setAttempts] = useState(0)
+  /**
+   * How many times the Depot has been asked, for the screen to show.
+   *
+   * Separate from [attempts], which exists only to space out retries
+   * after something went wrong. Conflating them meant that counting
+   * polls for the display also backed the polling off — see
+   * onDepotOffline — so the two are now different numbers because they
+   * answer different questions.
+   */
+  const [polls, setPolls] = useState(0)
 
   const [qr, setQr] = useState<{ dataUrl: string; json: string } | null>(null)
   const [sas, setSas] = useState<string | null>(null)
@@ -87,10 +97,21 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
           setSession(open)
           setOffline(false)
           setAttempts(0)
+          setPolls(0)
         },
         onDepotOffline: () => {
           setOffline(true)
-          setAttempts((n) => n + 1)
+          // Not counted as an attempt, and the last failure is cleared.
+          //
+          // "That Depot is not registered" is a complete answer to the
+          // question, arriving in one round trip — not a thing that went
+          // wrong. Counting it pushed the backoff to its 30-second
+          // ceiling within four polls of a phone that was merely
+          // switched off, so turning the phone back on took half a
+          // minute to notice instead of the four seconds intended.
+          setFailure(null)
+          setAttempts(0)
+          setPolls((n) => n + 1)
         },
         onError: (message) => {
           push(`error: ${message}`)
@@ -135,6 +156,10 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
     if (!offline && failure === null) return
     const depotId = pairings[0]?.depotId
     if (!depotId) return
+    // A Depot that says it is offline is polled briskly: the answer
+    // costs one round trip and arrives at once. Only an attempt that
+    // actually failed backs off, because whatever broke is unlikely to
+    // be fixed four seconds later.
     const delay = failure === null ? 4_000 : Math.min(30_000, 4_000 * 2 ** Math.min(attempts, 3))
     const timer = setTimeout(() => {
       void connect(depotId)
@@ -281,7 +306,7 @@ export function ClientView({ signalUrl, turnConfig, onOpenSettings, settingsPane
       ) : failure ? (
         <NoRoutePanel message={failure} attempts={attempts} onRetry={retry} onSettings={onOpenSettings} />
       ) : offline ? (
-        <WaitingPanel attempts={attempts} onRetryNow={retry} onPairAgain={pairAgain} />
+        <WaitingPanel attempts={polls} onRetryNow={retry} onPairAgain={pairAgain} />
       ) : connecting ? (
         <div className="connecting">
           <div className="connecting-mark" aria-hidden="true" />

@@ -293,7 +293,13 @@ class FileSender(
         // carries the real lengths either way, so the two sides never have
         // to agree about sizing — only about what was actually sent.
         val avgSize = minOf(chunkSizer.current(), maxChunkSize)
-        val manifest = buildManifestStreaming(transferId, file.name, cdcParamsForAvg(avgSize), file.openStream)
+        // The ceiling, not just the average: see cdcParamsForAvg.
+        val manifest = buildManifestStreaming(
+            transferId,
+            file.name,
+            cdcParamsForAvg(avgSize, maxChunkSize),
+            file.openStream,
+        )
         // Bounded, because a manifest is not small: one entry per chunk,
         // each with a hash, so a 600 MB file is hundreds of them. Held
         // for the life of the connection they accumulate one browse at a

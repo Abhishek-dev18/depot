@@ -853,7 +853,13 @@ export async function runFileSender(
       }
       const transferId = nextTransferId++
       const avg = Math.min(chunkSizer.current(), maxChunkSize)
-      const manifest = await buildManifest(transferId, file.name, file.bytes, cdcParamsForAvg(avg))
+      // The ceiling, not just the average: see cdcParamsForAvg.
+      const manifest = await buildManifest(
+        transferId,
+        file.name,
+        file.bytes,
+        cdcParamsForAvg(avg, maxChunkSize),
+      )
       transfers.set(transferId, { manifest, bytes: file.bytes })
       await ctl.send({ type: 'MANIFEST', manifest })
       onEvent({ type: 'manifest-sent', transferId, total: manifest.chunkCount })
@@ -1097,7 +1103,15 @@ export async function openClientSession(
     onEvent: (e: SendEvent) => void = () => {},
   ): Promise<string> {
     const name = validateUploadName(file.name)
-    const manifest = await buildManifest(0, name, file.bytes, cdcParamsForAvg(negotiatedChunkSize))
+    // negotiatedChunkSize is a ceiling, not a target: passing it as the
+    // average asked the chunker for pieces of up to four times it, which
+    // is exactly what the Depot at the other end refuses.
+    const manifest = await buildManifest(
+      0,
+      name,
+      file.bytes,
+      cdcParamsForAvg(negotiatedChunkSize, negotiatedChunkSize),
+    )
     onEvent({ type: 'manifest-built', total: manifest.chunkCount })
 
     const accepted = ctl.waitFor(

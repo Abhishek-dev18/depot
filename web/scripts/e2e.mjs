@@ -524,8 +524,15 @@ await client.waitForSelector('.uprow', { timeout: 15000 })
 log('inside Inbox, the control appears ✓')
 
 await client.locator('.uprow .upbtn input').setInputFiles('/tmp/upload.txt')
+// By name. The send panel above has already put two files in here and
+// logged them, so waiting for "sent to Inbox" was satisfied before this
+// upload had even started — and the check below then read the folder
+// too early, failing about one run in three.
 await client.waitForFunction(
-  () => [...document.querySelectorAll('.log-line')].some((l) => l.textContent.includes('sent to Inbox')),
+  () =>
+    [...document.querySelectorAll('.log-line')].some((l) =>
+      l.textContent.includes('upload.txt sent to Inbox'),
+    ),
   null,
   { timeout: 60000 },
 )

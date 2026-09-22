@@ -745,3 +745,83 @@ describe('a download that is slow but never silent', () => {
     sender.stop()
   })
 })
+
+/**
+ * protocol.md §5.4/§5.5 — the negotiated size is a ceiling, not a target.
+ *
+ * A chunker asked for an average of N produces chunks of up to 4N; that
+ * spread is how content-defined chunking finds its boundaries. But both
+ * sides reject a whole manifest containing a chunk above what CAPS
+ * agreed, so building one from the average alone produced manifests the
+ * peer was entitled to refuse — and did, in both directions:
+ *
+ *  - Serving: §5.5's tier starts at 64 KB, whose 256 KB maximum fits
+ *    inside a 1 MB ceiling, so the first fetch of a session worked. Once
+ *    the link measured well and the tier climbed to 1 MB, the maximum
+ *    became 4 MB and every fetch after that was refused — until the page
+ *    was reloaded and the tier reset to 64 KB.
+ *  - Uploading: the negotiated size went in as the average, so every
+ *    chunk was four times over from the first byte. Sending anything
+ *    from the browser failed with "chunk 0 is larger than CAPS agreed".
+ */
+describe('chunk sizes against the ceiling CAPS agreed', () => {
+  const CEILING = 1024 * 1024
+
+  it('never proposes a chunk larger than the ceiling, at any tier', () => {
+    for (const tier of [64 * 1024, 256 * 1024, 1024 * 1024]) {
+      const params = cdcParamsForAvg(tier, CEILING)
+      expect(params.maxSize, `tier ${tier} proposes ${params.maxSize}`).toBeLessThanOrEqual(CEILING)
+      expect(params.minSize).toBeLessThanOrEqual(params.avgSize)
+      expect(params.avgSize).toBeLessThanOrEqual(params.maxSize)
+    }
+  })
+
+  it('leaves a tier that already fits exactly as it was', () => {
+    // The common case must not be made worse by the cap.
+    expect(cdcParamsForAvg(64 * 1024, CEILING)).toEqual(cdcParamsForAvg(64 * 1024))
+  })
+
+  it('serves a file once the link has measured well and the tier has climbed', async () => {
+    // The tier climbing is the whole difference between the first fetch
+    // of a session and the rest. At 1 MB the old parameters proposed
+    // chunks of up to 4 MB, and the Client refused the manifest.
+    const force = (n: number | undefined) => {
+      ;(globalThis as { DEPOT_FORCE_CHUNK_TIER?: number }).DEPOT_FORCE_CHUNK_TIER = n
+    }
+    const file = fileOf('holiday.mp4', 3_000_000, 21)
+    const { session, stop } = await connect(singleFileSource(() => file))
+    const entries = await session.list('')
+
+    force(1024 * 1024)
+    try {
+      const got = await session.fetch(entries[0].handle)
+      expect(await bytesOf(got)).toEqual(Array.from(file.bytes))
+    } finally {
+      force(undefined)
+    }
+
+    session.close()
+    stop()
+  })
+
+  it('sends a file up without proposing chunks the Depot must refuse', async () => {
+    const folder = writableFolder()
+    const { session, stop } = await connect({
+      list: (handle) =>
+        handle === '' ? [{ handle: 'inbox', name: 'Inbox', kind: 'dir' as const }] : [],
+      open: () => null,
+      writable: (handle) => (handle === 'inbox' ? folder.target : null),
+    })
+    const entries = await session.list('')
+    const inbox = entries.find((e) => e.kind === 'dir')!
+
+    // Comfortably over the ceiling, which is where this failed.
+    const big = fileOf('scan.pdf', 3_000_000, 22)
+    const stored = await session.send(inbox.handle, { name: big.name, bytes: big.bytes })
+    expect(stored).toBe('scan.pdf')
+    expect(Array.from(folder.files.get('scan.pdf')!)).toEqual(Array.from(big.bytes))
+
+    session.close()
+    stop()
+  })
+})
