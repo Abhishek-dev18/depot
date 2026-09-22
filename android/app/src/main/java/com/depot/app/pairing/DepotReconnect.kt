@@ -10,6 +10,8 @@ import com.depot.app.crypto.generateEphemeralKeyPair
 import com.depot.app.crypto.issueCredential
 import com.depot.app.crypto.randomBytes
 import com.depot.app.crypto.reconnectTranscript
+import com.depot.app.crypto.signDepotChallenge
+import com.depot.app.crypto.signRegistration
 import com.depot.app.crypto.toBase64
 import com.depot.app.crypto.verifyCredential
 import com.depot.app.crypto.verifyReconnectResponse
@@ -177,7 +179,7 @@ suspend fun runDepotReconnectListener(
         }
     }
 
-    signal.register(depotId)
+    signal.register(depotId) { nonce -> signRegistration(depotIdentity.privateKey, depotId, nonce) }
     cb.onStatus("registered, listening for reconnections")
     cb.onRegistered(depotId)
 
@@ -226,11 +228,16 @@ private suspend fun handleIncoming(
         val depotEphemeral = generateEphemeralKeyPair()
         val challengeNonce = randomBytes(16)
 
+        // Signed, so the Client can tell this answer comes from the Depot it
+        // paired with: Signal lets anyone register any id, and the session
+        // keys are ephemeral-only, so nothing else in §4 proves it.
+        val depotSig = signDepotChallenge(depotPrivateKey, clientEk, depotEphemeral.publicKey, challengeNonce)
         signal.relay(
             "CHALLENGE",
             JSONObject()
                 .put("depotEk", depotEphemeral.publicKey.toBase64())
-                .put("challengeNonce", challengeNonce.toBase64()),
+                .put("challengeNonce", challengeNonce.toBase64())
+                .put("depotSig", depotSig),
             clientId,
         )
 

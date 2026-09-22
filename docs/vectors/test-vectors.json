@@ -44,7 +44,9 @@
     "_comment": "protocol.md §4 challenge-response",
     "challengeNonce": "21282f363d444b525960676e757c838a",
     "transcript": "0020c8feca81be196cdf2cadeabf13c4903d7632dce4955aa68b6e5d9adef54e26160020a2ce93c64b85e78a62d23d888e41770269b04dc5565edd1db54030ae3781ef6e001021282f363d444b525960676e757c838a",
-    "sig": "+ovNEMYyQyIN59BNwLApdJT7iwsPJUbIrqg9UqJMzvt6U6itl4vaPWK4DFEGTiu7NZGzHyb0x4MO+dYKGBBhAw"
+    "sig": "+ovNEMYyQyIN59BNwLApdJT7iwsPJUbIrqg9UqJMzvt6U6itl4vaPWK4DFEGTiu7NZGzHyb0x4MO+dYKGBBhAw",
+    "depotChallengeBytes": "001c6465706f742d7265636f6e6e6563742d6368616c6c656e67652f76310020c8feca81be196cdf2cadeabf13c4903d7632dce4955aa68b6e5d9adef54e26160020a2ce93c64b85e78a62d23d888e41770269b04dc5565edd1db54030ae3781ef6e001021282f363d444b525960676e757c838a",
+    "depotSig": "Lz0hHZvp+BNjwyI2GyMSL1QSf9ry5kMAYpFTEoz7oiwHN4LVcb6enByt9BO0/eMGtceUu7BvVWT2t1kpZTADBQ"
   },
   "nonces": {
     "_comment": "protocol.md §5.3 derived nonces; the two spaces must stay disjoint",

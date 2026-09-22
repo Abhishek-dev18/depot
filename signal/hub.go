@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"log"
 	"sync"
 	"time"
@@ -25,6 +27,11 @@ type connState struct {
 
 	depotID  string // roleDepotHub, roleReconnectClient
 	clientID string // roleReconnectClient
+
+	// The nonce this connection was asked to sign for registerFor, until
+	// it answers. Single use: cleared on the first answer, right or wrong.
+	registerNonce []byte
+	registerFor   string
 }
 
 // room is one in-flight pairing (§3 of protocol.md). Sessions are ephemeral
@@ -249,8 +256,36 @@ func (h *Hub) expireRoom(sessionID string) {
 }
 
 func (h *Hub) handleRegister(c *conn, e Envelope) {
-	if e.DepotID == "" {
+	if _, ok := depotKey(e.DepotID); !ok {
 		c.sendError(ReasonBadEnvelope)
+		return
+	}
+
+	// First the Depot asks, and is handed a nonce; then it answers with
+	// that nonce signed. Only the answer registers anything.
+	if len(e.Payload) == 0 {
+		nonce, err := newRegisterNonce()
+		if err != nil {
+			c.sendError(ReasonBadEnvelope)
+			return
+		}
+		h.mu.Lock()
+		st := h.stateFor(c)
+		st.registerNonce = nonce
+		st.registerFor = e.DepotID
+		h.mu.Unlock()
+		challenge, _ := json.Marshal(registerChallenge{Nonce: base64.RawStdEncoding.EncodeToString(nonce)})
+		_ = c.send(Envelope{Type: TypeRegisterChallenge, DepotID: e.DepotID, Payload: challenge})
+		return
+	}
+
+	h.mu.Lock()
+	st := h.stateFor(c)
+	nonce, askedFor := st.registerNonce, st.registerFor
+	st.registerNonce, st.registerFor = nil, ""
+	h.mu.Unlock()
+	if askedFor != e.DepotID || !provesRegistration(e.DepotID, nonce, e.Payload) {
+		c.sendError(ReasonUnauthorized)
 		return
 	}
 
@@ -266,7 +301,7 @@ func (h *Hub) handleRegister(c *conn, e Envelope) {
 	}
 	p.hub = c
 
-	st := h.stateFor(c)
+	st = h.stateFor(c)
 	st.role = roleDepotHub
 	st.depotID = e.DepotID
 	h.mu.Unlock()
@@ -277,6 +312,7 @@ func (h *Hub) handleRegister(c *conn, e Envelope) {
 		old.sendError(ReasonAlreadyConnected)
 		old.close()
 	}
+	_ = c.send(Envelope{Type: TypeRegistered, DepotID: e.DepotID})
 
 	// Anyone who asked to be told. Sent outside the lock: these are
 	// writes to other sockets and one of them being slow must not hold

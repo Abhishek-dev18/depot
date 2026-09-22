@@ -4,7 +4,8 @@ import { issueCredential, verifyCredential } from '../crypto/credential'
 import { deriveKeys, ecdh } from '../crypto/derive'
 import { generateEphemeralKeyPair, randomBytes } from '../crypto/keys'
 import type { KeyPair } from '../crypto/keys'
-import { reconnectTranscript, verifyReconnectResponse } from '../crypto/reconnect'
+import { reconnectTranscript, signDepotChallenge, verifyReconnectResponse } from '../crypto/reconnect'
+import { signRegistration } from '../crypto/registration'
 import { getDevice, touchDevice } from '../storage/devices'
 import { loadOrCreateIdentity } from '../storage/identityStore'
 import { SignalClient } from '../signal/client'
@@ -91,7 +92,7 @@ export async function runDepotReconnectListener(
     }
   })
 
-  client.register(depotId)
+  client.register(depotId, (nonce) => signRegistration(depotIdentity.privateKey, depotId, nonce))
   cb.onStatus('registered, listening for reconnections')
   cb.onRegistered(depotId)
 
@@ -142,9 +143,16 @@ async function handleIncoming(
 
     const depotEphemeral = await generateEphemeralKeyPair()
     const challengeNonce = await randomBytes(16)
+    const clientEkBytes = fromBase64(clientEk)
+    const depotSig = await signDepotChallenge(
+      depotIdentity.privateKey,
+      clientEkBytes,
+      depotEphemeral.publicKey,
+      challengeNonce,
+    )
     client.relay(
       'CHALLENGE',
-      { depotEk: toBase64(depotEphemeral.publicKey), challengeNonce: toBase64(challengeNonce) },
+      { depotEk: toBase64(depotEphemeral.publicKey), challengeNonce: toBase64(challengeNonce), depotSig },
       clientId,
     )
 
@@ -155,7 +163,6 @@ async function handleIncoming(
     if (response.type !== 'RESPONSE') throw new Error('client disconnected before responding')
 
     const { sig } = response.payload as { sig: string }
-    const clientEkBytes = fromBase64(clientEk)
     const transcript = reconnectTranscript(clientEkBytes, depotEphemeral.publicKey, challengeNonce)
     const clientIdentityPub = fromBase64(clientId)
     if (!(await verifyReconnectResponse(sig, transcript, clientIdentityPub))) {

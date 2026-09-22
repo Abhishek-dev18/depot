@@ -118,6 +118,27 @@ class VectorsTest {
     }
 
     @Test
+    fun depotChallengeSignatureMatches() {
+        val p = vectors.getJSONObject("pairing")
+        val v = vectors.getJSONObject("reconnect")
+        val depotIk = identityKeyPairFromSeed(p.getString("depotIkSeed").fromHex())
+        val clientIk = identityKeyPairFromSeed(p.getString("clientIkSeed").fromHex())
+        val clientEk = p.getString("clientEkPub").fromHex()
+        val depotEk = p.getString("depotEkPub").fromHex()
+        val nonce = v.getString("challengeNonce").fromHex()
+
+        assertEquals(v.getString("depotChallengeBytes"), depotChallengeBytes(clientEk, depotEk, nonce).toHex())
+        assertEquals(v.getString("depotSig"), signDepotChallenge(depotIk.privateKey, clientEk, depotEk, nonce))
+        assertTrue(verifyDepotChallenge(v.getString("depotSig"), depotIk.publicKey, clientEk, depotEk, nonce))
+
+        // Signed by anyone else — here the Client's own identity — it is
+        // not the Depot, and a different nonce is a different challenge.
+        val impostor = signDepotChallenge(clientIk.privateKey, clientEk, depotEk, nonce)
+        assertTrue(!verifyDepotChallenge(impostor, depotIk.publicKey, clientEk, depotEk, nonce))
+        assertTrue(!verifyDepotChallenge(v.getString("depotSig"), depotIk.publicKey, clientEk, depotEk, ByteArray(16)))
+    }
+
+    @Test
     fun derivedNoncesMatchAndStayDisjoint() {
         val v = vectors.getJSONObject("nonces")
         assertEquals(

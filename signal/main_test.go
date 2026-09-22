@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -212,11 +213,11 @@ func TestReconnectionHappyPath(t *testing.T) {
 	defer srv.Close()
 
 	depot := dial(t, url)
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: "depot-1"})
+	depotID := registerDepot(t, depot)
 
 	client := dial(t, url)
 	reconnectPayload := json.RawMessage(`{"credential":"cred","clientEk":"ek"}`)
-	send(t, client, Envelope{Type: TypeConnect, DepotID: "depot-1", ClientID: "client-1", Payload: reconnectPayload})
+	send(t, client, Envelope{Type: TypeConnect, DepotID: depotID, ClientID: "client-1", Payload: reconnectPayload})
 
 	incoming := recvEnvelope(t, depot)
 	if incoming.Type != TypeIncoming || incoming.ClientID != "client-1" {
@@ -266,12 +267,12 @@ func TestRevocationBlocksFutureConnect(t *testing.T) {
 	defer srv.Close()
 
 	depot := dial(t, url)
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: "depot-rev"})
+	depotID := registerDepot(t, depot)
 
 	send(t, depot, Envelope{Type: TypeRevoke, ClientID: "bad-client"})
 
 	client := dial(t, url)
-	send(t, client, Envelope{Type: TypeConnect, DepotID: "depot-rev", ClientID: "bad-client"})
+	send(t, client, Envelope{Type: TypeConnect, DepotID: depotID, ClientID: "bad-client"})
 	e := recvEnvelope(t, client)
 	if e.Type != TypeError || e.Reason != ReasonClientRevoked {
 		t.Fatalf("expected client_revoked, got %+v", e)
@@ -284,10 +285,10 @@ func TestRevocationClosesActiveRoute(t *testing.T) {
 	defer srv.Close()
 
 	depot := dial(t, url)
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: "depot-live"})
+	depotID := registerDepot(t, depot)
 
 	client := dial(t, url)
-	send(t, client, Envelope{Type: TypeConnect, DepotID: "depot-live", ClientID: "live-client"})
+	send(t, client, Envelope{Type: TypeConnect, DepotID: depotID, ClientID: "live-client"})
 	recvEnvelope(t, depot) // incoming
 
 	send(t, depot, Envelope{Type: TypeRevoke, ClientID: "live-client"})
@@ -303,10 +304,10 @@ func TestDepotGoingOfflineNotifiesActiveClients(t *testing.T) {
 	defer srv.Close()
 
 	depot := dial(t, url)
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: "depot-drop"})
+	depotID := registerDepot(t, depot)
 
 	client := dial(t, url)
-	send(t, client, Envelope{Type: TypeConnect, DepotID: "depot-drop", ClientID: "c1"})
+	send(t, client, Envelope{Type: TypeConnect, DepotID: depotID, ClientID: "c1"})
 	recvEnvelope(t, depot)
 
 	depot.Close()
@@ -340,7 +341,8 @@ func TestConcurrentRegisterDuringRelay(t *testing.T) {
 	srv, url := testServer(t, hub)
 	defer srv.Close()
 
-	const depotID = "depot-rewrite"
+	_, priv, _ := ed25519.GenerateKey(nil)
+	depotID := idOf(priv)
 	drain := func(ws *websocket.Conn) {
 		go func() {
 			for {
@@ -353,7 +355,7 @@ func TestConcurrentRegisterDuringRelay(t *testing.T) {
 
 	// Anchor registration keeps the presence alive throughout.
 	anchor := dial(t, url)
-	send(t, anchor, Envelope{Type: TypeRegister, DepotID: depotID})
+	registerAs(t, anchor, depotID, priv)
 	drain(anchor)
 
 	var wg sync.WaitGroup
@@ -382,7 +384,7 @@ func TestConcurrentRegisterDuringRelay(t *testing.T) {
 				return
 			}
 			held = append(held, ws)
-			_ = ws.WriteJSON(Envelope{Type: TypeRegister, DepotID: depotID})
+			_ = tryRegister(ws, depotID, priv)
 			drain(ws)
 			time.Sleep(time.Millisecond)
 		}
@@ -455,7 +457,8 @@ func TestWatchIsToldWhenTheDepotRegisters(t *testing.T) {
 	defer srv.Close()
 
 	client := dial(t, url)
-	depotID := "depot-not-here-yet"
+	_, priv, _ := ed25519.GenerateKey(nil)
+	depotID := idOf(priv)
 	send(t, client, Envelope{Type: TypeWatch, DepotID: depotID})
 
 	// Waiting, not answered: read with a deadline to prove the silence
@@ -468,7 +471,7 @@ func TestWatchIsToldWhenTheDepotRegisters(t *testing.T) {
 	}, "the watcher to be recorded")
 
 	depot := dial(t, url)
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: depotID})
+	registerAs(t, depot, depotID, priv)
 
 	got := recvEnvelope(t, client)
 	if got.Type != TypeDepotOnline || got.DepotID != depotID {
@@ -482,9 +485,8 @@ func TestWatchAnswersAtOnceWhenAlreadyOnline(t *testing.T) {
 	srv, url := testServer(t, hub)
 	defer srv.Close()
 
-	depotID := "depot-already-here"
 	depot := dial(t, url)
-	send(t, depot, Envelope{Type: TypeRegister, DepotID: depotID})
+	depotID := registerDepot(t, depot)
 
 	client := dial(t, url)
 	send(t, client, Envelope{Type: TypeWatch, DepotID: depotID})
