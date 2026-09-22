@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -20,7 +21,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.content.IntentCompat
+import com.depot.app.service.ReceivedFile
 import com.depot.app.ui.DepotApp
 import com.depot.app.ui.DepotViewModel
 import com.depot.app.ui.theme.DepotColors
@@ -61,13 +64,51 @@ class MainActivity : ComponentActivity() {
      * is passed along for the one URI and nothing else.
      */
     private fun openReceived(where: String) {
-        val uri = runCatching { Uri.parse(where) }.getOrNull() ?: return
+        val uri = shareableUri(where) ?: return
         val view = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, contentResolver.getType(uri) ?: "*/*")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         // No viewer for this type is an ordinary situation, not an error
         // worth crashing over: the file is on the phone either way.
         runCatching { startActivity(view) }
+    }
+
+    /**
+     * A URI another app is allowed to read.
+     *
+     * Two kinds of destination end up in [ReceivedFile.where]. A granted
+     * folder gives a content URI already, and it is passed on unchanged.
+     * The app's own inbox gives a filesystem path, which no other app may
+     * open directly — that is the point of private storage — so it goes
+     * through the FileProvider, which hands out a temporary grant for
+     * that one file.
+     */
+    private fun shareableUri(where: String): Uri? {
+        if (!where.startsWith("/")) return runCatching { Uri.parse(where) }.getOrNull()
+        return runCatching {
+            FileProvider.getUriForFile(this, "$packageName.files", File(where))
+        }.getOrNull()
+    }
+
+    /**
+     * Copying a received file out of the app and into the user's own
+     * storage — the phone's half of the browser's DOWNLOAD.
+     *
+     * Deliberately a separate, deliberate step rather than something
+     * that happens on arrival: until it is taken, a file a Client sent
+     * exists only inside this app, and uninstalling takes it with it.
+     */
+    private var saving: ReceivedFile? = null
+
+    private fun saveReceived(file: ReceivedFile, into: Uri?) {
+        val from = file.where ?: return
+        val source = shareableUri(from) ?: return
+        if (into == null) return
+        runCatching {
+            contentResolver.openInputStream(source)?.use { input ->
+                contentResolver.openOutputStream(into)?.use { output -> input.copyTo(output) }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,6 +145,14 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenMultipleDocuments(),
                 ) { uris -> viewModel.onFilesSelected(uris) }
 
+                // Where a received file goes when the user asks to keep
+                // it. The user names the place, which is the consent the
+                // writable-folder flag used to stand in for — asked now,
+                // about one file, instead of in advance about a folder.
+                val saveReceivedTo = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("*/*"),
+                ) { into -> saving?.let { saveReceived(it, into) }; saving = null }
+
                 // A whole folder, so a Client has something to browse
                 // (protocol.md §5.9). The tree permission is taken
                 // persistably in the view model, or the grant would stop
@@ -119,6 +168,10 @@ class MainActivity : ComponentActivity() {
                         onPickFile = { pickFile.launch(arrayOf("*/*")) },
                         onRemoveFile = viewModel::onRemoveOfferedFile,
                         onOpenReceived = { file -> file.where?.let(::openReceived) },
+                        onSaveReceived = { file ->
+                            saving = file
+                            saveReceivedTo.launch(file.name)
+                        },
                         onAddFolder = { pickFolder.launch(null) },
                         onToggleGrant = viewModel::onToggleGrant,
                         onToggleGrantWritable = viewModel::onToggleGrantWritable,

@@ -218,6 +218,45 @@ describe('compression (protocol.md §5.6)', () => {
     expect(shouldCompress(random)).toBe(false)
     expect(estimateEntropy(random)).toBeGreaterThan(7.9)
   })
+
+  /*
+   * Whether a chunk *can* be compressed and whether it is *worth*
+   * compressing are different questions, and only the first was asked.
+   *
+   * Compressing is not overlapped with sending — the sender packs a
+   * chunk, then puts it on the wire — so the codec's own speed is a
+   * ceiling on the transfer. Measured here, deflate-raw packs about
+   * 22 MB/s: below roughly 120 Mbps that is free next to the wait for
+   * the network, and above it the codec becomes the slow part. On a
+   * direct LAN connection, compressing an ordinary text file more than
+   * doubled the time it took.
+   */
+  describe('and whether it is worth the time it costs', () => {
+    const compressible = new TextEncoder().encode('depot transfer chunk manifest '.repeat(2000))
+
+    it('compresses when nothing has been measured yet', () => {
+      // The first chunks of a transfer are exactly when there is nothing
+      // to measure from, and most links are far below the threshold.
+      expect(shouldCompress(compressible, undefined)).toBe(true)
+    })
+
+    it('compresses on a link slow enough for it to pay', () => {
+      const mobileData = (8 * 1_000_000) / 8 // 8 Mbps, in bytes per second
+      expect(shouldCompress(compressible, mobileData)).toBe(true)
+    })
+
+    it('does not compress on a link faster than the codec', () => {
+      const fastLan = (400 * 1_000_000) / 8 // 400 Mbps
+      expect(shouldCompress(compressible, fastLan)).toBe(false)
+    })
+
+    it('still refuses high-entropy data however slow the link', async () => {
+      // The entropy gate is the cheap one and stays first: a photograph
+      // does not become compressible because the network is poor.
+      const random = await randomBytes(64 * 1024)
+      expect(shouldCompress(random, 1000)).toBe(false)
+    })
+  })
 })
 
 describe('the replay window (protocol.md §5.3)', () => {

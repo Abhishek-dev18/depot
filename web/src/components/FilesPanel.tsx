@@ -410,7 +410,11 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
    */
   const sendAll = async (files: FileList | null) => {
     const picked = [...(files ?? [])]
-    if (picked.length === 0 || !sendTarget) return
+    // A ref, and over the whole queue rather than one file: `uploading`
+    // goes back to null between two files, so a control disabled on it
+    // alone is live for a moment in the middle of a run.
+    if (picked.length === 0 || !sendTarget || sendingRef.current) return
+    sendingRef.current = true
     const to = sendTarget
     const queued: Outgoing[] = picked.map((file, i) => ({
       id: nowMs() + i,
@@ -421,24 +425,35 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
     }))
     setOutbox((prev) => [...queued, ...prev])
 
-    for (const [i, file] of picked.entries()) {
-      const id = queued[i].id
-      const mark = (patch: Partial<Outgoing>) =>
-        setOutbox((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)))
-      mark({ state: 'sending' })
-      try {
-        await uploadOne(file, to)
-        // uploadOne logs the name it was stored under; read it back from
-        // there rather than duplicating the rule about renaming.
-        mark({ state: 'sent', storedAs: lastStoredRef.current ?? file.name })
-      } catch (err) {
-        mark({ state: 'failed', error: err instanceof Error ? err.message : String(err) })
+    try {
+      for (const [i, file] of picked.entries()) {
+        const id = queued[i].id
+        const mark = (patch: Partial<Outgoing>) =>
+          setOutbox((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)))
+        mark({ state: 'sending' })
+        try {
+          await uploadOne(file, to)
+          // uploadOne records the name it was stored under; read it back
+          // from there rather than duplicating the rule about renaming.
+          mark({ state: 'sent', storedAs: lastStoredRef.current ?? file.name })
+        } catch (err) {
+          // One file failing is not the queue failing: the rest still go.
+          mark({ state: 'failed', error: err instanceof Error ? err.message : String(err) })
+        }
       }
+    } finally {
+      // Released here and not after the loop, so an unexpected throw
+      // cannot leave the control shut for the rest of the session.
+      sendingRef.current = false
     }
   }
 
+  /** True while a queue is running, including between two of its files. */
+  const sending = outbox.some((o) => o.state === 'waiting' || o.state === 'sending')
+
   /** What the Depot called the file it most recently accepted. */
   const lastStoredRef = useRef<string | null>(null)
+  const sendingRef = useRef(false)
 
   const uploadOne = async (file: File, to: DirEntry): Promise<void> => {
     const startedAt = nowMs()
@@ -547,7 +562,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
                 <input
                   type="file"
                   multiple
-                  disabled={uploading !== null || pending !== null}
+                  disabled={sending || uploading !== null || pending !== null}
                   onChange={(e) => {
                     void sendAll(e.target.files)
                     // Cleared so the same file can be picked twice.
@@ -647,7 +662,7 @@ export function FilesPanel({ session, depotLabel, onSettings, onError, log, onRa
                     <input
                       type="file"
                       multiple
-                      disabled={uploading !== null || pending !== null}
+                      disabled={sending || uploading !== null || pending !== null}
                       onChange={(e) => {
                         void sendAll(e.target.files)
                         e.target.value = ''

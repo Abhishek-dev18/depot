@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What this app is willing to hand to another one.
+
+  Only the inbox (§5.10): files a paired Client sent up, which the user
+  asked for and may want to open in a real viewer. Nothing else in the
+  app's storage is reachable this way — not the identity key, not the
+  device list, not the credential store.
+-->
+<paths>
+    <files-path name="inbox" path="inbox/" />
+</paths>
