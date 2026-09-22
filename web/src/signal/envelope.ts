@@ -14,12 +14,15 @@ export const TypeJoin = 'join'
 export const TypeRegister = 'register'
 export const TypeConnect = 'connect'
 export const TypeRevoke = 'revoke'
+export const TypeWatch = 'watch'
 
 export const TypeSessionCreated = 'session_created'
 export const TypePeerJoined = 'peer_joined'
 export const TypePeerLeft = 'peer_left'
 export const TypeIncoming = 'incoming'
 export const TypeError = 'error'
+/** Signal -> a watching Client: the Depot it asked about just registered. */
+export const TypeDepotOnline = 'depot_online'
 
 export const ReasonSessionExpired = 'session_expired'
 export const ReasonSessionFull = 'session_full'

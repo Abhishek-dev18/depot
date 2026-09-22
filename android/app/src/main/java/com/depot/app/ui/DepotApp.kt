@@ -42,6 +42,8 @@ fun DepotApp(
     onOpenReceived: (ReceivedFile) -> Unit,
     onNetworkPreference: (NetworkPreference) -> Unit,
     onSaveReceived: (ReceivedFile) -> Unit,
+    onRemoveReceived: (ReceivedFile) -> Unit,
+    onClearReceived: () -> Unit,
     onAddFolder: () -> Unit,
     onToggleGrant: (GrantView, Boolean) -> Unit,
     onToggleGrantWritable: (GrantView, Boolean) -> Unit,
@@ -151,6 +153,8 @@ fun DepotApp(
                 onLinkDevice = { scanning = true },
                 onOpenReceived = onOpenReceived,
                 onSaveReceived = onSaveReceived,
+                onRemoveReceived = onRemoveReceived,
+                onClearReceived = onClearReceived,
             )
         }
 

@@ -163,12 +163,19 @@ log(`depot not started yet -> waiting=${waiting} failed=${failed}`,
   waiting === 1 && failed === 0 ? '✓ waits' : '✗ WRONG STATE')
 
 // --- depot listens, sharing nothing yet -----------------------------
+const noticedAt = Date.now()
 await depot.getByRole('button', { name: /Start listening/i }).click()
 log('depot listening — client should notice on its own, with no clicks')
 
-// Deliberately no retry click and no reload: the poll has to do it.
+// Deliberately no retry click and no reload.
 await client.waitForSelector('.ftable', { timeout: 45000 })
-log('client reconnected unaided')
+// Reported, not asserted. Signal tells a waiting Client the moment a
+// Depot registers (§7), which makes this a round trip rather than a
+// poll interval — but the poll is still there as a fallback and can
+// happen to fire early, so a threshold here would pass whether the
+// notice worked or not. The relay's own tests prove the notice is sent;
+// this figure is for a human reading the log.
+log(`client reconnected unaided in ${Date.now() - noticedAt}ms`)
 
 const emptyRows = await shared().count()
 const inboxRows = await client.locator('.fr:not(.fr-note)').filter({ hasText: 'Inbox' }).count()

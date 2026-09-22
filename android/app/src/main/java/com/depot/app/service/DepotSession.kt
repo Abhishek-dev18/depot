@@ -39,6 +39,8 @@ data class ReceivedFile(
     val folder: String,
     val where: String?,
     val at: Long,
+    /** What it was called in Downloads, once KEEP has been used. */
+    val savedAs: String? = null,
 )
 
 data class SessionState(
@@ -131,6 +133,55 @@ object DepotSession {
             )
         }
         notifySharedChanged()
+    }
+
+    /**
+     * Drops one received file, from the screen and from storage.
+     *
+     * Both, because a row that goes away while the bytes stay is a lie
+     * about what this phone is holding — and the inbox is the one place
+     * a Client can write to, so what is in it is worth being exact about.
+     */
+    fun removeReceived(context: Context, file: ReceivedFile) {
+        val where = file.where
+        if (where != null && where.startsWith("/")) {
+            runCatching { java.io.File(where).delete() }
+        }
+        _state.update {
+            it.copy(
+                receivedFiles = it.receivedFiles.filterNot { held -> held.name == file.name },
+                log = it.log + "cleared ${file.name}",
+            )
+        }
+    }
+
+    /** Records that a received file was copied out to Downloads. */
+    fun noteSaved(name: String, savedAs: String?) {
+        _state.update {
+            it.copy(
+                log = it.log + if (savedAs == null) {
+                    "could not save $name"
+                } else if (savedAs == name) {
+                    "saved $name to Downloads"
+                } else {
+                    "saved $name to Downloads as $savedAs — that name was taken"
+                },
+                receivedFiles = it.receivedFiles.map { held ->
+                    if (held.name == name) held.copy(savedAs = savedAs) else held
+                },
+            )
+        }
+    }
+
+    /** Drops everything received. The "clear all" above the list. */
+    fun clearReceived(context: Context) {
+        val gone = AppInbox(context).clear()
+        _state.update {
+            it.copy(
+                receivedFiles = emptyList(),
+                log = it.log + "cleared $gone received file(s)",
+            )
+        }
     }
 
     /** How much memory the files on offer are already holding. */

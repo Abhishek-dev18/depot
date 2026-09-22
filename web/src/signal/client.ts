@@ -1,4 +1,6 @@
-import { TypeConnect, TypeError, TypeHello, TypeJoin, TypeRegister, TypeRevoke, type Envelope } from './envelope'
+import { TypeConnect, TypeError, TypeHello, TypeJoin, TypeRegister, TypeRevoke, type Envelope,
+  TypeWatch,
+} from './envelope'
 
 /** Thin wrapper over the WebSocket connection to signal (protocol.md §7). */
 export class SignalClient {
@@ -77,6 +79,17 @@ export class SignalClient {
 
   connectTo(depotId: string, clientId: string, payload: unknown): void {
     this.send({ type: TypeConnect, depotId, clientId, payload })
+  }
+
+  /**
+   * Asks to be told when a Depot registers, rather than asking again.
+   *
+   * The answer comes as one `depot_online`, once, and the socket has to
+   * stay open to receive it — which is the difference from every other
+   * call here.
+   */
+  watch(depotId: string): void {
+    this.send({ type: TypeWatch, depotId })
   }
 
   revoke(clientId: string): void {
